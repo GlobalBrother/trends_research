@@ -15,8 +15,8 @@ from src.niche.niche_discovery import NicheDiscovery
 import io
 
 def main():
-    st.set_page_config(page_title="Trend Research Tool", layout="wide")
-    st.title("🚀 Python Trend Research & Viral Insights Tool")
+    st.set_page_config(page_title="trends research", layout="wide")
+    st.title("🚀 trends research")
 
     # Initialize modules
     collector = TrendCollector()
@@ -26,7 +26,10 @@ def main():
     # Sidebar for filters
     st.sidebar.header("Controls")
     refresh = st.sidebar.button("Refresh Trends")
-    niche_input = st.sidebar.text_input("Niche or Industry Keyword (e.g., AI, Tech)")
+    
+    # Niche Selection Dropdown
+    niches = ["All", "Survival", "Health", "Preppers", "Tech", "Crypto", "AI", "Gaming", "Finance", "Food", "Business", "Entertainment"]
+    selected_niche = st.sidebar.selectbox("Select Niche", niches)
     
     # State management for data
     if "data" not in st.session_state or refresh:
@@ -36,9 +39,9 @@ def main():
 
     df = st.session_state.data
 
-    # Filter data if niche keyword is provided
-    if niche_input:
-        df = niche.filter_by_niche(df, niche_input)
+    # Filter data if a niche is selected
+    if selected_niche != "All":
+        df = niche.filter_by_niche(df, selected_niche)
 
     # Dashboard layout
     col1, col2 = st.columns([2, 1])
@@ -64,12 +67,6 @@ def main():
         st.write("Topics clustered by semantic similarity:")
         st.dataframe(df_clustered[['topic', 'niche_cluster', 'platform']], use_container_width=True)
 
-    # Content Opportunities
-    st.subheader("💡 Content Opportunities")
-    top_topics = df.head(5)
-    opportunities = niche.suggest_content_opportunities(top_topics)
-    for op in opportunities[:10]:
-        st.markdown(f"- {op}")
 
     # Export Section
     st.sidebar.subheader("Export Options")

@@ -1,4 +1,4 @@
-# Trend Research and Viral Insights Tool
+# trends research
 
 ## Overview
 This tool collects, analyzes, and visualizes trending topics across multiple platforms including Google Trends, YouTube, and X (Twitter). It uses a custom **Virality Score** and sentiment analysis to provide insights into emerging trends.
