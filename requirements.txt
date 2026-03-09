@@ -1,0 +1,15 @@
+pytrends
+pandas
+requests
+beautifulsoup4
+scikit-learn
+nltk
+textblob
+vaderSentiment
+plotly
+streamlit
+openpyxl
+python-dotenv
+googlenews
+tweepy
+matplotlib
