@@ -46,11 +46,10 @@ class AnalyticsEngine:
         
         # Define platform weights
         platform_weights = {
-            "X/Twitter": 1.2,
-            "TikTok": 1.5,
-            "YouTube": 1.1,
-            "Google Trends": 0.8,
-            "Google News": 0.9
+            "Google Trends (Scrapy)": 1.0,
+            "Google Related Queries (Scrapy)": 1.1,
+            "Google Related Topics (Scrapy)": 1.1,
+            "Google Interest (Scrapy)": 1.0
         }
         
         # Calculate Virality Score

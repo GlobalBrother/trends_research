@@ -7,30 +7,57 @@ class NicheDiscovery:
         self.n_clusters = n_clusters
         self.vectorizer = TfidfVectorizer(stop_words='english')
 
+    def get_niche_keywords(self, niche_name):
+        """Returns a representative list of keywords for a niche to be used in scraping."""
+        niche_map = {
+            "Survival": ["Survival", "Bushcraft", "SHTF", "Wilderness survival", "First aid", "Foraging", "Emergency preparedness"],
+            "Health": ["Natural remedy", "Herbal wellness", "Holistic health"],
+            "Preppers": ["Prepper", "Off-grid living", "DIY off grid", "Emergency preparedness", "Survivalist"]
+        }
+        return niche_map.get(niche_name, [niche_name])
+
     def filter_by_niche(self, df, niche_keyword):
         """Filters trends by a specific niche keyword or common synonyms."""
         if df.empty or not niche_keyword or niche_keyword == "All":
             return df
         
         # Mapping niches to potential keywords for better filtering
+        # Each entry can be a list of include keywords or a dict with 'include' and 'exclude'
         niche_map = {
-            "Survival": ["Survival", "Emergency", "Outdoors", "Bushcraft", "Disaster", "Self-sufficiency"],
-            "Health": ["Health", "Fitness", "Wellness", "Medical", "Diet", "Workout", "Medicine"],
-            "Preppers": ["Prepper", "Emergency Prep", "Stockpile", "Off-grid", "Preparedness", "Survivalist"],
-            "Tech": ["Tech", "Apple", "Software", "Hardware", "iPhone", "Review"],
-            "Crypto": ["Crypto", "Bitcoin", "Ethereum", "#Crypto", "Blockchain"],
-            "AI": ["AI", "Artificial Intelligence", "Machine Learning", "ChatGPT", "LLM"],
-            "Gaming": ["Gaming", "Video Games", "PlayStation", "Xbox", "Nintendo", "Streamer"],
-            "Finance": ["Finance", "Market", "Stock", "Economy", "Investment", "Trading"],
-            "Food": ["Cooking", "Recipe", "Food", "Restaurant", "Chef", "Tutorial"],
-            "Business": ["Business", "Startup", "Marketing", "Entrepreneur", "Strategy"],
-            "Entertainment": ["Movie", "Trailer", "Actor", "Hollywood", "Music", "Singer", "#F1"]
+            "Survival": {
+                "include": ["Survival", "Emergency", "Outdoors", "Bushcraft", "Disaster", "Self-sufficiency", "First aid", "Foraging", "Wilderness survival", "Preparedness"],
+                "exclude": ["Gaming", "Video game", "Mod", "Download", "Novel", "Book", "Fiction", "Minecraft", "Zomboid", "Roblox", "Fortnite"]
+            },
+            "Health": {
+                "include": ["Self remedies", "Home remedy", "Natural cure", "Herbal", "Wellness", "Holistic"],
+                "exclude": ["Pharmacy", "Department", "Pharma", "Hospital", "Government", "Clinic"]
+            },
+            "Preppers": {
+                "include": ["Prepper", "Emergency Prep", "Stockpile", "Off-grid", "Preparedness", "Survivalist", "DIY off grid", "Solar power", "Water purification", "Generator", "SHTF", "Homesteading"],
+                "exclude": ["Gaming", "Video game"]
+            }
         }
         
-        keywords = niche_map.get(niche_keyword, [niche_keyword])
-        pattern = '|'.join(keywords)
+        config = niche_map.get(niche_keyword, [niche_keyword])
         
-        return df[df['topic'].str.contains(pattern, case=False, na=False)]
+        if isinstance(config, list):
+            include_keywords = config
+            exclude_keywords = []
+        else:
+            include_keywords = config.get("include", [])
+            exclude_keywords = config.get("exclude", [])
+
+        # Include filter
+        if include_keywords:
+            include_pattern = '|'.join(include_keywords)
+            df = df[df['topic'].str.contains(include_pattern, case=False, na=False)]
+        
+        # Exclude filter
+        if not df.empty and exclude_keywords:
+            exclude_pattern = '|'.join(exclude_keywords)
+            df = df[~df['topic'].str.contains(exclude_pattern, case=False, na=False)]
+            
+        return df
 
     def discover_micro_niches(self, df):
         """Clusters related keywords to find micro-niches."""
