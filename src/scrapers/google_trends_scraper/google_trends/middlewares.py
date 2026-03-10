@@ -14,6 +14,7 @@ class RandomUserAgentMiddleware:
 class ProxyMiddleware:
     def __init__(self, proxy_list):
         self.proxy_list = proxy_list
+        self.proxy_index = 0
 
     @classmethod
     def from_crawler(cls, crawler):
@@ -21,5 +22,8 @@ class ProxyMiddleware:
 
     def process_request(self, request, spider):
         if self.proxy_list:
-            proxy = random.choice(self.proxy_list)
+            # Simple round-robin rotation
+            proxy = self.proxy_list[self.proxy_index]
+            self.proxy_index = (self.proxy_index + 1) % len(self.proxy_list)
             request.meta['proxy'] = proxy
+            # spider.logger.debug(f"Using proxy: {proxy}")

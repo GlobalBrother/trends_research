@@ -52,11 +52,25 @@ class GoogleTrendsSpider(scrapy.Spider):
         yield scrapy.Request(
             url=url,
             callback=self.parse_explore,
-            meta={'keywords': self.keywords, 'geo': self.geo, 'timeframe': self.timeframe, 'category': self.category}
+            meta={'keywords': self.keywords, 'geo': self.geo, 'timeframe': self.timeframe, 'category': self.category},
+            errback=self.handle_error
         )
+
+    def handle_error(self, failure):
+        response = failure.value.response
+        if response:
+            self.logger.error(f"Request failed with response status: {response.status} for URL: {response.url}")
+        else:
+            self.logger.error(f"Request failed: {failure.getErrorMessage()}")
 
     def parse_explore(self, response):
         """Parse tokens and trigger widget data requests"""
+        self.logger.info(f"Response code from {self.EXPLORE_URL}: {response.status}")
+        
+        if response.status != 200:
+            self.logger.error(f"Failed to explore tokens. Status: {response.status}")
+            return
+
         # Google Trends API prepends ")]}'\n" to prevent JSON hijacking
         raw_data = response.text[5:]
         data = json.loads(raw_data)
@@ -93,7 +107,8 @@ class GoogleTrendsSpider(scrapy.Spider):
         return scrapy.Request(
             url=url,
             callback=self.parse_widget_data,
-            meta={**meta, 'data_type': 'interest_over_time'}
+            meta={**meta, 'data_type': 'interest_over_time'},
+            errback=self.handle_error
         )
 
     def fetch_related_data(self, base_url, token, req, meta, data_type):
@@ -107,11 +122,13 @@ class GoogleTrendsSpider(scrapy.Spider):
         return scrapy.Request(
             url=url,
             callback=self.parse_widget_data,
-            meta={**meta, 'data_type': data_type, 'keyword': req.get('restriction', {}).get('complexKeywordsRestriction', {}).get('keyword', [{}])[0].get('value')}
+            meta={**meta, 'data_type': data_type, 'keyword': req.get('restriction', {}).get('complexKeywordsRestriction', {}).get('keyword', [{}])[0].get('value')},
+            errback=self.handle_error
         )
 
     def parse_widget_data(self, response):
         data_type = response.meta['data_type']
+        self.logger.info(f"Response code from {response.url[:60]}...: {response.status} (Type: {data_type})")
         raw_data = response.text[5:]
         data = json.loads(raw_data)
         

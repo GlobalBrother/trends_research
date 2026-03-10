@@ -10,9 +10,31 @@ class NicheDiscovery:
     def get_niche_keywords(self, niche_name):
         """Returns a representative list of keywords for a niche to be used in scraping."""
         niche_map = {
-            "Survival": ["Survival", "Bushcraft", "SHTF", "Wilderness survival", "First aid", "Foraging", "Emergency preparedness"],
-            "Health": ["Natural remedy", "Herbal wellness", "Holistic health"],
-            "Preppers": ["Prepper", "Off-grid living", "DIY off grid", "Emergency preparedness", "Survivalist"]
+            "Survival": [
+                "Survival skills", "Bushcraft", "SHTF", "Wilderness survival", "First aid kit", "Foraging", 
+                "Emergency preparedness", "Survival gear", "Water filtration", "Fire starting", "Survival shelter",
+                "Wilderness medical", "EDC gear", "Navigation skills", "Survival mindset", "Outdoor survival"
+            ],
+            "Health": [
+                "Natural remedy", "Herbal wellness", "Holistic health", "Essential oils", "Medicinal plants",
+                "Acupuncture", "Detox diet", "Gut health", "Intermittent fasting", "Mindfulness meditation",
+                "Homeopathy", "Ayurveda", "Yoga therapy", "Naturopathic medicine", "Biohacking", "Supplements"
+            ],
+            "Preppers": [
+                "Prepper", "Off-grid living", "DIY off grid", "Emergency preparedness", "Survivalist",
+                "Bug out bag", "Freeze dried food", "Ham radio", "Nuclear preparedness", "Long-term storage",
+                "Root cellar", "Water catchment", "Solar generator", "Seed saving", "EMP protection", "Self-sufficiency"
+            ],
+            "Sustainability": [
+                "Sustainable living", "Zero waste", "Permaculture", "Renewable energy", "Composting",
+                "Rainwater harvesting", "Upcycling", "Solar energy", "Electric vehicles", "Plastic free",
+                "Minimalism", "Urban farming", "Green building", "Biodiversity", "Carbon footprint"
+            ],
+            "Homesteading": [
+                "Homesteading for beginners", "Raising chickens", "Beekeeping", "Preserving food", "Kitchen garden",
+                "Dairy goats", "Organic gardening", "Small scale farming", "Animal husbandry", "Soap making",
+                "Bread baking", "Off grid homestead", "Homestead chores", "Livestock", "Barn building"
+            ]
         }
         return niche_map.get(niche_name, [niche_name])
 
@@ -25,15 +47,49 @@ class NicheDiscovery:
         # Each entry can be a list of include keywords or a dict with 'include' and 'exclude'
         niche_map = {
             "Survival": {
-                "include": ["Survival", "Emergency", "Outdoors", "Bushcraft", "Disaster", "Self-sufficiency", "First aid", "Foraging", "Wilderness survival", "Preparedness"],
-                "exclude": ["Gaming", "Video game", "Mod", "Download", "Novel", "Book", "Fiction", "Minecraft", "Zomboid", "Roblox", "Fortnite"]
+                "include": [
+                    "Survival", "Emergency", "Outdoors", "Bushcraft", "Disaster", "Self-sufficiency", "First aid", 
+                    "Foraging", "Wilderness survival", "Preparedness", "Water filter", "Fire steel", "Shelter",
+                    "Signaling", "Rescue", "Evasion", "EDC", "Tactical gear", "Knives", "Med kit"
+                ],
+                "exclude": [
+                    "Gaming", "Video game", "Mod", "Download", "Novel", "Book", "Fiction", "Minecraft", "Zomboid", 
+                    "Roblox", "Fortnite", "Playstation", "Xbox", "Switch", "Simulator", "Steam", "Epic Games"
+                ]
             },
             "Health": {
-                "include": ["Self remedies", "Home remedy", "Natural cure", "Herbal", "Wellness", "Holistic"],
-                "exclude": ["Pharmacy", "Department", "Pharma", "Hospital", "Government", "Clinic"]
+                "include": [
+                    "Self remedies", "Home remedy", "Natural cure", "Herbal", "Wellness", "Holistic", "Naturopathic",
+                    "Organic", "Detox", "Probiotics", "Microbiome", "Essential oils", "Acupressure", "Meditation",
+                    "Vegan", "Keto", "Paleo", "Superfoods", "Tincture", "Poultice"
+                ],
+                "exclude": [
+                    "Pharmacy", "Department", "Pharma", "Hospital", "Government", "Clinic", "Surgery", "Drug",
+                    "Prescription", "Vaccine", "Medication"
+                ]
             },
             "Preppers": {
-                "include": ["Prepper", "Emergency Prep", "Stockpile", "Off-grid", "Preparedness", "Survivalist", "DIY off grid", "Solar power", "Water purification", "Generator", "SHTF", "Homesteading"],
+                "include": [
+                    "Prepper", "Emergency Prep", "Stockpile", "Off-grid", "Preparedness", "Survivalist", "DIY off grid", 
+                    "Solar power", "Water purification", "Generator", "SHTF", "Homesteading", "Canning", "Jarring",
+                    "Root cellar", "Ammunition", "Gold silver", "Barter", "Bug out", "Sustenance", "Self-reliance"
+                ],
+                "exclude": [
+                    "Gaming", "Video game", "Movie", "Trailer", "Review"
+                ]
+            },
+            "Sustainability": {
+                "include": [
+                    "Sustainable", "Zero waste", "Permaculture", "Renewable", "Compost", "Harvesting", "Upcycle",
+                    "Solar", "Wind power", "Minimalism", "Eco-friendly", "Recycle", "Biodegradable"
+                ],
+                "exclude": ["Gaming", "Video game"]
+            },
+            "Homesteading": {
+                "include": [
+                    "Homestead", "Chicken", "Beekeeping", "Preserving", "Garden", "Goat", "Farming", "Husbandry",
+                    "Livestock", "Barn", "Crops", "Soil"
+                ],
                 "exclude": ["Gaming", "Video game"]
             }
         }

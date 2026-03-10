@@ -43,6 +43,7 @@ class TrendingNowSpider(scrapy.Spider):
         yield scrapy.Request(url=url, callback=self.parse)
 
     def parse(self, response):
+        self.logger.info(f"Response code from {response.url[:60]}...: {response.status}")
         raw_data = response.text[5:]
         data = json.loads(raw_data)
         

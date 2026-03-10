@@ -1,3 +1,9 @@
+import os
+from dotenv import load_dotenv
+
+# Load .env from project root
+load_dotenv(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', '.env'))
+
 BOT_NAME = 'google_trends'
 
 SPIDER_MODULES = ['google_trends.spiders']
@@ -7,8 +13,8 @@ NEWSPIDER_MODULE = 'google_trends.spiders'
 ROBOTSTXT_OBEY = False
 
 # Concurrent requests and delay
-CONCURRENT_REQUESTS = 16
-DOWNLOAD_DELAY = 1.5
+CONCURRENT_REQUESTS = int(os.getenv('SCRAPY_CONCURRENT_REQUESTS', 2))
+DOWNLOAD_DELAY = float(os.getenv('SCRAPY_DOWNLOAD_DELAY', 5.0))
 RANDOMIZE_DOWNLOAD_DELAY = True
 
 # Cookies management (Google Trends needs cookies for some requests)
@@ -27,6 +33,13 @@ DOWNLOADER_MIDDLEWARES = {
     'scrapy.downloadermiddlewares.useragent.UserAgentMiddleware': None,
 }
 
+# AutoThrottle settings
+AUTOTHROTTLE_ENABLED = os.getenv('SCRAPY_AUTOTHROTTLE_ENABLED', 'True') == 'True'
+AUTOTHROTTLE_START_DELAY = 5.0
+AUTOTHROTTLE_MAX_DELAY = 60.0
+AUTOTHROTTLE_TARGET_CONCURRENCY = 1.0
+AUTOTHROTTLE_DEBUG = False
+
 # Pipelines
 ITEM_PIPELINES = {
     'google_trends.pipelines.GoogleTrendsPipeline': 300,
@@ -42,8 +55,10 @@ RETRY_HTTP_CODES = [429, 500, 502, 503, 504]
 USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Edge/122.0.0.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.3 Safari/605.1.15'
 ]
 
-# Proxies (Example)
-PROXY_LIST = []
+# Proxies
+PROXY_LIST = [p.strip() for p in os.getenv('SCRAPY_PROXIES', '').split(',') if p.strip()]

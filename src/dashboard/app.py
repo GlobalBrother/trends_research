@@ -46,7 +46,7 @@ def main():
     selected_geo = countries[selected_country_name]
     
     # Niche Selection Dropdown
-    niches = ["Survival", "Health", "Preppers"]
+    niches = ["Survival", "Health", "Preppers", "Sustainability", "Homesteading"]
     selected_niche = st.sidebar.selectbox("Select Niche", niches)
 
     # Scraper Customization

@@ -8,10 +8,10 @@ This project implements a robust, production-ready Google Trends scraper using S
 - **Support for All Trends**: Interest Over Time, Related Queries, and Related Topics.
 - **Configurable**: Easily set keywords, geo-regions, timeframes, and categories via command line.
 - **Production-Ready**:
-  - Proxy rotation support.
+  - Rotating proxy support (round-robin).
   - Random User-Agent rotation.
   - Built-in retry logic for 429 (Rate Limit) and 5xx errors.
-  - Configurable download delays.
+  - Configurable download delays and AutoThrottle.
 - **Clean Architecture**: Separation of concerns using Scrapy Items, Pipelines, and Middlewares.
 
 ## Google Trends API Mechanics
@@ -48,7 +48,20 @@ The results are automatically saved to `trends_output.jsonl` via the pipeline.
 
 ## Configuration
 
-- **Proxies**: Add your proxy list to `google_trends/settings.py` in the `PROXY_LIST` variable.
+The scraper uses environment variables for configuration. Create a `.env` file in the project root:
+
+```env
+SCRAPY_PROXIES="http://proxy1.example.com:8080,http://proxy2.example.com:8080"
+SCRAPY_CONCURRENT_REQUESTS=2
+SCRAPY_DOWNLOAD_DELAY=5
+SCRAPY_AUTOTHROTTLE_ENABLED=True
+```
+
+- **Proxies**: Add your proxy list to `SCRAPY_PROXIES` in the `.env` file. The scraper uses a round-robin rotation strategy.
+- **Proxy Generator**: A utility script is provided in `src/utils/proxy_generator.py` to fetch and test free proxies from public sources. You can run it to automatically populate your `.env` file with functional proxies:
+  ```bash
+  python src/utils/proxy_generator.py
+  ```
 - **Database**: A placeholder `PostgreSQLPipeline` is provided in `pipelines.py` for easy extension.
 
 ## Sample Output (JSON)

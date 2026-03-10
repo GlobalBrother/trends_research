@@ -108,16 +108,16 @@ class TrendCollector:
             print(f"Running scraper command: {' '.join(cmd)} in {project_dir}")
             
             # Use subprocess.run and capture output for debugging if needed
+            # We also want to see the logs in the terminal
             result = subprocess.run(
                 cmd,
                 cwd=project_dir,
-                capture_output=True,
+                capture_output=False, # Let it print to stdout/stderr directly
                 text=True
             )
             
             if result.returncode != 0:
                 print(f"Scraper failed with return code {result.returncode}")
-                print(f"Stderr: {result.stderr}")
                 return False
             
             print("Scraper completed successfully.")
