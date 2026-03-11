@@ -23,9 +23,13 @@ class AnalyticsEngine:
 
     def calculate_virality_score(self, growth_rate, engagement=1.0, platform_weight=1.0, sentiment=0.0, spread=0):
         """Calculates a custom Virality Score based on growth, engagement, platform weight, sentiment and geographical spread."""
+        # Handle invalid growth_rate (NaN or negative)
+        if pd.isna(growth_rate) or growth_rate <= -1:
+            growth_rate = 0
+            
         # Logarithmic normalization of large values
         log_growth = np.log1p(growth_rate)
-        log_engagement = np.log1p(engagement)
+        log_engagement = np.log1p(max(0, engagement))
         
         # Weighted base score: 60% growth, 40% engagement
         base_score = (log_growth * 0.6) + (log_engagement * 0.4)

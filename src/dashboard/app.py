@@ -9,19 +9,15 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from src.collector.trend_collector import TrendCollector
-from src.analytics.analytics_engine import AnalyticsEngine
-from src.niche.niche_discovery import NicheDiscovery
+from src.dashboard.utils.api_client import APIClient
 import io
 
 def main():
     st.set_page_config(page_title="trends research", layout="wide")
     st.title("🚀 trends research")
 
-    # Initialize modules
-    collector = TrendCollector()
-    analytics = AnalyticsEngine()
-    niche = NicheDiscovery()
+    # Initialize API Client
+    api = APIClient()
 
     # Sidebar for filters
     st.sidebar.header("Controls")
@@ -46,7 +42,7 @@ def main():
     selected_geo = countries[selected_country_name]
     
     # Niche Selection Dropdown
-    niches = ["Survival", "Health", "Preppers", "Sustainability", "Homesteading"]
+    niches = api.get_niches()
     selected_niche = st.sidebar.selectbox("Select Niche", niches)
 
     # Scraper Customization
@@ -102,12 +98,11 @@ def main():
     if st.sidebar.button(f"Scrape {selected_niche} Details"):
         with st.status(f"🚀 Deep Scraping: {selected_niche}", expanded=True) as status:
             st.write(f"🔍 Analyzing {selected_niche} niche keywords...")
-            # Get specific keywords for the niche if they exist in NicheDiscovery
-            niche_keywords = niche.get_niche_keywords(selected_niche)
+            niche_keywords = api.get_niche_keywords(selected_niche)
             
             st.write(f"📡 Requesting Google Trends data for: {', '.join(niche_keywords[:3])}...")
-            success = collector.run_google_trends_scraper(
-                keywords=niche_keywords, 
+            success = api.trigger_scrape(
+                niche_name=selected_niche,
                 geo=selected_geo,
                 timeframe=selected_timeframe,
                 category=selected_category
@@ -119,36 +114,25 @@ def main():
                 st.sidebar.success(f"Scraped {selected_niche} successfully!")
                 # Force refresh to load new data
                 refresh = True
+                st.cache_data.clear() # Clear cache to fetch new data
             else:
                 status.update(label="❌ Scraping Failed", state="error", expanded=True)
                 st.sidebar.error(f"Failed to scrape {selected_niche}. Check logs.")
 
     # State management for data
-    if "data" not in st.session_state or refresh or st.session_state.get("last_geo") != selected_geo:
-        with st.status(f"📊 Loading Trends for {selected_country_name}...", expanded=False) as status:
-            st.write("📂 Reading trend data from local cache...")
-            raw_data = collector.collect_all(geo=selected_geo)
-            st.session_state.last_geo = selected_geo
-            
-            if not raw_data.empty:
-                st.write("🧠 Performing analytics and virality scoring...")
-                st.session_state.data = analytics.process_trends(raw_data)
-                status.update(label=f"✅ Trends loaded for {selected_country_name}", state="complete", expanded=False)
-            else:
-                st.session_state.data = pd.DataFrame(columns=['platform', 'topic', 'growth', 'sentiment', 'virality_score'])
-                status.update(label="⚠️ No trends found", state="error", expanded=True)
-                st.warning("No trends found in the local cache. Please run the scraper to populate data.")
+    if refresh or st.session_state.get("last_geo") != selected_geo:
+        st.cache_data.clear()
+        st.session_state.last_geo = selected_geo
 
-    # Show info about Scrapy data
-    if os.path.exists(collector.scrapy_output_path):
-        st.sidebar.success(f"Loaded Scrapy trends from local cache.")
-    else:
-        st.sidebar.warning("Scrapy trends not found. Run the scraper to populate.")
-
-    df = st.session_state.data
-
-    # Filter data by selected niche
-    df = niche.filter_by_niche(df, selected_niche)
+    with st.status(f"📊 Loading Trends for {selected_country_name}...", expanded=False) as status:
+        st.write("📂 Requesting trend data from API...")
+        df = api.get_trends(geo=selected_geo, niche_name=selected_niche)
+        
+        if not df.empty:
+            status.update(label=f"✅ Trends loaded for {selected_country_name}", state="complete", expanded=False)
+        else:
+            status.update(label="⚠️ No trends found", state="error", expanded=True)
+            st.warning("No trends found for the selected criteria. Please run the scraper to populate data.")
 
     # Dashboard layout
     col1, col2 = st.columns([2, 1])
@@ -156,7 +140,7 @@ def main():
     with col1:
         st.subheader("🔥 Trending Topics & Virality Ranking")
         if not df.empty:
-            st.dataframe(df[['platform', 'topic', 'growth', 'sentiment', 'virality_score']].style.background_gradient(subset=['virality_score'], cmap='viridis'), width='stretch')
+            st.dataframe(df[['platform', 'topic', 'growth', 'sentiment', 'virality_score']].style.background_gradient(subset=['virality_score'], cmap='viridis'), width='stretch', use_container_width=True)
         else:
             st.info(f"No trends found for the selected niche: {selected_niche}. Try another niche or check back later.")
 
@@ -164,7 +148,7 @@ def main():
         st.subheader("📊 Virality Distribution")
         if not df.empty:
             fig = px.pie(df, names='topic', values='virality_score', title="Virality Score by Topic")
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
             st.write("No data available for distribution.")
 
@@ -172,16 +156,17 @@ def main():
     st.subheader("📈 Growth Visualization")
     if not df.empty:
         fig_bar = px.bar(df, x='topic', y='growth', color='platform', title="Topic Growth by Platform", height=500)
-        st.plotly_chart(fig_bar, width='stretch')
+        st.plotly_chart(fig_bar, use_container_width=True)
     else:
         st.write("No growth data available.")
 
     # Keyword Expansion / Niche Clustering
     st.subheader("🧩 Niche Clustering (Micro-Niches)")
-    if len(df) >= 5:
-        df_clustered = niche.discover_micro_niches(df)
+    if not df.empty and 'niche_cluster' in df.columns:
         st.write("Topics clustered by semantic similarity:")
-        st.dataframe(df_clustered[['topic', 'niche_cluster', 'platform']], width='stretch')
+        st.dataframe(df[['topic', 'niche_cluster', 'platform']], width='stretch', use_container_width=True)
+    elif not df.empty:
+        st.info("Insufficient data for clustering.")
 
 
     # Export Section

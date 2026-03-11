@@ -110,7 +110,10 @@ class TrendCollector:
 
     def run_google_trends_scraper(self, keywords, geo="US", timeframe="today 12-m", category=0):
         """Runs the Scrapy Google Trends spider for specific keywords."""
-        project_dir = os.path.join("src", "scrapers", "google_trends_scraper")
+        # Use absolute path for the scraper directory
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        project_dir = os.path.join(base_dir, "src", "scrapers", "google_trends_scraper")
+        
         # Ensure keywords are comma-separated if it's a list
         if isinstance(keywords, list):
             keywords_str = ",".join(keywords)
