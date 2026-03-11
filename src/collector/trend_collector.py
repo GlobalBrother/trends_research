@@ -1,7 +1,6 @@
 import os
 import pandas as pd
 import json
-import random
 import subprocess
 import sys
 
@@ -38,35 +37,58 @@ class TrendCollector:
                     if data_type == 'trending_searches':
                         for res in results:
                             query = res.get('query') or res.get('title')
-                            if query and ("Google Trends (Scrapy)", query) not in seen:
+                            if query and ("Google Trends", query) not in seen:
                                 trends.append({
-                                    "platform": "Google Trends (Scrapy)",
+                                    "platform": "Google Trends",
                                     "topic": query,
-                                    "growth": self._parse_traffic(res.get('traffic')) or random.randint(100, 1000)
+                                    "growth": self._parse_traffic(res.get('traffic')) or 500 # Default growth if traffic not parsed
                                 })
-                                seen.add(("Google Trends (Scrapy)", query))
+                                seen.add(("Google Trends", query))
                     elif data_type in ['related_queries', 'related_topics']:
-                        platform = f"Google {data_type.replace('_', ' ').title()} (Scrapy)"
+                        platform = f"Google {data_type.replace('_', ' ').title()}"
                         for res in results:
                             query = res.get('query') or res.get('topic')
                             if query and (platform, query) not in seen:
+                                # 'value' from Google can be an int (0-100) or 'Breakout'
+                                val = res.get('value')
+                                if val == 'Breakout':
+                                    growth = 5000 # Assigned breakout value
+                                elif isinstance(val, (int, float)):
+                                    growth = val * 10 # Scale to 0-1000 range for consistency
+                                else:
+                                    growth = 250 # Default middle-ground growth
+                                
                                 trends.append({
                                     "platform": platform,
                                     "topic": query,
-                                    "growth": res.get('value') if isinstance(res.get('value'), (int, float)) else random.randint(50, 500)
+                                    "growth": growth
                                 })
                                 seen.add((platform, query))
                     elif data_type == 'interest_over_time':
                         topic = item.get('keyword')
-                        if results and topic and ("Google Interest (Scrapy)", topic) not in seen:
+                        if results and topic and ("Google Interest", topic) not in seen:
                             last_point = results[-1]
-                            avg_value = sum(last_point.get('value', [0])) / len(last_point.get('value', [1])) if isinstance(last_point.get('value'), list) else 0
+                            # value for interest_over_time is a list if there are multiple comparison items
+                            vals = last_point.get('value', [0])
+                            avg_value = sum(vals) / len(vals) if isinstance(vals, list) and vals else 0
                             trends.append({
-                                "platform": "Google Interest (Scrapy)",
+                                "platform": "Google Interest",
                                 "topic": topic,
-                                "growth": avg_value * 10 # Scale to match others
+                                "growth": avg_value * 20 # Scale to 0-2000 range
                             })
-                            seen.add(("Google Interest (Scrapy)", topic))
+                            seen.add(("Google Interest", topic))
+                    elif data_type == 'interest_by_region':
+                        topic = item.get('keyword')
+                        # Filtering only regions with significant interest (e.g. value > 0)
+                        regions_with_interest = [res for res in results if res.get('value', [0])[0] > 0]
+                        if topic and ("Google Regions", topic) not in seen:
+                            trends.append({
+                                "platform": "Google Regions",
+                                "topic": topic,
+                                "growth": len(regions_with_interest) * 10, # Number of regions as a 'growth' proxy for spread
+                                "spread": len(regions_with_interest)
+                            })
+                            seen.add(("Google Regions", topic))
             return trends
         except Exception as e:
             print(f"Error reading Scrapy trends: {e}")

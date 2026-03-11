@@ -13,17 +13,22 @@ NEWSPIDER_MODULE = 'google_trends.spiders'
 ROBOTSTXT_OBEY = False
 
 # Concurrent requests and delay
-CONCURRENT_REQUESTS = int(os.getenv('SCRAPY_CONCURRENT_REQUESTS', 2))
-DOWNLOAD_DELAY = float(os.getenv('SCRAPY_DOWNLOAD_DELAY', 5.0))
+CONCURRENT_REQUESTS = int(os.getenv('SCRAPY_CONCURRENT_REQUESTS', 1))
+DOWNLOAD_DELAY = float(os.getenv('SCRAPY_DOWNLOAD_DELAY', 12.0))
 RANDOMIZE_DOWNLOAD_DELAY = True
+DOWNLOAD_TIMEOUT = 30
 
-# Cookies management (Google Trends needs cookies for some requests)
+# Cookies management
 COOKIES_ENABLED = True
 
 # Default headers
 DEFAULT_REQUEST_HEADERS = {
     'Accept': 'application/json, text/plain, */*',
     'Accept-Language': 'en-US,en;q=0.9',
+    'Referer': 'https://trends.google.com/',
+    'Sec-Fetch-Site': 'same-origin',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Dest': 'empty',
 }
 
 # Middlewares
@@ -35,9 +40,9 @@ DOWNLOADER_MIDDLEWARES = {
 
 # AutoThrottle settings
 AUTOTHROTTLE_ENABLED = os.getenv('SCRAPY_AUTOTHROTTLE_ENABLED', 'True') == 'True'
-AUTOTHROTTLE_START_DELAY = 5.0
-AUTOTHROTTLE_MAX_DELAY = 60.0
-AUTOTHROTTLE_TARGET_CONCURRENCY = 1.0
+AUTOTHROTTLE_START_DELAY = 10.0
+AUTOTHROTTLE_MAX_DELAY = 120.0
+AUTOTHROTTLE_TARGET_CONCURRENCY = 0.5
 AUTOTHROTTLE_DEBUG = False
 
 # Pipelines
@@ -48,7 +53,7 @@ ITEM_PIPELINES = {
 
 # Retry settings
 RETRY_ENABLED = True
-RETRY_TIMES = 5
+RETRY_TIMES = 2
 RETRY_HTTP_CODES = [429, 500, 502, 503, 504]
 
 # User Agents for rotation

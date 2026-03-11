@@ -11,7 +11,8 @@ class NicheDiscovery:
         """Returns a representative list of keywords for a niche to be used in scraping."""
         niche_map = {
             "Survival": [
-                "Survival skills", "Bushcraft", "SHTF", "Wilderness survival", "First aid kit", "Foraging", 
+                 "Survival skills"
+                "Bushcraft", "SHTF", "Wilderness survival", "First aid kit", "Foraging",
                 "Emergency preparedness", "Survival gear", "Water filtration", "Fire starting", "Survival shelter",
                 "Wilderness medical", "EDC gear", "Navigation skills", "Survival mindset", "Outdoor survival"
             ],

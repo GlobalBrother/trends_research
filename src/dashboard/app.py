@@ -163,7 +163,7 @@ def main():
     with col2:
         st.subheader("📊 Virality Distribution")
         if not df.empty:
-            fig = px.pie(df, names='platform', values='virality_score', title="Platform Influence by Virality")
+            fig = px.pie(df, names='topic', values='virality_score', title="Virality Score by Topic")
             st.plotly_chart(fig, width='stretch')
         else:
             st.write("No data available for distribution.")
