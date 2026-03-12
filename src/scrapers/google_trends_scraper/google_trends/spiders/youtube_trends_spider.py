@@ -3,7 +3,7 @@ import json
 import re
 import urllib.parse
 from datetime import datetime
-from ..items import GoogleTrendItem
+from ..items import GoogleTrendItem, ScrapeErrorItem
 
 class YoutubeTrendsSpider(scrapy.Spider):
     name = "youtube_trends"
@@ -27,9 +27,35 @@ class YoutubeTrendsSpider(scrapy.Spider):
                 "sp": "CAM%3D" 
             }
             url = f"{self.SEARCH_URL}?{urllib.parse.urlencode(params)}"
-            yield scrapy.Request(url=url, callback=self.parse, meta={'keyword': kw})
+            yield scrapy.Request(url=url, callback=self.parse, meta={'keyword': kw}, errback=self.handle_error)
+
+    def handle_error(self, failure):
+        request = getattr(failure, "request", None)
+        response = getattr(failure.value, "response", None)
+        meta = getattr(request, "meta", {}) or {}
+        
+        status = response.status if response else 0
+        yield ScrapeErrorItem(
+            platform="YouTube",
+            keyword=meta.get('keyword'),
+            url=request.url if request else None,
+            status=status,
+            reason=failure.getErrorMessage(),
+            extracted_at=datetime.now().isoformat()
+        )
 
     def parse(self, response):
+        if response.status != 200:
+            yield ScrapeErrorItem(
+                platform="YouTube",
+                keyword=response.meta.get('keyword'),
+                url=response.url,
+                status=response.status,
+                reason=f"HTTP {response.status}",
+                extracted_at=datetime.now().isoformat()
+            )
+            return
+
         self.logger.info(f"Parsing YouTube results for: {response.meta['keyword']}")
         
         # Extract ytInitialData JSON
@@ -38,6 +64,14 @@ class YoutubeTrendsSpider(scrapy.Spider):
         
         if not match:
             self.logger.error("Could not find ytInitialData in response")
+            yield ScrapeErrorItem(
+                platform="YouTube",
+                keyword=response.meta.get('keyword'),
+                url=response.url,
+                status=response.status,
+                reason="Could not find ytInitialData in response (YouTube might have changed its layout)",
+                extracted_at=datetime.now().isoformat()
+            )
             return
 
         try:

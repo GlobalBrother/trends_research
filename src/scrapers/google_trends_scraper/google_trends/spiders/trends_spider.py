@@ -3,7 +3,7 @@ import urllib.parse
 
 import scrapy
 
-from ..items import GoogleTrendItem
+from ..items import GoogleTrendItem, ScrapeErrorItem
 
 
 class GoogleTrendsSpider(scrapy.Spider):
@@ -65,14 +65,14 @@ class GoogleTrendsSpider(scrapy.Spider):
             )
 
     def _record_failed_item(self, *, keyword=None, data_type=None, url=None, reason=None, status=None):
-        self.failed_items.append(
-            {
-                "keyword": keyword,
-                "data_type": data_type,
-                "url": url,
-                "status": status,
-                "reason": reason,
-            }
+        from datetime import datetime
+        return ScrapeErrorItem(
+            platform="Google Trends",
+            keyword=keyword,
+            url=url,
+            status=status,
+            reason=reason,
+            extracted_at=datetime.now().isoformat(),
         )
 
     def handle_error(self, failure):
@@ -81,7 +81,7 @@ class GoogleTrendsSpider(scrapy.Spider):
         meta = getattr(request, "meta", {}) or {}
 
         if response is not None:
-            self._record_failed_item(
+            yield self._record_failed_item(
                 keyword=meta.get("keyword"),
                 data_type=meta.get("data_type", "explore"),
                 url=response.url,
@@ -94,7 +94,7 @@ class GoogleTrendsSpider(scrapy.Spider):
                 response.url,
             )
         else:
-            self._record_failed_item(
+            yield self._record_failed_item(
                 keyword=meta.get("keyword"),
                 data_type=meta.get("data_type", "explore"),
                 url=getattr(request, "url", None),
@@ -119,7 +119,7 @@ class GoogleTrendsSpider(scrapy.Spider):
         self.logger.info("Response code from %s: %s", self.EXPLORE_URL, response.status)
 
         if response.status != 200:
-            self._record_failed_item(
+            yield self._record_failed_item(
                 keyword=response.meta.get("keyword"),
                 data_type="explore",
                 url=response.url,
@@ -132,7 +132,7 @@ class GoogleTrendsSpider(scrapy.Spider):
         try:
             data = self._load_google_json(response)
         except json.JSONDecodeError:
-            self._record_failed_item(
+            yield self._record_failed_item(
                 keyword=response.meta.get("keyword"),
                 data_type="explore",
                 url=response.url,
@@ -150,7 +150,7 @@ class GoogleTrendsSpider(scrapy.Spider):
             req = widget.get("request")
 
             if not token or not isinstance(req, dict):
-                self._record_failed_item(
+                yield self._record_failed_item(
                     keyword=response.meta.get("keyword"),
                     data_type=widget_id or "unknown_widget",
                     url=response.url,
@@ -159,15 +159,18 @@ class GoogleTrendsSpider(scrapy.Spider):
                 )
                 continue
 
-            if widget_id == "TIMESERIES":
-                yield self.fetch_interest_over_time(token, req, response.meta)
+            # Add a small delay between widget requests to avoid 429
+            meta_with_delay = {**response.meta, "download_delay": 3.0}
+
+            if "TIMESERIES" in widget_id:
+                yield self.fetch_interest_over_time(token, req, meta_with_delay)
 
             elif "RELATED_QUERIES" in widget_id:
                 yield self.fetch_related_data(
                     self.RELATED_QUERIES_URL,
                     token,
                     req,
-                    response.meta,
+                    meta_with_delay,
                     "related_queries",
                 )
 
@@ -176,7 +179,7 @@ class GoogleTrendsSpider(scrapy.Spider):
                     self.RELATED_TOPICS_URL,
                     token,
                     req,
-                    response.meta,
+                    meta_with_delay,
                     "related_topics",
                 )
 
@@ -185,7 +188,7 @@ class GoogleTrendsSpider(scrapy.Spider):
                     self.INTEREST_BY_REGION_URL,
                     token,
                     req,
-                    response.meta,
+                    meta_with_delay,
                     "interest_by_region",
                 )
 
@@ -197,9 +200,12 @@ class GoogleTrendsSpider(scrapy.Spider):
             "token": token,
         }
         url = f"{self.INTEREST_OVER_TIME_URL}?{urllib.parse.urlencode(params)}"
+        # Add referer to avoid 400
+        headers = {'Referer': 'https://trends.google.com/trends/explore'}
         return scrapy.Request(
             url=url,
             callback=self.parse_widget_data,
+            headers=headers,
             meta={**meta, "data_type": "interest_over_time"},
             errback=self.handle_error,
         )
@@ -219,10 +225,13 @@ class GoogleTrendsSpider(scrapy.Spider):
             "token": token,
         }
         url = f"{base_url}?{urllib.parse.urlencode(params)}"
+        # Add referer to avoid 400
+        headers = {'Referer': 'https://trends.google.com/trends/explore'}
 
         return scrapy.Request(
             url=url,
             callback=self.parse_widget_data,
+            headers=headers,
             meta={**meta, "data_type": data_type, "keyword": keyword},
             errback=self.handle_error,
         )
@@ -237,7 +246,7 @@ class GoogleTrendsSpider(scrapy.Spider):
         )
 
         if response.status != 200:
-            self._record_failed_item(
+            yield self._record_failed_item(
                 keyword=response.meta.get("keyword"),
                 data_type=data_type,
                 url=response.url,
@@ -250,7 +259,7 @@ class GoogleTrendsSpider(scrapy.Spider):
         try:
             data = self._load_google_json(response)
         except json.JSONDecodeError:
-            self._record_failed_item(
+            yield self._record_failed_item(
                 keyword=response.meta.get("keyword"),
                 data_type=data_type,
                 url=response.url,

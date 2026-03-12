@@ -2,6 +2,7 @@ import json
 import sqlite3
 import os
 from datetime import datetime
+from .items import ScrapeErrorItem
 
 class GoogleTrendsPipeline:
     def process_item(self, item, spider):
@@ -50,10 +51,23 @@ class SQLitePipeline:
                 extra_data TEXT
             )
         """)
+        self.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS scrape_errors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                platform TEXT,
+                keyword TEXT,
+                url TEXT,
+                status INTEGER,
+                reason TEXT,
+                extracted_at DATETIME
+            )
+        """)
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_platform ON trends(platform)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_keyword ON trends(keyword)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_geo ON trends(geo)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_extracted_at ON trends(extracted_at)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_error_platform ON scrape_errors(platform)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_error_extracted_at ON scrape_errors(extracted_at)")
         self.conn.commit()
 
     def close_spider(self, spider):
@@ -92,6 +106,14 @@ class SQLitePipeline:
             return None
 
     def process_item(self, item, spider):
+        if isinstance(item, ScrapeErrorItem):
+            self.cursor.execute('''
+                INSERT INTO scrape_errors (platform, keyword, url, status, reason, extracted_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (item.get('platform'), item.get('keyword'), item.get('url'), item.get('status'), item.get('reason'), item.get('extracted_at')))
+            self.conn.commit()
+            return item
+
         data_type = item.get('data_type')
         keyword = item.get('keyword', 'Unknown')
         geo = item.get('geo', '')
@@ -149,6 +171,15 @@ class SQLitePipeline:
                 topic = res.get('title')
                 growth = res.get('popularity', 50) * 10
                 extra_data['source'] = res.get('source')
+            elif data_type == 'interest_over_time':
+                platform = "Google Interest"
+                topic = item.get('keyword')
+                # For interest over time, we use the peak interest as growth
+                if results:
+                    growth = max([r.get('value', [0])[0] if isinstance(r.get('value'), list) else r.get('value', 0) for r in results])
+                else:
+                    growth = 0
+                extra_data['time_series'] = results
             elif data_type == 'interest_by_region':
                 platform = "Google Regions"
                 topic = item.get('keyword')

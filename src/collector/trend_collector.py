@@ -203,3 +203,26 @@ class TrendCollector:
         else:
             # Return empty DataFrame with expected columns
             return pd.DataFrame(columns=['platform', 'topic', 'growth', 'keyword', 'extracted_at'])
+
+    def get_scrape_errors(self, platform=None):
+        """Reads scrape errors from SQLite database."""
+        import sqlite3
+        import pandas as pd
+        
+        try:
+            conn = sqlite3.connect(self.db_path)
+            query = "SELECT platform, keyword, url, status, reason, extracted_at FROM scrape_errors"
+            params = []
+            
+            if platform:
+                query += " WHERE platform = ?"
+                params.append(platform)
+            
+            query += " ORDER BY extracted_at DESC"
+            
+            df = pd.read_sql_query(query, conn, params=params)
+            conn.close()
+            return df
+        except Exception as e:
+            print(f"Error reading scrape errors from DB: {e}")
+            return pd.DataFrame(columns=['platform', 'keyword', 'url', 'status', 'reason', 'extracted_at'])

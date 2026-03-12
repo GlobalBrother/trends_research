@@ -187,8 +187,8 @@ def main():
                 st.sidebar.error(f"Failed to scrape {selected_niche}. Check logs.")
 
     # Dashboard Tabs
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-        "🎯 Niche Research", "🎥 YouTube", "𝕏 X", "💬 Threads", "📸 Instagram", "🧡 HN", "👽 Reddit", "📰 News"
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+        "🎯 Niche Research", "🎥 YouTube", "𝕏 X", "💬 Threads", "📸 Instagram", "🧡 HN", "👽 Reddit", "📰 News", "⚠️ Scrape Errors"
     ])
 
     with tab1:
@@ -464,6 +464,33 @@ def main():
                 cmap='plasma'
             )
 
+    with tab9:
+        st.subheader("⚠️ Scrape Errors")
+        st.write("Track failed scrapes and HTTP return codes.")
+        
+        if st.button("Refresh Errors"):
+            st.cache_data.clear()
+            
+        errors_df = api.get_scrape_errors()
+        
+        if not errors_df.empty:
+            st.dataframe(
+                errors_df,
+                column_config={
+                    "url": st.column_config.LinkColumn("Failed URL"),
+                    "status": "HTTP Status",
+                    "extracted_at": "Timestamp"
+                },
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            if st.button("Clear Error Log"):
+                # This would require another API endpoint, let's keep it simple for now and just show them.
+                # Or we can just mention it's read-only.
+                st.info("Error log is persistent for debugging purposes.")
+        else:
+            st.success("No scrape errors recorded! All systems go. 🚀")
 
     # Export Section
     st.sidebar.subheader("Export Options")

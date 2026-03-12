@@ -54,7 +54,7 @@ ITEM_PIPELINES = {
 
 # Retry settings
 RETRY_ENABLED = True
-RETRY_TIMES = 2
+RETRY_TIMES = 5
 RETRY_HTTP_CODES = [429, 500, 502, 503, 504]
 
 # User Agents for rotation

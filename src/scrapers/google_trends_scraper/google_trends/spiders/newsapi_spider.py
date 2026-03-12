@@ -1,7 +1,7 @@
 import os
 import scrapy
 from datetime import datetime
-from ..items import GoogleTrendItem
+from ..items import GoogleTrendItem, ScrapeErrorItem
 
 class NewsApiSpider(scrapy.Spider):
     name = "newsapi"
@@ -50,11 +50,44 @@ class NewsApiSpider(scrapy.Spider):
                 extracted_at=datetime.now().isoformat()
             )
         else:
-            yield scrapy.Request(self.url, callback=self.parse)
+            yield scrapy.Request(self.url, callback=self.parse, errback=self.handle_error)
+
+    def handle_error(self, failure):
+        request = getattr(failure, "request", None)
+        response = getattr(failure.value, "response", None)
+        
+        status = response.status if response else 0
+        yield ScrapeErrorItem(
+            platform="News",
+            keyword=self.q,
+            url=request.url if request else self.url,
+            status=status,
+            reason=failure.getErrorMessage(),
+            extracted_at=datetime.now().isoformat()
+        )
 
     def parse(self, response):
+        if response.status != 200:
+            yield ScrapeErrorItem(
+                platform="News",
+                keyword=self.q,
+                url=response.url,
+                status=response.status,
+                reason=f"HTTP {response.status}",
+                extracted_at=datetime.now().isoformat()
+            )
+            return
+
         data = response.json()
         if data.get('status') != 'ok':
+            yield ScrapeErrorItem(
+                platform="News",
+                keyword=self.q,
+                url=response.url,
+                status=response.status,
+                reason=data.get('message', 'Unknown API error'),
+                extracted_at=datetime.now().isoformat()
+            )
             self.logger.error(f"NewsAPI error: {data.get('message')}")
             return
 

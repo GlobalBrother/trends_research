@@ -132,3 +132,17 @@ class APIClient:
         except Exception as e:
             st.error(f"Failed to fetch News trends: {e}")
             return pd.DataFrame()
+
+    @st.cache_data(ttl=60)
+    def get_scrape_errors(_self, platform=None):
+        try:
+            params = {}
+            if platform:
+                params['platform'] = platform
+            response = requests.get(f"{_self.base_url}/scrape_errors", params=params)
+            response.raise_for_status()
+            data = response.json().get("data", [])
+            return pd.DataFrame(data)
+        except Exception as e:
+            st.error(f"Failed to fetch scrape errors: {e}")
+            return pd.DataFrame()

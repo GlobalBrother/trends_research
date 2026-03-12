@@ -361,7 +361,13 @@ def get_all_trends():
         processed_data = analytics.process_trends(raw_data)
         processed_data = processed_data.fillna(0)
         return {"data": processed_data.to_dict(orient="records")}
-                
+    return {"data": []}
+
+@app.get("/scrape_errors")
+def get_scrape_errors(platform: Optional[str] = Query(None)):
+    df = collector.get_scrape_errors(platform=platform)
+    if not df.empty:
+        return {"data": df.to_dict(orient="records")}
     return {"data": []}
 
 if __name__ == "__main__":
