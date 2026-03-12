@@ -49,17 +49,14 @@ class TrendCollector:
                 params.extend(excluded_platforms)
 
             # Geo filtering (only for Google platforms that have geo)
-            if geo is not None:
+            if geo is not None and geo != "Global":
                 # We want trends that either have no geo (Global) OR match requested geo
-                # But wait, original logic was:
-                # if data_type not in [...] and geo is not None:
-                #     if str(item_geo).upper() != str(geo).upper(): continue
-                
-                google_platforms = ['Google Trends', 'Google Related Queries', 'Google Related Topics', 'Google Interest', 'Google Regions']
-                gp_placeholders = ', '.join(['?'] * len(google_platforms))
-                query += f" AND (platform NOT IN ({gp_placeholders}) OR UPPER(geo) = UPPER(?) OR geo = '' OR geo = 'Global' OR geo IS NULL)"
-                params.extend(google_platforms)
+                # For Google platforms, we want it to match or be 'Global'
+                query += f" AND (UPPER(geo) = UPPER(?) OR geo = '' OR UPPER(geo) = 'GLOBAL' OR geo IS NULL)"
                 params.append(geo)
+            elif geo == "Global":
+                # If specifically 'Global' is requested, filter for 'Global', '', or NULL
+                query += f" AND (UPPER(geo) = 'GLOBAL' OR geo = '' OR geo IS NULL)"
 
             query += " ORDER BY extracted_at DESC"
             
@@ -143,25 +140,25 @@ class TrendCollector:
             print(f"Failed to run Scrapy scraper {spider_name}: {e}")
             return False
 
-    def run_youtube_trends_scraper(self, keywords):
+    def run_youtube_trends_scraper(self, keywords, geo="Global"):
         """Runs the Scrapy YouTube Trends spider for specific keywords."""
-        return self._run_scraper("youtube_trends", keywords=keywords)
+        return self._run_scraper("youtube_trends", keywords=keywords, geo=geo)
 
-    def run_social_trends_scraper(self, platform, keywords):
+    def run_social_trends_scraper(self, platform, keywords, geo="Global"):
         """Runs the Scrapy Social Trends spider for a specific platform."""
-        return self._run_scraper("social_trends", platform=platform, keywords=keywords)
+        return self._run_scraper("social_trends", platform=platform, keywords=keywords, geo=geo)
 
-    def run_hackernews_scraper(self, keywords=None):
+    def run_hackernews_scraper(self, keywords=None, geo="Global"):
         """Runs the Scrapy HackerNews spider."""
-        return self._run_scraper("hackernews", keywords=keywords)
+        return self._run_scraper("hackernews", keywords=keywords, geo=geo)
 
-    def run_reddit_scraper(self, subreddit='all', trend_type='hot', keywords=None):
+    def run_reddit_scraper(self, subreddit='all', trend_type='hot', keywords=None, geo="Global"):
         """Runs the Scrapy Reddit spider."""
-        return self._run_scraper("reddit", subreddit=subreddit, trend_type=trend_type, keywords=keywords)
+        return self._run_scraper("reddit", subreddit=subreddit, trend_type=trend_type, keywords=keywords, geo=geo)
 
-    def run_news_scraper(self, query='niche', api_key=None):
+    def run_news_scraper(self, query='niche', api_key=None, geo="Global"):
         """Runs the Scrapy NewsAPI spider."""
-        return self._run_scraper("newsapi", q=query, api_key=api_key)
+        return self._run_scraper("newsapi", q=query, api_key=api_key, geo=geo)
 
     def run_niche_comprehensive_scrape(self, niche_name, keywords, geo="US", timeframe="today 12-m", category=0):
         """Triggers all scrapers for a specific niche in sequence."""
@@ -174,21 +171,21 @@ class TrendCollector:
         self.run_google_trends_scraper(keywords, geo=geo, timeframe=timeframe, category=category)
         
         # 2. YouTube
-        self.run_youtube_trends_scraper(limited_keywords)
+        self.run_youtube_trends_scraper(limited_keywords, geo=geo)
         
         # 3. Social
-        self.run_social_trends_scraper("X", limited_keywords)
-        self.run_social_trends_scraper("Threads", limited_keywords)
-        self.run_social_trends_scraper("Instagram", limited_keywords)
+        self.run_social_trends_scraper("X", limited_keywords, geo=geo)
+        self.run_social_trends_scraper("Threads", limited_keywords, geo=geo)
+        self.run_social_trends_scraper("Instagram", limited_keywords, geo=geo)
         
         # 4. Reddit
-        self.run_reddit_scraper(keywords=limited_keywords)
+        self.run_reddit_scraper(keywords=limited_keywords, geo=geo)
         
         # 5. HackerNews
-        self.run_hackernews_scraper(keywords=limited_keywords)
+        self.run_hackernews_scraper(keywords=limited_keywords, geo=geo)
         
         # 6. NewsAPI (just use the niche name for NewsAPI)
-        self.run_news_scraper(query=niche_name)
+        self.run_news_scraper(query=niche_name, geo=geo)
         
         print(f"Comprehensive scrape for {niche_name} finished.")
         return True

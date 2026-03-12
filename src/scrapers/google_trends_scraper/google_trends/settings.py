@@ -35,8 +35,11 @@ DEFAULT_REQUEST_HEADERS = {
 DOWNLOADER_MIDDLEWARES = {
     'google_trends.middlewares.RandomUserAgentMiddleware': 400,
     'google_trends.middlewares.ProxyMiddleware': 410,
-    'scrapy.downloadermiddlewares.useragent.UserAgentMiddleware': None,
+    'google_trends.middlewares.SkipRecentlyScrapedMiddleware': 300,
 }
+
+# Scrape freshness in hours
+SCRAPE_FRESHNESS_HOURS = 24
 
 # AutoThrottle settings
 AUTOTHROTTLE_ENABLED = os.getenv('SCRAPY_AUTOTHROTTLE_ENABLED', 'True') == 'True'

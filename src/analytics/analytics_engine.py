@@ -91,10 +91,15 @@ class AnalyticsEngine:
         # Union-Find
         parent = list(range(len(topics)))
         def find(i):
-            if parent[i] == i:
-                return i
-            parent[i] = find(parent[i])
-            return parent[i]
+            root = i
+            while parent[root] != root:
+                root = parent[root]
+            # Path compression (iterative)
+            while parent[i] != root:
+                next_node = parent[i]
+                parent[i] = root
+                i = next_node
+            return root
             
         def union(i, j):
             root_i = find(i)
@@ -195,24 +200,33 @@ class AnalyticsEngine:
         ), axis=1)
         
         # 7. Aggregate results to unique 'aggregated_topic'
-        # We take the max virality score and sum other metrics, or take representatives
-        # We also need to preserve source-specific columns like 'url', 'published', 'posts', 'replies', 'subreddit', 'source', 'tags'
+        # Group by platform AND aggregated_topic to avoid losing information from different platforms
+        # BUT the user wants a unified view of the trend across platforms.
+        # If we group only by aggregated_topic, we lose platform-specific details if multiple platforms share the same topic.
+        
+        # Let's keep one entry per (aggregated_topic, platform) to show breadth, 
+        # or aggregate them but keep the platform list (which we do).
+        
         agg_dict = {
             'virality_score': 'max',
             'growth': 'max',
-            'engagement': 'sum',
+            'engagement': 'max', # Changed from sum to max to avoid inflated numbers
             'sentiment': 'mean',
             'platform': lambda x: list(set(x)),
             'source_diversity': 'first',
             'volume': 'first',
-            'topic': 'first' # Use original topic as a representative
+            'topic': 'first',
+            'geo': lambda x: list(set(str(v) for v in x if v)), # Preserve geos
+            'keyword': 'first',
+            'extracted_at': 'max'
         }
         
         # Add source-specific columns if they exist in the dataframe
         optional_cols = ['url', 'published', 'posts', 'replies', 'subreddit', 'source', 'author']
         for col in optional_cols:
             if col in df.columns:
-                agg_dict[col] = 'first'
+                # Instead of 'first', try to get the first non-null/non-empty value
+                agg_dict[col] = lambda x: next((v for v in x if v and v != 'N/A'), x.iloc[0])
                 
         aggregated_results = df.groupby('aggregated_topic').agg(agg_dict).reset_index()
         

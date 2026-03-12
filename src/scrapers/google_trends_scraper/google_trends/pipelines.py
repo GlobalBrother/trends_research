@@ -1,12 +1,12 @@
 import json
 import sqlite3
 import os
-from datetime import datetime
+import datetime
 from .items import ScrapeErrorItem
 
 class GoogleTrendsPipeline:
     def process_item(self, item, spider):
-        item['extracted_at'] = datetime.now().isoformat()
+        item['extracted_at'] = datetime.datetime.now().isoformat()
         return item
 
 class JSONLPipeline:
@@ -62,13 +62,33 @@ class SQLitePipeline:
                 extracted_at DATETIME
             )
         """)
+        self.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS scrape_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                platform TEXT,
+                identifier TEXT,
+                status INTEGER,
+                extracted_at DATETIME
+            )
+        """)
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_platform ON trends(platform)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_keyword ON trends(keyword)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_geo ON trends(geo)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_extracted_at ON trends(extracted_at)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_error_platform ON scrape_errors(platform)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_error_extracted_at ON scrape_errors(extracted_at)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_log_platform_id ON scrape_log(platform, identifier)")
         self.conn.commit()
+
+    def is_recently_scraped(self, platform, identifier, hours=24):
+        """Checks if the identifier was scraped for the platform in the last X hours."""
+        since = (datetime.datetime.now() - datetime.timedelta(hours=hours)).isoformat()
+        self.cursor.execute('''
+            SELECT 1 FROM scrape_log 
+            WHERE platform = ? AND identifier = ? AND status IN (200, 301) AND extracted_at > ?
+            LIMIT 1
+        ''', (platform, identifier, since))
+        return self.cursor.fetchone() is not None
 
     def close_spider(self, spider):
         self.conn.close()
@@ -192,6 +212,20 @@ class SQLitePipeline:
                     INSERT INTO trends (platform, topic, growth, keyword, geo, url, extracted_at, extra_data)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (platform, topic, growth, keyword, geo, url, extracted_at, json.dumps(extra_data)))
+                
+                # Also log the successful scrape by URL if it exists
+                if url:
+                    self.cursor.execute('''
+                        INSERT OR REPLACE INTO scrape_log (platform, identifier, status, extracted_at)
+                        VALUES (?, ?, ?, ?)
+                    ''', (platform, url, 200, extracted_at))
+
+                # Also log the successful scrape by keyword_geo for broader skipping
+                identifier = f"{keyword}_{geo}" if geo else keyword
+                self.cursor.execute('''
+                    INSERT OR REPLACE INTO scrape_log (platform, identifier, status, extracted_at)
+                    VALUES (?, ?, ?, ?)
+                ''', (platform, identifier, 200, extracted_at))
         
         self.conn.commit()
         return item

@@ -68,9 +68,9 @@ class APIClient:
             return pd.DataFrame()
 
     @st.cache_data(ttl=3600)
-    def get_youtube_trends(_self, niche_name):
+    def get_youtube_trends(_self, niche_name, geo="US"):
         try:
-            params = {"niche_name": niche_name}
+            params = {"niche_name": niche_name, "geo": geo}
             response = requests.get(f"{_self.base_url}/youtube_trends", params=params)
             response.raise_for_status()
             data = response.json().get("data", [])
@@ -80,9 +80,9 @@ class APIClient:
             return pd.DataFrame()
 
     @st.cache_data(ttl=3600)
-    def get_social_trends(_self, platform, niche_name):
+    def get_social_trends(_self, platform, niche_name, geo="US"):
         try:
-            params = {"platform": platform, "niche_name": niche_name}
+            params = {"platform": platform, "niche_name": niche_name, "geo": geo}
             response = requests.get(f"{_self.base_url}/social_trends", params=params)
             response.raise_for_status()
             data = response.json().get("data", [])
@@ -92,9 +92,9 @@ class APIClient:
             return pd.DataFrame()
 
     @st.cache_data(ttl=600)
-    def get_hackernews_trends(_self, niche_name=None):
+    def get_hackernews_trends(_self, niche_name=None, geo="US"):
         try:
-            params = {}
+            params = {"geo": geo}
             if niche_name:
                 params["niche_name"] = niche_name
             response = requests.get(f"{_self.base_url}/hackernews_trends", params=params)
@@ -106,9 +106,9 @@ class APIClient:
             return pd.DataFrame()
 
     @st.cache_data(ttl=600)
-    def get_reddit_trends(_self, subreddit='all', trend_type='hot', niche_name=None):
+    def get_reddit_trends(_self, subreddit='all', trend_type='hot', niche_name=None, geo="US"):
         try:
-            params = {'subreddit': subreddit, 'trend_type': trend_type}
+            params = {'subreddit': subreddit, 'trend_type': trend_type, 'geo': geo}
             if niche_name:
                 params["niche_name"] = niche_name
             response = requests.get(f"{_self.base_url}/reddit_trends", params=params)
@@ -120,9 +120,9 @@ class APIClient:
             return pd.DataFrame()
 
     @st.cache_data(ttl=600)
-    def get_news_trends(_self, query='niche', niche_name=None):
+    def get_news_trends(_self, query='niche', niche_name=None, geo="US"):
         try:
-            params = {'query': query}
+            params = {'query': query, 'geo': geo}
             if niche_name:
                 params["niche_name"] = niche_name
             response = requests.get(f"{_self.base_url}/news_trends", params=params)

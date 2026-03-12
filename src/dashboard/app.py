@@ -70,6 +70,7 @@ def main():
     
     # Country Selection
     countries = {
+        "Global": "Global",
         "United States": "US",
         "United Kingdom": "GB",
         "Canada": "CA",
@@ -187,8 +188,8 @@ def main():
                 st.sidebar.error(f"Failed to scrape {selected_niche}. Check logs.")
 
     # Dashboard Tabs
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
-        "🎯 Niche Research", "🎥 YouTube", "𝕏 X", "💬 Threads", "📸 Instagram", "🧡 HN", "👽 Reddit", "📰 News", "⚠️ Scrape Errors"
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
+        "🎯 Niche Research", "📈 Daily Trends", "🎥 YouTube", "𝕏 X", "💬 Threads", "📸 Instagram", "🧡 HN", "👽 Reddit", "📰 News", "⚠️ Scrape Errors"
     ])
 
     with tab1:
@@ -202,24 +203,51 @@ def main():
             df = api.get_trends(geo=selected_geo, niche_name=selected_niche)
             
             if not df.empty:
-                status.update(label=f"✅ Trends loaded for {selected_country_name}", state="complete", expanded=False)
+                status.update(label=f"✅ {len(df)} Trends loaded for {selected_country_name}", state="complete", expanded=False)
             else:
                 status.update(label="⚠️ No trends found", state="error", expanded=True)
-                st.warning("No trends found for the selected criteria. Please run the scraper to populate data.")
+                # If we have no trends for the niche, maybe try fetching everything without niche filter
+                # to see if it's a filtering issue
+                st.write("Checking if there is ANY data in the database...")
+                all_df = api.get_trends(geo=selected_geo, niche_name=None)
+                if not all_df.empty:
+                    st.info(f"Database contains {len(all_df)} items, but none match niche '{selected_niche}'.")
+                else:
+                    st.warning("No trends found in the database. Please run the scraper to populate data.")
 
         # Dashboard layout
         col1, col2 = st.columns([2, 1])
 
         with col1:
-            st.subheader("🔥 Trending Topics & Virality Ranking")
+            st.subheader(f"🔥 Trending Topics & Virality Ranking ({selected_niche})")
             if not df.empty:
                 # Use aggregated_topic if available
                 topic_col = 'aggregated_topic' if 'aggregated_topic' in df.columns else 'topic'
+                # Check for columns that might be missing in some rows but present in others due to aggregation
+                available_cols = df.columns.tolist()
+                
                 cols_to_show = [topic_col, 'platform', 'growth', 'sentiment', 'virality_score']
                 
+                # Dynamic column addition based on data presence
+                for opt_col in ['geo', 'keyword', 'url']:
+                    if opt_col in available_cols:
+                        cols_to_show.append(opt_col)
+
+                # Format platform and geo if they are lists
+                display_df = df.copy()
+                if 'platform' in display_df.columns:
+                    display_df['platform'] = display_df['platform'].apply(lambda x: ", ".join(x) if isinstance(x, list) else x)
+                if 'geo' in display_df.columns:
+                    display_df['geo'] = display_df['geo'].apply(lambda x: ", ".join(x) if isinstance(x, list) else x)
+                
                 safe_dataframe_display(
-                    df,
+                    display_df,
                     cols_to_show,
+                    col_config={
+                        "url": st.column_config.LinkColumn("Source Link"),
+                        "growth": st.column_config.NumberColumn("Growth Score", format="%.1f"),
+                        "virality_score": st.column_config.NumberColumn("Virality", format="%.2f")
+                    },
                     cmap='viridis'
                 )
             else:
@@ -251,9 +279,48 @@ def main():
         else:
             st.write("No growth data available.")
 
-
-
     with tab2:
+        # For Daily Trends, if "Global" is selected, we inform that it defaults to US
+        display_geo_name = selected_country_name
+        effective_geo = selected_geo
+        if selected_geo == "Global":
+            display_geo_name = "United States (Default)"
+            effective_geo = "US"
+            
+        st.subheader(f"📈 Daily Trending Searches: {display_geo_name}")
+        st.write(f"Top trending searches on Google in **{display_geo_name}** over the last 24 hours.")
+        
+        col_t1, col_t2 = st.columns([1, 3])
+        with col_t1:
+            trend_type = st.radio("Trend Type", ["daily", "realtime"], index=0)
+            if st.button("Refresh Daily Trends"):
+                st.cache_data.clear()
+        
+        with st.status(f"📡 Fetching Google {trend_type} trends for {display_geo_name}...", expanded=False) as status:
+            daily_df = api.get_trending_now(geo=effective_geo, trend_type=trend_type)
+            if not daily_df.empty:
+                status.update(label=f"✅ {trend_type.capitalize()} trends retrieved", state="complete", expanded=False)
+            else:
+                status.update(label="⚠️ No trends found", state="error", expanded=True)
+                st.info("No daily trends found. The scraper might be running or blocked by rate limits.")
+        
+        if not daily_df.empty:
+            # Display daily trends
+            safe_dataframe_display(
+                daily_df,
+                ['topic', 'growth', 'virality_score', 'url'],
+                col_config={
+                    "url": st.column_config.LinkColumn("Search Link"),
+                    "growth": "Traffic/Interest"
+                },
+                cmap='viridis'
+            )
+            
+            # Simple bar chart for growth
+            fig_daily = px.bar(daily_df.head(15), x='topic', y='growth', title=f"Top {trend_type.capitalize()} Trends by Traffic", color='virality_score')
+            st.plotly_chart(fig_daily, width='stretch')
+
+    with tab3:
         st.subheader(f"🎥 YouTube Trending: {selected_niche}")
         st.write(f"Top performing videos in the **{selected_niche}** niche from the past month.")
         
@@ -261,7 +328,7 @@ def main():
             st.cache_data.clear()
             
         with st.status(f"📡 Fetching YouTube niche trends...", expanded=False) as status:
-            yt_df = api.get_youtube_trends(niche_name=selected_niche)
+            yt_df = api.get_youtube_trends(niche_name=selected_niche, geo=selected_geo)
             if not yt_df.empty:
                 status.update(label="✅ YouTube data retrieved", state="complete", expanded=False)
             else:
@@ -295,7 +362,7 @@ def main():
                 st.plotly_chart(fig_yt, width='stretch')
 
 
-    with tab3:
+    with tab4:
         st.subheader(f"𝕏 X Trends: {selected_niche}")
         st.write(f"Trending conversations on X (Twitter) related to **{selected_niche}**.")
         
@@ -303,7 +370,7 @@ def main():
             st.cache_data.clear()
             
         with st.status(f"📡 Fetching X niche trends...", expanded=False) as status:
-            x_df = api.get_social_trends(platform="X", niche_name=selected_niche)
+            x_df = api.get_social_trends(platform="X", niche_name=selected_niche, geo=selected_geo)
             if not x_df.empty:
                 status.update(label="✅ X data retrieved", state="complete", expanded=False)
             else:
@@ -325,7 +392,7 @@ def main():
             fig_x = px.bar(x_df, x='topic', y='virality_score', title="X Topic Virality")
             st.plotly_chart(fig_x, width='stretch')
 
-    with tab4:
+    with tab5:
         st.subheader(f"💬 Threads Trends: {selected_niche}")
         st.write(f"Trending topics and communities on Threads for **{selected_niche}**.")
         
@@ -333,7 +400,7 @@ def main():
             st.cache_data.clear()
             
         with st.status(f"📡 Fetching Threads niche trends...", expanded=False) as status:
-            threads_df = api.get_social_trends(platform="Threads", niche_name=selected_niche)
+            threads_df = api.get_social_trends(platform="Threads", niche_name=selected_niche, geo=selected_geo)
             if not threads_df.empty:
                 status.update(label="✅ Threads data retrieved", state="complete", expanded=False)
             else:
@@ -351,7 +418,7 @@ def main():
                 cmap='magma'
             )
 
-    with tab5:
+    with tab6:
         st.subheader(f"📸 Instagram Trends: {selected_niche}")
         st.write(f"Popular hashtags and content on Instagram for **{selected_niche}**.")
         
@@ -359,7 +426,7 @@ def main():
             st.cache_data.clear()
             
         with st.status(f"📡 Fetching Instagram niche trends...", expanded=False) as status:
-            ig_df = api.get_social_trends(platform="Instagram", niche_name=selected_niche)
+            ig_df = api.get_social_trends(platform="Instagram", niche_name=selected_niche, geo=selected_geo)
             if not ig_df.empty:
                 status.update(label="✅ Instagram data retrieved", state="complete", expanded=False)
             else:
@@ -377,7 +444,7 @@ def main():
                 cmap='inferno'
             )
 
-    with tab6:
+    with tab7:
         st.subheader("🧡 Hacker News: Top Stories")
         st.write("Current top stories from Hacker News, analyzed for virality.")
         
@@ -385,7 +452,7 @@ def main():
             st.cache_data.clear()
             
         with st.status("📡 Fetching Hacker News stories...", expanded=False) as status:
-            hn_df = api.get_hackernews_trends(niche_name=selected_niche)
+            hn_df = api.get_hackernews_trends(niche_name=selected_niche, geo=selected_geo)
             if not hn_df.empty:
                 status.update(label="✅ Hacker News data retrieved", state="complete", expanded=False)
             else:
@@ -407,7 +474,7 @@ def main():
             fig_hn = px.scatter(hn_df, x='growth', y='engagement', size='virality_score', color='virality_score', hover_name='topic', title="Hacker News: Points vs Comments")
             st.plotly_chart(fig_hn, width='stretch')
 
-    with tab7:
+    with tab8:
         st.subheader("👽 Reddit: Hot Posts")
         st.write("Current hot posts from Reddit, analyzed for virality.")
         
@@ -416,7 +483,7 @@ def main():
             st.cache_data.clear()
             
         with st.status("📡 Fetching Reddit posts...", expanded=False) as status:
-            reddit_df = api.get_reddit_trends(subreddit=subreddit, niche_name=selected_niche)
+            reddit_df = api.get_reddit_trends(subreddit=subreddit, niche_name=selected_niche, geo=selected_geo)
             if not reddit_df.empty:
                 status.update(label=f"✅ Reddit {subreddit} data retrieved", state="complete", expanded=False)
             else:
@@ -438,7 +505,7 @@ def main():
             fig_reddit = px.scatter(reddit_df, x='growth', y='engagement', size='virality_score', color='virality_score', hover_name='topic', title=f"Reddit r/{subreddit}: Score vs Comments")
             st.plotly_chart(fig_reddit, width='stretch')
 
-    with tab8:
+    with tab9:
         st.subheader(f"📰 {selected_niche} News Trends" if selected_niche else "📰 Global News Trends")
         st.write("Top news stories across the web.")
         
@@ -447,7 +514,7 @@ def main():
             st.cache_data.clear()
             
         with st.status("📡 Fetching News articles...", expanded=False) as status:
-            news_df = api.get_news_trends(query=news_query, niche_name=selected_niche)
+            news_df = api.get_news_trends(query=news_query, niche_name=selected_niche, geo=selected_geo)
             if not news_df.empty:
                 status.update(label="✅ News data retrieved", state="complete", expanded=False)
             else:
@@ -464,7 +531,7 @@ def main():
                 cmap='plasma'
             )
 
-    with tab9:
+    with tab10:
         st.subheader("⚠️ Scrape Errors")
         st.write("Track failed scrapes and HTTP return codes.")
         
