@@ -11,26 +11,34 @@ class RedditSpider(scrapy.Spider):
     # Note: For production, using 'praw' (Python Reddit API Wrapper) is better
     # but as a Scrapy spider, we can fetch JSON directly for a simple free-tier approach.
     
-    def __init__(self, subreddit='all', trend_type='hot', *args, **kwargs):
+    def __init__(self, subreddit='all', trend_type='hot', keywords=None, *args, **kwargs):
         super(RedditSpider, self).__init__(*args, **kwargs)
         self.subreddit = subreddit
         self.trend_type = trend_type # 'hot', 'new', 'rising', 'top'
-        self.base_url = f"https://www.reddit.com/r/{self.subreddit}/{self.trend_type}.json"
+        
+        if isinstance(keywords, str):
+            self.keywords = keywords.split(',')
+        else:
+            self.keywords = keywords
 
     def start_requests(self):
         # We need a User-Agent to avoid being blocked by Reddit
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 TrendDiscoveryBot/0.1'
         }
-        # bypass_middlewares=True or similar isn't a thing in scrapy by default, 
-        # but we can set meta to tell our middlewares to skip if we had such logic.
-        # For now, let's just try to set it directly and hope the middleware doesn't overwrite if it's already there.
-        # In Scrapy, process_request usually setdefault, so it shouldn't overwrite.
-        yield scrapy.Request(self.base_url, headers=headers, callback=self.parse, dont_filter=True, meta={'proxy': None})
+        
+        if self.keywords:
+            for kw in self.keywords:
+                # Search across all of Reddit for the keyword
+                search_url = f"https://www.reddit.com/search.json?q={kw}&sort={self.trend_type}"
+                yield scrapy.Request(search_url, headers=headers, callback=self.parse, dont_filter=True, meta={'proxy': None, 'keyword': kw})
+        else:
+            base_url = f"https://www.reddit.com/r/{self.subreddit}/{self.trend_type}.json"
+            yield scrapy.Request(base_url, headers=headers, callback=self.parse, dont_filter=True, meta={'proxy': None, 'keyword': f"r/{self.subreddit}"})
 
     def parse(self, response):
         if response.status != 200:
-            self.logger.error(f"Failed to fetch Reddit data: {response.status}")
+            self.logger.error(f"Failed to fetch Reddit data: {response.status} for {response.url}")
             return
 
         data = response.json()
@@ -51,7 +59,7 @@ class RedditSpider(scrapy.Spider):
             })
 
         yield GoogleTrendItem(
-            keyword=f"r/{self.subreddit}",
+            keyword=response.meta.get('keyword', f"r/{self.subreddit}"),
             geo="Global",
             time_range=self.trend_type,
             category=0,

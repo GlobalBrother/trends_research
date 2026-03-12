@@ -70,7 +70,6 @@ def main():
     
     # Country Selection
     countries = {
-        "Global": "",
         "United States": "US",
         "United Kingdom": "GB",
         "Canada": "CA",
@@ -188,8 +187,8 @@ def main():
                 st.sidebar.error(f"Failed to scrape {selected_niche}. Check logs.")
 
     # Dashboard Tabs
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
-        "🎯 Niche Research", "🔥 Trending Now", "🎥 YouTube", "𝕏 X", "💬 Threads", "📸 Instagram", "🧡 HN", "👽 Reddit", "📰 News", "💻 StackExchange"
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+        "🎯 Niche Research", "🎥 YouTube", "𝕏 X", "💬 Threads", "📸 Instagram", "🧡 HN", "👽 Reddit", "📰 News", "💻 StackExchange"
     ])
 
     with tab1:
@@ -252,42 +251,9 @@ def main():
         else:
             st.write("No growth data available.")
 
-        # Keyword Expansion / Niche Clustering
-        st.subheader("🧩 Niche Clustering (Micro-Niches)")
-        if not df.empty and 'niche_cluster' in df.columns:
-            st.write("Topics clustered by semantic similarity:")
-            safe_dataframe_display(df, ['topic', 'niche_cluster', 'platform'])
-        elif not df.empty:
-            st.info("Insufficient data for clustering.")
+
 
     with tab2:
-        st.subheader(f"🌐 Top Trending Searches in {selected_country_name}")
-        trend_type = st.radio("Trend Type", ["daily", "realtime"], horizontal=True)
-        
-        if st.button("Fetch Latest Trending Now"):
-            st.cache_data.clear()
-            
-        with st.status(f"📡 Loading Real-time Trends for {selected_country_name}...", expanded=False) as status:
-            trending_df = api.get_trending_now(geo=selected_geo, trend_type=trend_type)
-            if not trending_df.empty:
-                status.update(label="✅ Trending data retrieved", state="complete", expanded=False)
-            else:
-                status.update(label="⚠️ No trending data found", state="error", expanded=True)
-
-        if not trending_df.empty:
-            st.write("Extracted from Google's Daily/Real-time Trends (Refreshed every 12 hours):")
-            safe_dataframe_display(
-                trending_df,
-                ['topic', 'growth', 'sentiment', 'virality_score'],
-                cmap='magma'
-            )
-            
-            fig_trending = px.bar(trending_df, x='topic', y='virality_score', color='virality_score', title="Trending Virality")
-            st.plotly_chart(fig_trending, width='stretch')
-        else:
-            st.info("No trending searches found. Try switching between 'daily' and 'realtime' or check back later.")
-
-    with tab3:
         st.subheader(f"🎥 YouTube Trending: {selected_niche}")
         st.write(f"Top performing videos in the **{selected_niche}** niche from the past month.")
         
@@ -329,7 +295,7 @@ def main():
                 st.plotly_chart(fig_yt, width='stretch')
 
 
-    with tab4:
+    with tab3:
         st.subheader(f"𝕏 X Trends: {selected_niche}")
         st.write(f"Trending conversations on X (Twitter) related to **{selected_niche}**.")
         
@@ -359,7 +325,7 @@ def main():
             fig_x = px.bar(x_df, x='topic', y='virality_score', title="X Topic Virality")
             st.plotly_chart(fig_x, width='stretch')
 
-    with tab5:
+    with tab4:
         st.subheader(f"💬 Threads Trends: {selected_niche}")
         st.write(f"Trending topics and communities on Threads for **{selected_niche}**.")
         
@@ -385,7 +351,7 @@ def main():
                 cmap='magma'
             )
 
-    with tab6:
+    with tab5:
         st.subheader(f"📸 Instagram Trends: {selected_niche}")
         st.write(f"Popular hashtags and content on Instagram for **{selected_niche}**.")
         
@@ -411,7 +377,7 @@ def main():
                 cmap='inferno'
             )
 
-    with tab7:
+    with tab6:
         st.subheader("🧡 Hacker News: Top Stories")
         st.write("Current top stories from Hacker News, analyzed for virality.")
         
@@ -419,7 +385,7 @@ def main():
             st.cache_data.clear()
             
         with st.status("📡 Fetching Hacker News stories...", expanded=False) as status:
-            hn_df = api.get_hackernews_trends()
+            hn_df = api.get_hackernews_trends(niche_name=selected_niche)
             if not hn_df.empty:
                 status.update(label="✅ Hacker News data retrieved", state="complete", expanded=False)
             else:
@@ -441,7 +407,7 @@ def main():
             fig_hn = px.scatter(hn_df, x='growth', y='engagement', size='virality_score', color='virality_score', hover_name='topic', title="Hacker News: Points vs Comments")
             st.plotly_chart(fig_hn, width='stretch')
 
-    with tab8:
+    with tab7:
         st.subheader("👽 Reddit: Hot Posts")
         st.write("Current hot posts from Reddit, analyzed for virality.")
         
@@ -450,7 +416,7 @@ def main():
             st.cache_data.clear()
             
         with st.status("📡 Fetching Reddit posts...", expanded=False) as status:
-            reddit_df = api.get_reddit_trends(subreddit=subreddit)
+            reddit_df = api.get_reddit_trends(subreddit=subreddit, niche_name=selected_niche)
             if not reddit_df.empty:
                 status.update(label=f"✅ Reddit {subreddit} data retrieved", state="complete", expanded=False)
             else:
@@ -472,8 +438,8 @@ def main():
             fig_reddit = px.scatter(reddit_df, x='growth', y='engagement', size='virality_score', color='virality_score', hover_name='topic', title=f"Reddit r/{subreddit}: Score vs Comments")
             st.plotly_chart(fig_reddit, width='stretch')
 
-    with tab9:
-        st.subheader("📰 Global News Trends")
+    with tab8:
+        st.subheader(f"📰 {selected_niche} News Trends" if selected_niche else "📰 Global News Trends")
         st.write("Top news stories across the web.")
         
         news_query = st.text_input("News Query", value=selected_niche or "Health")
@@ -481,7 +447,7 @@ def main():
             st.cache_data.clear()
             
         with st.status("📡 Fetching News articles...", expanded=False) as status:
-            news_df = api.get_news_trends(query=news_query)
+            news_df = api.get_news_trends(query=news_query, niche_name=selected_niche)
             if not news_df.empty:
                 status.update(label="✅ News data retrieved", state="complete", expanded=False)
             else:
@@ -498,7 +464,7 @@ def main():
                 cmap='plasma'
             )
 
-    with tab10:
+    with tab9:
         st.subheader("💻 StackExchange: Hot Questions")
         st.write("Trending technical questions and discussions.")
         
@@ -507,7 +473,7 @@ def main():
             st.cache_data.clear()
             
         with st.status("📡 Fetching StackExchange questions...", expanded=False) as status:
-            se_df = api.get_stackexchange_trends(site=se_site)
+            se_df = api.get_stackexchange_trends(site=se_site, niche_name=selected_niche)
             if not se_df.empty:
                 status.update(label=f"✅ {se_site} data retrieved", state="complete", expanded=False)
             else:

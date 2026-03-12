@@ -6,10 +6,7 @@ class NicheDiscovery:
     def __init__(self, n_clusters=5):
         self.n_clusters = n_clusters
         self.vectorizer = TfidfVectorizer(stop_words='english')
-
-    def get_niche_keywords(self, niche_name):
-        """Returns a representative list of keywords for a niche to be used in scraping."""
-        niche_map = {
+        self.niche_map = {
             "Survival": [
                 "Survival skills",
                 "Bushcraft", "SHTF", "Wilderness survival", "First aid kit", "Foraging",
@@ -38,7 +35,14 @@ class NicheDiscovery:
                 "Bread baking", "Off grid homestead", "Homestead chores", "Livestock", "Barn building"
             ]
         }
-        return niche_map.get(niche_name, [niche_name])
+
+    def get_available_niches(self):
+        """Returns a list of all defined niches."""
+        return list(self.niche_map.keys())
+
+    def get_niche_keywords(self, niche_name):
+        """Returns a representative list of keywords for a niche to be used in scraping."""
+        return self.niche_map.get(niche_name, [niche_name])
 
     def filter_by_niche(self, df, niche_keyword):
         """Filters trends by a specific niche keyword or common synonyms."""

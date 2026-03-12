@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
@@ -52,7 +52,7 @@ def read_root():
 
 @app.get("/niches", response_model=List[str])
 def get_niches():
-    return ["Survival", "Health", "Preppers", "Sustainability", "Homesteading"]
+    return niche.get_available_niches()
 
 @app.get("/niche_keywords/{niche_name}")
 def get_niche_keywords(niche_name: str):
@@ -60,17 +60,20 @@ def get_niche_keywords(niche_name: str):
     return {"niche": niche_name, "keywords": keywords}
 
 @app.post("/scrape")
-def scrape_niche(request: ScrapeRequest):
+def scrape_niche(request: ScrapeRequest, background_tasks: BackgroundTasks):
     niche_keywords = niche.get_niche_keywords(request.niche)
-    success = collector.run_google_trends_scraper(
+    
+    # Run comprehensive scrape in background to avoid timeouts
+    background_tasks.add_task(
+        collector.run_niche_comprehensive_scrape,
+        niche_name=request.niche,
         keywords=niche_keywords,
         geo=request.geo,
         timeframe=request.timeframe,
         category=request.category
     )
-    if not success:
-        raise HTTPException(status_code=500, detail=f"Failed to scrape {request.niche}")
-    return {"message": f"Successfully scraped {request.niche}"}
+    
+    return {"message": f"Comprehensive scraping for {request.niche} started in background. Results will be available soon."}
 
 @app.get("/trends")
 def get_trends(geo: Optional[str] = Query(None), niche_name: Optional[str] = Query(None)):
@@ -81,7 +84,7 @@ def get_trends(geo: Optional[str] = Query(None), niche_name: Optional[str] = Que
         
     raw_data = collector.collect_all(
         geo=geo,
-        include_trending_now=True,
+        include_trending_now=False if niche_name else True,
         include_youtube=True,
         include_social=True,
         include_hackernews=True,
@@ -235,93 +238,150 @@ def get_social_trends(platform: str = Query(...), niche_name: str = Query(...)):
     return {"data": []}
 
 @app.get("/hackernews_trends")
-def get_hackernews_trends():
-    # Check if we have recent data (within 1 hour)
+def get_hackernews_trends(niche_name: Optional[str] = Query(None)):
+    # Check if we have recent data
     raw_data = collector.collect_all(include_hackernews=True)
     
     needs_scrape = True
     if not raw_data.empty and 'platform' in raw_data.columns:
         hn_data = raw_data[raw_data['platform'] == "HackerNews"]
         if not hn_data.empty:
-            last_extracted = pd.to_datetime(hn_data['extracted_at']).max()
-            if datetime.now() - last_extracted.to_pydatetime() < timedelta(hours=1):
-                needs_scrape = False
+            if niche_name:
+                niche_keywords = niche.get_niche_keywords(niche_name)
+                niche_hn_data = hn_data[hn_data['keyword'].isin(niche_keywords)]
+                if not niche_hn_data.empty:
+                    last_extracted = pd.to_datetime(niche_hn_data['extracted_at']).max()
+                    if datetime.now() - last_extracted.to_pydatetime() < timedelta(hours=24):
+                        needs_scrape = False
+            else:
+                last_extracted = pd.to_datetime(hn_data['extracted_at']).max()
+                if datetime.now() - last_extracted.to_pydatetime() < timedelta(hours=1):
+                    needs_scrape = False
     
     if needs_scrape:
-        success = collector.run_hackernews_scraper()
+        keywords = niche.get_niche_keywords(niche_name) if niche_name else None
+        success = collector.run_hackernews_scraper(keywords=keywords)
         if success:
             raw_data = collector.collect_all(include_hackernews=True)
 
     if not raw_data.empty:
         hn_data = raw_data[raw_data['platform'] == "HackerNews"].copy()
         if not hn_data.empty:
-            processed_data = analytics.process_trends(hn_data)
-            processed_data = processed_data.fillna(0)
-            return {"data": processed_data.to_dict(orient="records")}
+            if niche_name:
+                hn_data = niche.filter_by_niche(hn_data, niche_name)
+            if not hn_data.empty:
+                processed_data = analytics.process_trends(hn_data)
+                processed_data = processed_data.fillna(0)
+                return {"data": processed_data.to_dict(orient="records")}
                 
     return {"data": []}
 
 @app.get("/reddit_trends")
-def get_reddit_trends(subreddit: str = Query("all"), trend_type: str = Query("hot")):
-    # Check if we have recent data (within 1 hour)
+def get_reddit_trends(subreddit: str = Query("all"), trend_type: str = Query("hot"), niche_name: Optional[str] = Query(None)):
+    # Check if we have recent data
     raw_data = collector.collect_all(include_reddit=True)
     
     needs_scrape = True
     if not raw_data.empty and 'platform' in raw_data.columns:
         reddit_data = raw_data[raw_data['platform'] == "Reddit"]
         if not reddit_data.empty:
-            # Check if we have data for this specific subreddit/trend_type if possible,
-            # but for now just check if we have any Reddit data recently.
-            last_extracted = pd.to_datetime(reddit_data['extracted_at']).max()
-            if datetime.now() - last_extracted.to_pydatetime() < timedelta(hours=1):
-                needs_scrape = False
+            if niche_name:
+                niche_keywords = niche.get_niche_keywords(niche_name)
+                niche_reddit_data = reddit_data[reddit_data['keyword'].isin(niche_keywords)]
+                if not niche_reddit_data.empty:
+                    last_extracted = pd.to_datetime(niche_reddit_data['extracted_at']).max()
+                    if datetime.now() - last_extracted.to_pydatetime() < timedelta(hours=24):
+                        needs_scrape = False
+            else:
+                last_extracted = pd.to_datetime(reddit_data['extracted_at']).max()
+                if datetime.now() - last_extracted.to_pydatetime() < timedelta(hours=1):
+                    needs_scrape = False
     
     if needs_scrape:
-        success = collector.run_reddit_scraper(subreddit=subreddit, trend_type=trend_type)
+        keywords = niche.get_niche_keywords(niche_name) if niche_name else None
+        success = collector.run_reddit_scraper(subreddit=subreddit, trend_type=trend_type, keywords=keywords)
         if success:
             raw_data = collector.collect_all(include_reddit=True)
 
     if not raw_data.empty:
         reddit_data = raw_data[raw_data['platform'] == "Reddit"].copy()
         if not reddit_data.empty:
-            processed_data = analytics.process_trends(reddit_data)
-            processed_data = processed_data.fillna(0)
-            return {"data": processed_data.to_dict(orient="records")}
+            if niche_name:
+                reddit_data = niche.filter_by_niche(reddit_data, niche_name)
+            if not reddit_data.empty:
+                processed_data = analytics.process_trends(reddit_data)
+                processed_data = processed_data.fillna(0)
+                return {"data": processed_data.to_dict(orient="records")}
                 
     return {"data": []}
 
 @app.get("/news_trends")
-def get_news_trends(query: str = Query("niche")):
+def get_news_trends(query: str = Query("niche"), niche_name: Optional[str] = Query(None)):
+    target_query = niche_name if niche_name else query
     raw_data = collector.collect_all(include_news=True)
     
-    # Always scrape news for the specific query for now, or check cache
-    success = collector.run_news_scraper(query=query)
-    if success:
-        raw_data = collector.collect_all(include_news=True)
+    needs_scrape = True
+    if not raw_data.empty and 'platform' in raw_data.columns:
+        news_data = raw_data[raw_data['platform'] == "News"]
+        if not news_data.empty:
+            niche_news_data = news_data[news_data['keyword'].str.contains(target_query, case=False, na=False)]
+            if not niche_news_data.empty:
+                last_extracted = pd.to_datetime(niche_news_data['extracted_at']).max()
+                if datetime.now() - last_extracted.to_pydatetime() < timedelta(hours=24):
+                    needs_scrape = False
+
+    if needs_scrape:
+        success = collector.run_news_scraper(query=target_query)
+        if success:
+            raw_data = collector.collect_all(include_news=True)
 
     if not raw_data.empty:
         news_data = raw_data[raw_data['platform'] == "News"].copy()
         if not news_data.empty:
-            processed_data = analytics.process_trends(news_data)
-            processed_data = processed_data.fillna(0)
-            return {"data": processed_data.to_dict(orient="records")}
+            if niche_name:
+                news_data = niche.filter_by_niche(news_data, niche_name)
+            if not news_data.empty:
+                processed_data = analytics.process_trends(news_data)
+                processed_data = processed_data.fillna(0)
+                return {"data": processed_data.to_dict(orient="records")}
                 
     return {"data": []}
 
 @app.get("/stackexchange_trends")
-def get_stackexchange_trends(site: str = Query("stackoverflow"), sort: str = Query("hot")):
+def get_stackexchange_trends(site: str = Query("stackoverflow"), sort: str = Query("hot"), niche_name: Optional[str] = Query(None)):
     raw_data = collector.collect_all(include_stackexchange=True)
     
-    success = collector.run_stackexchange_scraper(site=site, sort=sort)
-    if success:
-        raw_data = collector.collect_all(include_stackexchange=True)
+    needs_scrape = True
+    if not raw_data.empty and 'platform' in raw_data.columns:
+        se_data = raw_data[raw_data['platform'] == "StackExchange"]
+        if not se_data.empty:
+            if niche_name:
+                niche_keywords = niche.get_niche_keywords(niche_name)
+                niche_se_data = se_data[se_data['keyword'].isin(niche_keywords)]
+                if not niche_se_data.empty:
+                    last_extracted = pd.to_datetime(niche_se_data['extracted_at']).max()
+                    if datetime.now() - last_extracted.to_pydatetime() < timedelta(hours=24):
+                        needs_scrape = False
+            else:
+                last_extracted = pd.to_datetime(se_data['extracted_at']).max()
+                if datetime.now() - last_extracted.to_pydatetime() < timedelta(hours=12):
+                    needs_scrape = False
+    
+    if needs_scrape:
+        keywords = niche.get_niche_keywords(niche_name) if niche_name else None
+        success = collector.run_stackexchange_scraper(site=site, sort=sort, keywords=keywords)
+        if success:
+            raw_data = collector.collect_all(include_stackexchange=True)
 
     if not raw_data.empty:
         se_data = raw_data[raw_data['platform'] == "StackExchange"].copy()
         if not se_data.empty:
-            processed_data = analytics.process_trends(se_data)
-            processed_data = processed_data.fillna(0)
-            return {"data": processed_data.to_dict(orient="records")}
+            if niche_name:
+                se_data = niche.filter_by_niche(se_data, niche_name)
+            if not se_data.empty:
+                processed_data = analytics.process_trends(se_data)
+                processed_data = processed_data.fillna(0)
+                return {"data": processed_data.to_dict(orient="records")}
                 
     return {"data": []}
 

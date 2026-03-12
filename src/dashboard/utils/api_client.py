@@ -92,9 +92,12 @@ class APIClient:
             return pd.DataFrame()
 
     @st.cache_data(ttl=600)
-    def get_hackernews_trends(_self):
+    def get_hackernews_trends(_self, niche_name=None):
         try:
-            response = requests.get(f"{_self.base_url}/hackernews_trends")
+            params = {}
+            if niche_name:
+                params["niche_name"] = niche_name
+            response = requests.get(f"{_self.base_url}/hackernews_trends", params=params)
             response.raise_for_status()
             data = response.json().get("data", [])
             return pd.DataFrame(data)
@@ -103,9 +106,12 @@ class APIClient:
             return pd.DataFrame()
 
     @st.cache_data(ttl=600)
-    def get_reddit_trends(_self, subreddit='all', trend_type='hot'):
+    def get_reddit_trends(_self, subreddit='all', trend_type='hot', niche_name=None):
         try:
-            response = requests.get(f"{_self.base_url}/reddit_trends", params={'subreddit': subreddit, 'trend_type': trend_type})
+            params = {'subreddit': subreddit, 'trend_type': trend_type}
+            if niche_name:
+                params["niche_name"] = niche_name
+            response = requests.get(f"{_self.base_url}/reddit_trends", params=params)
             response.raise_for_status()
             data = response.json().get("data", [])
             return pd.DataFrame(data)
@@ -114,9 +120,12 @@ class APIClient:
             return pd.DataFrame()
 
     @st.cache_data(ttl=600)
-    def get_news_trends(_self, query='niche'):
+    def get_news_trends(_self, query='niche', niche_name=None):
         try:
-            response = requests.get(f"{_self.base_url}/news_trends", params={'query': query})
+            params = {'query': query}
+            if niche_name:
+                params["niche_name"] = niche_name
+            response = requests.get(f"{_self.base_url}/news_trends", params=params)
             response.raise_for_status()
             data = response.json().get("data", [])
             return pd.DataFrame(data)
@@ -125,9 +134,12 @@ class APIClient:
             return pd.DataFrame()
 
     @st.cache_data(ttl=600)
-    def get_stackexchange_trends(_self, site='stackoverflow', sort='hot'):
+    def get_stackexchange_trends(_self, site='stackoverflow', sort='hot', niche_name=None):
         try:
-            response = requests.get(f"{_self.base_url}/stackexchange_trends", params={'site': site, 'sort': sort})
+            params = {'site': site, 'sort': sort}
+            if niche_name:
+                params["niche_name"] = niche_name
+            response = requests.get(f"{_self.base_url}/stackexchange_trends", params=params)
             response.raise_for_status()
             data = response.json().get("data", [])
             return pd.DataFrame(data)

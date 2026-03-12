@@ -1,69 +1,76 @@
-# trends research
+# Niche Trend Discovery System
 
-## Overview
-This tool collects, analyzes, and visualizes trending topics across multiple platforms including Google Trends, YouTube, and X (Twitter). It uses a custom **Virality Score** and sentiment analysis to provide insights into emerging trends.
+A production-ready platform to collect, analyze, and visualize trending topics across multiple platforms. This system identifies emerging niches and calculates a custom **Virality Score** using cross-platform signals and advanced analytics.
 
-## Features
-- **Data Collection**: Integrates Google Trends and multiple social media platform placeholders.
-- **Analytics Engine**: Uses VADER for sentiment analysis and a custom algorithm for Virality Scoring.
-- **Niche Discovery**: Clusters trending topics using K-Means and allows filtering by industry.
-- **Visualization**: Interactive Streamlit dashboard with Plotly charts.
-- **Export**: Export data as CSV or JSON.
+## 🚀 Features
 
-## Project Structure
-- `src/collector`: Modules for fetching data from various platforms.
-- `src/analytics`: Algorithms for sentiment analysis and virality scores.
-- `src/niche`: Tools for clustering topics and niche identification.
-- `src/dashboard`: Streamlit application for visualization.
+- **Multi-Source Data Collection**:
+  - **Google Trends**: Interest over time, related queries, and regions.
+  - **YouTube**: Trending videos and niche-specific search results.
+  - **Reddit**: Real-time trending posts from `r/all/hot`.
+  - **Hacker News**: Top tech stories and startup trends.
+  - **NewsAPI**: Global news spikes and headlines (requires `NEWS_API_KEY`).
+  - **Stack Exchange**: Hot questions and emerging developer tools.
+- **Topic Aggregation (Micro-Niches)**: Automatically clusters similar titles across different platforms into a single "Aggregated Topic" using a Union-Find keyword-based algorithm.
+- **Advanced Virality Scoring**:
+  - Uses a sophisticated formula incorporating: **Volume**, **Growth**, **Engagement**, **Source Diversity**, and **Sentiment**.
+  - Formula: `ViralScore = log(mentions) + 2 * growth_rate + engagement_weight + source_diversity_boost`.
+  - Scaled to a 1-100 range for easy interpretation.
+- **Interactive Dashboard**: Streamlit-based interface with 10+ tabs for deep dives into specific platforms or overall niche research.
+- **FastAPI Backend**: Robust API serving analyzed trend data with sub-second response times.
 
-## How the Trend Detection Algorithm Works
-The tool calculates a **Virality Score** for each topic based on two primary factors:
-1.  **Growth Velocity**: The rate at which the topic's mentions or search interest is increasing.
-2.  **Engagement Volume**: The total number of interactions (mentions, comments, likes) associated with the topic.
+## 🏗 Project Structure
 
-The formula used is:
-`Score = (log(growth) * 0.7) + (log(engagement) * 0.3)`
-This is then scaled to a 1-100 range for readability. Logarithmic scaling is applied to normalize high-frequency trends and prevent outliers from distorting the ranking.
+- `src/api`: FastAPI backend and endpoint definitions.
+- `src/collector`: Primary data orchestration layer (`TrendCollector`).
+- `src/analytics`: `AnalyticsEngine` for virality scoring, clustering, and sentiment analysis.
+- `src/niche`: `NicheDiscovery` for filtering and micro-niche identification.
+- `src/dashboard`: Streamlit frontend application.
+- `src/scrapers`: Specialized Scrapy spiders for each platform.
 
-## Installation
+## 🛠 Installation
 
-### Standard Installation
-1.  Install dependencies:
-    ```bash
-    pip install -r requirements.txt
-    ```
-2.  **Run the dashboard**:
-    From the project root:
-    ```powershell
-    $env:PYTHONPATH="."
-    streamlit run src/dashboard/app.py
-    ```
+### 1. Clone & Install Dependencies
+```bash
+pip install -r requirements.txt
+```
 
-### WSL (Windows Subsystem for Linux) Setup
-1.  **Update your WSL environment**:
-    ```bash
-    sudo apt update && sudo apt upgrade -y
-    sudo apt install python3 python3-pip python3-venv -y
-    ```
-2.  **Activate your virtual environment**:
-    If your environment is stored in `.virtualenvs/trends_research`, run:
-    ```bash
-    source ~/.virtualenvs/trends_research/bin/activate
-    ```
-3.  **Install dependencies**:
-    ```bash
-    pip install --upgrade pip
-    pip install -r requirements.txt
-    ```
-4.  **Run the dashboard**:
-    From the project root:
-    ```bash
-    export PYTHONPATH=$PYTHONPATH:.
-    streamlit run src/dashboard/app.py
-    ```
+### 2. Configure Environment
+Create a `.env` file in the root directory (refer to `.env.example`):
+```env
+NEWS_API_KEY=your_key_here
+BACKEND_URL=http://127.0.0.1:8000
+SCRAPY_CONCURRENT_REQUESTS=1
+SCRAPY_DOWNLOAD_DELAY=10
+```
 
-## Usage
-- Use the sidebar to filter trends by niche keywords (e.g., "AI", "Crypto").
-- Click "Refresh Trends" to fetch the latest data.
-- Explore the "Niche Clustering" section to identify emerging micro-niches.
-- Use the "Export" buttons to download the analyzed data.
+## 🚦 How to Run
+
+### Step 1: Start the Backend API
+From the project root:
+```powershell
+$env:PYTHONPATH="."
+python src/api/main.py
+```
+The API will be available at `http://127.0.0.1:8000`.
+
+### Step 2: Start the Dashboard
+Open a new terminal and run:
+```powershell
+$env:PYTHONPATH="."
+streamlit run src/dashboard/app.py
+```
+
+## 📊 Analytics Methodology
+
+### Virality Score
+The score represents the "heat" of a topic. A high score (90+) indicates a topic is exploding across multiple platforms with high engagement and rapid growth.
+
+### Topic Clustering
+The system groups titles like "AI Girlfriend App" and "My AI Girlfriend Experience" into a single topic "AI girlfriend". This allows for a unified view of a trend regardless of minor variations in titles across platforms.
+
+### Source Diversity
+Topics appearing on multiple platforms (e.g., YouTube + Reddit + News) receive a significant boost, as cross-platform presence is a strong indicator of a mainstream trend.
+
+## 📝 License
+MIT
