@@ -1,3 +1,4 @@
+import os
 import scrapy
 from datetime import datetime
 from ..items import GoogleTrendItem
@@ -13,7 +14,11 @@ class NewsApiSpider(scrapy.Spider):
     def __init__(self, q='niche', api_key=None, *args, **kwargs):
         super(NewsApiSpider, self).__init__(*args, **kwargs)
         self.q = q
-        self.api_key = api_key or "YOUR_NEWSAPI_KEY" # Placeholder
+        # Priority: explicit argument > environment variable > placeholder
+        if api_key and api_key != 'None':
+            self.api_key = api_key
+        else:
+            self.api_key = os.getenv('NEWS_API_KEY') or "YOUR_NEWSAPI_KEY"
         self.url = f"https://newsapi.org/v2/everything?q={q}&sortBy=popularity&apiKey={self.api_key}"
 
     def start_requests(self):

@@ -11,7 +11,7 @@ class TrendCollector:
         base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
         self.db_path = os.path.join(base_dir, "src", "collector", "trends.db")
         
-    def get_db_trends(self, geo=None, include_trending_now=False, include_youtube=False, include_social=False, include_hackernews=False, include_reddit=False, include_news=False, include_stackexchange=False):
+    def get_db_trends(self, geo=None, include_trending_now=False, include_youtube=False, include_social=False, include_hackernews=False, include_reddit=False, include_news=False):
         """Reads trends from SQLite database."""
         import sqlite3
         import json
@@ -42,8 +42,6 @@ class TrendCollector:
                 excluded_platforms.append('Reddit')
             if not include_news:
                 excluded_platforms.append('News')
-            if not include_stackexchange:
-                excluded_platforms.append('StackExchange')
             
             if excluded_platforms:
                 placeholders = ', '.join(['?'] * len(excluded_platforms))
@@ -165,10 +163,6 @@ class TrendCollector:
         """Runs the Scrapy NewsAPI spider."""
         return self._run_scraper("newsapi", q=query, api_key=api_key)
 
-    def run_stackexchange_scraper(self, site='stackoverflow', sort='hot', keywords=None):
-        """Runs the Scrapy StackExchange spider."""
-        return self._run_scraper("stackexchange", site=site, sort=sort, keywords=keywords)
-
     def run_niche_comprehensive_scrape(self, niche_name, keywords, geo="US", timeframe="today 12-m", category=0):
         """Triggers all scrapers for a specific niche in sequence."""
         print(f"Starting comprehensive scrape for niche: {niche_name}")
@@ -193,19 +187,16 @@ class TrendCollector:
         # 5. HackerNews
         self.run_hackernews_scraper(keywords=limited_keywords)
         
-        # 6. StackExchange
-        self.run_stackexchange_scraper(keywords=limited_keywords)
-        
-        # 7. NewsAPI (just use the niche name for NewsAPI)
+        # 6. NewsAPI (just use the niche name for NewsAPI)
         self.run_news_scraper(query=niche_name)
         
         print(f"Comprehensive scrape for {niche_name} finished.")
         return True
 
-    def collect_all(self, geo=None, include_trending_now=False, include_youtube=False, include_social=False, include_hackernews=False, include_reddit=False, include_news=False, include_stackexchange=False):
+    def collect_all(self, geo=None, include_trending_now=False, include_youtube=False, include_social=False, include_hackernews=False, include_reddit=False, include_news=False):
         all_trends = []
         # Prefer DB over JSONL
-        all_trends.extend(self.get_db_trends(geo=geo, include_trending_now=include_trending_now, include_youtube=include_youtube, include_social=include_social, include_hackernews=include_hackernews, include_reddit=include_reddit, include_news=include_news, include_stackexchange=include_stackexchange))
+        all_trends.extend(self.get_db_trends(geo=geo, include_trending_now=include_trending_now, include_youtube=include_youtube, include_social=include_social, include_hackernews=include_hackernews, include_reddit=include_reddit, include_news=include_news))
         
         if all_trends:
             return pd.DataFrame(all_trends)

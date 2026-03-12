@@ -187,8 +187,8 @@ def main():
                 st.sidebar.error(f"Failed to scrape {selected_niche}. Check logs.")
 
     # Dashboard Tabs
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
-        "🎯 Niche Research", "🎥 YouTube", "𝕏 X", "💬 Threads", "📸 Instagram", "🧡 HN", "👽 Reddit", "📰 News", "💻 StackExchange"
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+        "🎯 Niche Research", "🎥 YouTube", "𝕏 X", "💬 Threads", "📸 Instagram", "🧡 HN", "👽 Reddit", "📰 News"
     ])
 
     with tab1:
@@ -462,33 +462,6 @@ def main():
                     "source": "Source"
                 },
                 cmap='plasma'
-            )
-
-    with tab9:
-        st.subheader("💻 StackExchange: Hot Questions")
-        st.write("Trending technical questions and discussions.")
-        
-        se_site = st.selectbox("Site", ["stackoverflow", "askubuntu", "superuser", "serverfault", "stats"])
-        if st.button("Refresh StackExchange"):
-            st.cache_data.clear()
-            
-        with st.status("📡 Fetching StackExchange questions...", expanded=False) as status:
-            se_df = api.get_stackexchange_trends(site=se_site, niche_name=selected_niche)
-            if not se_df.empty:
-                status.update(label=f"✅ {se_site} data retrieved", state="complete", expanded=False)
-            else:
-                status.update(label="⚠️ No StackExchange trends found", state="error", expanded=True)
-        
-        if not se_df.empty:
-            safe_dataframe_display(
-                se_df,
-                ['topic', 'growth', 'engagement', 'virality_score', 'url'],
-                col_config={
-                    "url": st.column_config.LinkColumn("Question Link"),
-                    "growth": "Score",
-                    "engagement": "Views Scale"
-                },
-                cmap='inferno'
             )
 
 

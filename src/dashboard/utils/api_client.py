@@ -132,17 +132,3 @@ class APIClient:
         except Exception as e:
             st.error(f"Failed to fetch News trends: {e}")
             return pd.DataFrame()
-
-    @st.cache_data(ttl=600)
-    def get_stackexchange_trends(_self, site='stackoverflow', sort='hot', niche_name=None):
-        try:
-            params = {'site': site, 'sort': sort}
-            if niche_name:
-                params["niche_name"] = niche_name
-            response = requests.get(f"{_self.base_url}/stackexchange_trends", params=params)
-            response.raise_for_status()
-            data = response.json().get("data", [])
-            return pd.DataFrame(data)
-        except Exception as e:
-            st.error(f"Failed to fetch StackExchange trends: {e}")
-            return pd.DataFrame()

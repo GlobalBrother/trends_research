@@ -35,7 +35,7 @@ def test_source(collector, analytics, source_name, run_method, collect_key):
     
     print(f"Processing {source_name} trends...")
     processed_df = analytics.process_trends(raw_data)
-    source_processed = processed_df[processed_df['platform'] == source_name]
+    source_processed = processed_df[processed_df['platform'].apply(lambda x: source_name in x if isinstance(x, list) else x == source_name)]
     print(f"Processed {len(source_processed)} {source_name} trends.")
     
     print(f"Top 3 {source_name} trends by virality:")
@@ -59,11 +59,6 @@ def main():
     test_source(collector, analytics, "News", 
                 lambda: collector.run_news_scraper(query='technology'), 
                 'include_news')
-    
-    # Test StackExchange
-    test_source(collector, analytics, "StackExchange", 
-                lambda: collector.run_stackexchange_scraper(site='stackoverflow'), 
-                'include_stackexchange')
 
 if __name__ == "__main__":
     main()

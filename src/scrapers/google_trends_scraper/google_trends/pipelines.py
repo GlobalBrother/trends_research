@@ -149,12 +149,6 @@ class SQLitePipeline:
                 topic = res.get('title')
                 growth = res.get('popularity', 50) * 10
                 extra_data['source'] = res.get('source')
-            elif data_type == 'stackexchange_trends':
-                platform = "StackExchange"
-                topic = res.get('title')
-                growth = res.get('score', 0) * 20
-                extra_data['engagement'] = res.get('view_count', 0) / 10
-                extra_data['tags'] = res.get('tags')
             elif data_type == 'interest_by_region':
                 platform = "Google Regions"
                 topic = item.get('keyword')

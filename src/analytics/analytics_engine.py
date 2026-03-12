@@ -176,8 +176,7 @@ class AnalyticsEngine:
             "X (Twitter)": 1.2,
             "Reddit": 1.4,
             "HackerNews": 1.3,
-            "News": 1.1,
-            "StackExchange": 1.2
+            "News": 1.1
         }
         
         # Ensure 'spread' column exists
@@ -210,7 +209,7 @@ class AnalyticsEngine:
         }
         
         # Add source-specific columns if they exist in the dataframe
-        optional_cols = ['url', 'published', 'posts', 'replies', 'subreddit', 'source', 'author', 'tags']
+        optional_cols = ['url', 'published', 'posts', 'replies', 'subreddit', 'source', 'author']
         for col in optional_cols:
             if col in df.columns:
                 agg_dict[col] = 'first'

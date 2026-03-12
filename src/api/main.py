@@ -89,8 +89,7 @@ def get_trends(geo: Optional[str] = Query(None), niche_name: Optional[str] = Que
         include_social=True,
         include_hackernews=True,
         include_reddit=True,
-        include_news=True,
-        include_stackexchange=True
+        include_news=True
     )
     if raw_data.empty:
         return {"data": []}
@@ -347,44 +346,6 @@ def get_news_trends(query: str = Query("niche"), niche_name: Optional[str] = Que
                 
     return {"data": []}
 
-@app.get("/stackexchange_trends")
-def get_stackexchange_trends(site: str = Query("stackoverflow"), sort: str = Query("hot"), niche_name: Optional[str] = Query(None)):
-    raw_data = collector.collect_all(include_stackexchange=True)
-    
-    needs_scrape = True
-    if not raw_data.empty and 'platform' in raw_data.columns:
-        se_data = raw_data[raw_data['platform'] == "StackExchange"]
-        if not se_data.empty:
-            if niche_name:
-                niche_keywords = niche.get_niche_keywords(niche_name)
-                niche_se_data = se_data[se_data['keyword'].isin(niche_keywords)]
-                if not niche_se_data.empty:
-                    last_extracted = pd.to_datetime(niche_se_data['extracted_at']).max()
-                    if datetime.now() - last_extracted.to_pydatetime() < timedelta(hours=24):
-                        needs_scrape = False
-            else:
-                last_extracted = pd.to_datetime(se_data['extracted_at']).max()
-                if datetime.now() - last_extracted.to_pydatetime() < timedelta(hours=12):
-                    needs_scrape = False
-    
-    if needs_scrape:
-        keywords = niche.get_niche_keywords(niche_name) if niche_name else None
-        success = collector.run_stackexchange_scraper(site=site, sort=sort, keywords=keywords)
-        if success:
-            raw_data = collector.collect_all(include_stackexchange=True)
-
-    if not raw_data.empty:
-        se_data = raw_data[raw_data['platform'] == "StackExchange"].copy()
-        if not se_data.empty:
-            if niche_name:
-                se_data = niche.filter_by_niche(se_data, niche_name)
-            if not se_data.empty:
-                processed_data = analytics.process_trends(se_data)
-                processed_data = processed_data.fillna(0)
-                return {"data": processed_data.to_dict(orient="records")}
-                
-    return {"data": []}
-
 @app.get("/all_trends")
 def get_all_trends():
     raw_data = collector.collect_all(
@@ -393,8 +354,7 @@ def get_all_trends():
         include_social=True, 
         include_hackernews=True, 
         include_reddit=True,
-        include_news=True,
-        include_stackexchange=True
+        include_news=True
     )
     
     if not raw_data.empty:
