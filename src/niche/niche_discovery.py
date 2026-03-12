@@ -11,7 +11,7 @@ class NicheDiscovery:
         """Returns a representative list of keywords for a niche to be used in scraping."""
         niche_map = {
             "Survival": [
-                 "Survival skills"
+                "Survival skills",
                 "Bushcraft", "SHTF", "Wilderness survival", "First aid kit", "Foraging",
                 "Emergency preparedness", "Survival gear", "Water filtration", "Fire starting", "Survival shelter",
                 "Wilderness medical", "EDC gear", "Navigation skills", "Survival mindset", "Outdoor survival"
@@ -19,7 +19,8 @@ class NicheDiscovery:
             "Health": [
                 "Natural remedy", "Herbal wellness", "Holistic health", "Essential oils", "Medicinal plants",
                 "Acupuncture", "Detox diet", "Gut health", "Intermittent fasting", "Mindfulness meditation",
-                "Homeopathy", "Ayurveda", "Yoga therapy", "Naturopathic medicine", "Biohacking", "Supplements"
+                "Homeopathy", "Ayurveda", "Yoga therapy", "Naturopathic medicine", "Biohacking", "Supplements",
+                "Home remedies", "Self-remedy", "Natural cures", "Herbal remedies", "Traditional medicine"
             ],
             "Preppers": [
                 "Prepper", "Off-grid living", "DIY off grid", "Emergency preparedness", "Survivalist",
@@ -62,7 +63,7 @@ class NicheDiscovery:
                 "include": [
                     "Self remedies", "Home remedy", "Natural cure", "Herbal", "Wellness", "Holistic", "Naturopathic",
                     "Organic", "Detox", "Probiotics", "Microbiome", "Essential oils", "Acupressure", "Meditation",
-                    "Vegan", "Keto", "Paleo", "Superfoods", "Tincture", "Poultice"
+                    "Vegan", "Keto", "Paleo", "Superfoods", "Tincture", "Poultice", "Remedy", "Remedies", "Cures", "Traditional"
                 ],
                 "exclude": [
                     "Pharmacy", "Department", "Pharma", "Hospital", "Government", "Clinic", "Surgery", "Drug",
@@ -107,12 +108,30 @@ class NicheDiscovery:
         # Include filter
         if include_keywords:
             include_pattern = '|'.join(include_keywords)
-            df = df[df['topic'].str.contains(include_pattern, case=False, na=False)]
+            # Use regex=True and case=False for more robust matching
+            # Also always include the niche_keyword and any source keyword used for scraping
+            # Use non-capturing group (?:...) to avoid UserWarning about match groups
+            include_pattern = f"(?:{include_pattern})|{niche_keyword}"
+            
+            # If we have the 'keyword' source column, we can also check against it
+            mask = df['topic'].str.contains(include_pattern, case=False, na=False, regex=True)
+            # Only match against seed keyword if the topic doesn't match anything else,
+            # but still apply the include_pattern to ensure it's actually relevant if we have multiple keywords in the file
+            if 'keyword' in df.columns:
+                # If the keyword matches Health exactly, we still want to make sure the topic is somewhat related to health inclusion list
+                # Actually, the previous logic was: if keyword matches Health, include it.
+                # If we want to be stricter, we should always check topic.
+                # But sometimes topic is generic and keyword is specific.
+                
+                # Let's check if the topic matches the include pattern OR if the keyword matches it.
+                mask |= df['keyword'].str.contains(include_pattern, case=False, na=False, regex=True)
+            
+            df = df[mask].copy()
         
         # Exclude filter
         if not df.empty and exclude_keywords:
             exclude_pattern = '|'.join(exclude_keywords)
-            df = df[~df['topic'].str.contains(exclude_pattern, case=False, na=False)]
+            df = df[~df['topic'].str.contains(exclude_pattern, case=False, na=False, regex=True)]
             
         return df
 
@@ -121,12 +140,20 @@ class NicheDiscovery:
         if df.empty or len(df) < self.n_clusters:
             return df
         
-        # Vectorize topics
-        X = self.vectorizer.fit_transform(df['topic'])
-        
-        # KMeans clustering
-        kmeans = KMeans(n_clusters=self.n_clusters, random_state=42, n_init=10)
-        df['niche_cluster'] = kmeans.fit_predict(X)
-        
+        try:
+            # Ensure we work on a copy to avoid SettingWithCopyWarning
+            df = df.copy()
+            
+            # Vectorize topics
+            X = self.vectorizer.fit_transform(df['topic'])
+            
+            # KMeans clustering
+            kmeans = KMeans(n_clusters=self.n_clusters, random_state=42, n_init=10)
+            df['niche_cluster'] = kmeans.fit_predict(X)
+        except Exception as e:
+            # If clustering fails (e.g. empty vocabulary), return as is without cluster column
+            print(f"Clustering failed: {e}")
+            pass
+            
         return df
 

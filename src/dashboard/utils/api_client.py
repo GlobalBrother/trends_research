@@ -5,7 +5,7 @@ import os
 
 class APIClient:
     def __init__(self):
-        self.base_url = os.getenv("BACKEND_URL", "http://localhost:8000")
+        self.base_url = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
 
     def get_niches(self):
         try:
@@ -53,4 +53,84 @@ class APIClient:
             return pd.DataFrame(data)
         except Exception as e:
             st.error(f"Failed to fetch trends: {e}")
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=3600) # Longer cache for trending now
+    def get_trending_now(_self, geo="US", trend_type="daily"):
+        try:
+            params = {"geo": geo, "trend_type": trend_type}
+            response = requests.get(f"{_self.base_url}/trending_now", params=params)
+            response.raise_for_status()
+            data = response.json().get("data", [])
+            return pd.DataFrame(data)
+        except Exception as e:
+            st.error(f"Failed to fetch trending now: {e}")
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=3600)
+    def get_youtube_trends(_self, niche_name):
+        try:
+            params = {"niche_name": niche_name}
+            response = requests.get(f"{_self.base_url}/youtube_trends", params=params)
+            response.raise_for_status()
+            data = response.json().get("data", [])
+            return pd.DataFrame(data)
+        except Exception as e:
+            st.error(f"Failed to fetch YouTube trends: {e}")
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=3600)
+    def get_social_trends(_self, platform, niche_name):
+        try:
+            params = {"platform": platform, "niche_name": niche_name}
+            response = requests.get(f"{_self.base_url}/social_trends", params=params)
+            response.raise_for_status()
+            data = response.json().get("data", [])
+            return pd.DataFrame(data)
+        except Exception as e:
+            st.error(f"Failed to fetch {platform} trends: {e}")
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=600)
+    def get_hackernews_trends(_self):
+        try:
+            response = requests.get(f"{_self.base_url}/hackernews_trends")
+            response.raise_for_status()
+            data = response.json().get("data", [])
+            return pd.DataFrame(data)
+        except Exception as e:
+            st.error(f"Failed to fetch HackerNews trends: {e}")
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=600)
+    def get_reddit_trends(_self, subreddit='all', trend_type='hot'):
+        try:
+            response = requests.get(f"{_self.base_url}/reddit_trends", params={'subreddit': subreddit, 'trend_type': trend_type})
+            response.raise_for_status()
+            data = response.json().get("data", [])
+            return pd.DataFrame(data)
+        except Exception as e:
+            st.error(f"Failed to fetch Reddit trends: {e}")
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=600)
+    def get_news_trends(_self, query='niche'):
+        try:
+            response = requests.get(f"{_self.base_url}/news_trends", params={'query': query})
+            response.raise_for_status()
+            data = response.json().get("data", [])
+            return pd.DataFrame(data)
+        except Exception as e:
+            st.error(f"Failed to fetch News trends: {e}")
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=600)
+    def get_stackexchange_trends(_self, site='stackoverflow', sort='hot'):
+        try:
+            response = requests.get(f"{_self.base_url}/stackexchange_trends", params={'site': site, 'sort': sort})
+            response.raise_for_status()
+            data = response.json().get("data", [])
+            return pd.DataFrame(data)
+        except Exception as e:
+            st.error(f"Failed to fetch StackExchange trends: {e}")
             return pd.DataFrame()

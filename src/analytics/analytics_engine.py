@@ -3,9 +3,12 @@ from textblob import TextBlob
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 import numpy as np
 import nltk
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import re
 
 class AnalyticsEngine:
-    def __init__(self):
+    def __init__(self, cluster_threshold=0.7):
         try:
             # Ensure VADER lexicon is available if using nltk version, 
             # though vaderSentiment package usually includes it.
@@ -15,83 +18,206 @@ class AnalyticsEngine:
             # Fallback/Initialization if needed
             nltk.download('vader_lexicon', quiet=True)
             self.analyzer = SentimentIntensityAnalyzer()
+        self.cluster_threshold = cluster_threshold
 
     def analyze_sentiment(self, text):
         """Analyzes sentiment using VADER."""
         scores = self.analyzer.polarity_scores(str(text))
         return scores['compound']
 
-    def calculate_virality_score(self, growth_rate, engagement=1.0, platform_weight=1.0, sentiment=0.0, spread=0):
-        """Calculates a custom Virality Score based on growth, engagement, platform weight, sentiment and geographical spread."""
+    def calculate_virality_score(self, growth_rate, engagement=1.0, platform_weight=1.0, sentiment=0.0, spread=0, source_diversity=1, volume=1):
+        """Calculates a custom Virality Score based on growth, engagement, platform weight, sentiment and geographical spread.
+        
+        Formula from plan: ViralScore = log(mentions) + 2 * growth_rate + engagement_weight + source_diversity
+        Simplified implementation for robust scaling.
+        """
         # Handle invalid growth_rate (NaN or negative)
         if pd.isna(growth_rate) or growth_rate <= -1:
             growth_rate = 0
             
-        # Logarithmic normalization of large values
-        log_growth = np.log1p(growth_rate)
-        log_engagement = np.log1p(max(0, engagement))
+        # log(mentions) - We use 'volume' (number of occurrences across platforms) or 'engagement'
+        log_mentions = np.log1p(volume)
         
-        # Weighted base score: 60% growth, 40% engagement
-        base_score = (log_growth * 0.6) + (log_engagement * 0.4)
+        # growth_rate component (normalized 0-1)
+        # Assuming growth_rate is provided in a scale where 100% is 1.0
+        # If it's a raw number from scrapers, we normalize it.
+        norm_growth = min(10, growth_rate / 500) 
         
-        # Apply platform weight
-        base_score *= platform_weight
+        # engagement_weight (log(engagement))
+        engagement_weight = np.log1p(max(0, engagement)) / 2.0
         
-        # Sentiment impact
+        # source_diversity - Number of platforms (already a count, but we can log it)
+        diversity_weight = source_diversity * 1.5
+        
+        # ViralScore = log(mentions) + 2 * growth_rate + engagement_weight + source_diversity
+        base_score = log_mentions + (2 * norm_growth) + engagement_weight + diversity_weight + (platform_weight * 2)
+        
+        # Sentiment impact (bonus)
         sentiment_bonus = abs(sentiment) * 0.5 
         base_score += sentiment_bonus
         
-        # Spread impact: If geographical spread data is available, it boosts the score.
-        # Spread is typically number of regions (0-50+). log1p(spread) is around 0-4.
+        # Spread impact
         if spread > 0:
-            spread_bonus = np.log1p(spread) * 0.3
+            spread_bonus = np.log1p(spread) * 0.5
             base_score += spread_bonus
         
-        # Final scaling: Mapping the expected log range (roughly 0 to 15-20) to 1-100 range.
-        # Use a sigmoid-like scaling to compress extremely large outliers.
+        # Final scaling: Mapping the expected range to 1-100 range using sigmoid.
         def sigmoid(x):
-            return 1 / (1 + np.exp(-0.4 * (x - 10)))
+            return 1 / (1 + np.exp(-0.25 * (x - 12)))
         
         scaled_score = 1 + (sigmoid(base_score) * 99)
         return round(scaled_score, 2)
+
+    def group_topics(self, df):
+        """Groups similar topics across platforms using keyword overlap and fuzzy matching."""
+        if df.empty or len(df) < 2:
+            df['aggregated_topic'] = df['topic']
+            return df
+            
+        # Create a copy to work on
+        df = df.copy()
+        topics = df['topic'].tolist()
+        
+        # Clean topics: lowercase, remove punctuation, split into words
+        def get_keywords(text):
+            text = re.sub(r'[^\w\s]', '', text.lower())
+            words = set(text.split())
+            # Remove common stop words (manual list for robustness if nltk is missing)
+            stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'with', 'for', 'is', 'are', 'was', 'were', 'why', 'how', 'what', 'to', 'of', 'my', 'your', 'our', 'show', 'hn', 'app', 'apps'}
+            return {w for w in words if w not in stop_words and len(w) > 2}
+
+        topic_keywords = [get_keywords(t) for t in topics]
+        
+        # Union-Find
+        parent = list(range(len(topics)))
+        def find(i):
+            if parent[i] == i:
+                return i
+            parent[i] = find(parent[i])
+            return parent[i]
+            
+        def union(i, j):
+            root_i = find(i)
+            root_j = find(j)
+            if root_i != root_j:
+                parent[root_i] = root_j
+                
+        for i in range(len(topics)):
+            for j in range(i + 1, len(topics)):
+                # Check for keyword overlap
+                # If they share at least 2 significant words, or 1 if the shorter topic only has 1-2 words
+                intersection = topic_keywords[i].intersection(topic_keywords[j])
+                min_len = min(len(topic_keywords[i]), len(topic_keywords[j]))
+                
+                if not intersection:
+                    continue
+                    
+                match = False
+                if len(intersection) >= 2:
+                    match = True
+                elif len(intersection) >= 1 and min_len <= 2:
+                    match = True
+                
+                if match:
+                    union(i, j)
+        
+        # Build mapping from original index to representative topic
+        group_to_indices = {}
+        for i in range(len(topics)):
+            root = find(i)
+            if root not in group_to_indices:
+                group_to_indices[root] = []
+            group_to_indices[root].append(i)
+            
+        aggregated_map = {}
+        for root, indices in group_to_indices.items():
+            # Pick the shortest/cleanest title as the representative for the group
+            rep_idx = min(indices, key=lambda x: len(topics[x]))
+            rep_topic = topics[rep_idx]
+            for idx in indices:
+                aggregated_map[idx] = rep_topic
+
+        df['aggregated_topic'] = [aggregated_map.get(i, topics[i]) for i in range(len(topics))]
+        return df
 
     def process_trends(self, df):
         """Applies analytics to a DataFrame of collected trends."""
         if df.empty:
             return df
         
-        # Add sentiment
-        df['sentiment'] = df['topic'].apply(self.analyze_sentiment)
+        # 1. Topic Aggregation (Clustering)
+        df = self.group_topics(df)
         
-        # Fixed Engagement (default baseline since we don't have real API engagement metrics)
-        df['engagement'] = 10000 
+        # 2. Add sentiment
+        df.loc[:, 'sentiment'] = df['topic'].apply(self.analyze_sentiment)
         
-        # We can apply a small boost based on growth to make it feel more dynamic but still deterministic
-        df['engagement'] = df['engagement'] + (df['growth'] * 2)
+        # 3. Engagement handling
+        if 'engagement' not in df.columns:
+            df.loc[:, 'engagement'] = 1000 
+            df.loc[:, 'engagement'] = df['engagement'] + (df['growth'].fillna(0) * 2)
         
-        # Define platform weights
+        # 4. Source diversity and aggregation
+        # Count unique platforms per aggregated topic
+        diversity_map = df.groupby('aggregated_topic')['platform'].nunique().to_dict()
+        df.loc[:, 'source_diversity'] = df['aggregated_topic'].map(diversity_map)
+        
+        # Count volume (total mentions across platforms)
+        volume_map = df.groupby('aggregated_topic')['topic'].count().to_dict()
+        df.loc[:, 'volume'] = df['aggregated_topic'].map(volume_map)
+        
+        # 5. Define platform weights
         platform_weights = {
             "Google Trends": 1.0,
             "Google Related Queries": 1.1,
             "Google Related Topics": 1.1,
             "Google Interest": 1.0,
-            "Google Regions": 1.2 # Geographical spread is a strong indicator
+            "Google Regions": 1.2,
+            "YouTube": 1.3,
+            "X (Twitter)": 1.2,
+            "Reddit": 1.4,
+            "HackerNews": 1.3,
+            "News": 1.1,
+            "StackExchange": 1.2
         }
         
         # Ensure 'spread' column exists
         if 'spread' not in df.columns:
-            df['spread'] = 0
+            df.loc[:, 'spread'] = 0
 
-        # Calculate Virality Score
-        df['virality_score'] = df.apply(lambda row: self.calculate_virality_score(
-            row['growth'], 
-            row['engagement'], 
-            platform_weights.get(row['platform'], 1.0),
-            row['sentiment'],
-            row.get('spread', 0)
+        # 6. Calculate Virality Score
+        df.loc[:, 'virality_score'] = df.apply(lambda row: self.calculate_virality_score(
+            row.get('growth', 0), 
+            row.get('engagement', 0), 
+            platform_weights.get(row.get('platform'), 1.0),
+            row.get('sentiment', 0),
+            row.get('spread', 0),
+            row.get('source_diversity', 1),
+            row.get('volume', 1)
         ), axis=1)
         
-        # Sort by Virality Score
-        df = df.sort_values(by='virality_score', ascending=False)
+        # 7. Aggregate results to unique 'aggregated_topic'
+        # We take the max virality score and sum other metrics, or take representatives
+        # We also need to preserve source-specific columns like 'url', 'published', 'posts', 'replies', 'subreddit', 'source', 'tags'
+        agg_dict = {
+            'virality_score': 'max',
+            'growth': 'max',
+            'engagement': 'sum',
+            'sentiment': 'mean',
+            'platform': lambda x: list(set(x)),
+            'source_diversity': 'first',
+            'volume': 'first',
+            'topic': 'first' # Use original topic as a representative
+        }
         
-        return df
+        # Add source-specific columns if they exist in the dataframe
+        optional_cols = ['url', 'published', 'posts', 'replies', 'subreddit', 'source', 'author', 'tags']
+        for col in optional_cols:
+            if col in df.columns:
+                agg_dict[col] = 'first'
+                
+        aggregated_results = df.groupby('aggregated_topic').agg(agg_dict).reset_index()
+        
+        # Sort by Virality Score
+        aggregated_results = aggregated_results.sort_values(by='virality_score', ascending=False)
+        
+        return aggregated_results
