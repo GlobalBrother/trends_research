@@ -48,7 +48,7 @@ AUTOTHROTTLE_DEBUG = False
 # Pipelines
 ITEM_PIPELINES = {
     'google_trends.pipelines.GoogleTrendsPipeline': 300,
-    'google_trends.pipelines.JSONLPipeline': 400,
+    # 'google_trends.pipelines.JSONLPipeline': 400,
     'google_trends.pipelines.SQLitePipeline': 500,
 }
 

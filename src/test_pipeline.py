@@ -22,7 +22,7 @@ def main():
     raw_data = collector.collect_all(geo="US", include_trending_now=True, include_youtube=True)
     
     if raw_data.empty:
-        print("No raw data found in trends_output.jsonl. Please run scrapers first if needed.")
+        print("No raw data found in the database. Please run scrapers first if needed.")
         return
 
     print(f"Collected {len(raw_data)} raw trend points.")
