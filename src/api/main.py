@@ -97,7 +97,7 @@ def scrape_niche(request: ScrapeRequest, background_tasks: BackgroundTasks):
             collector.run_youtube_trends_scraper,
             niche_keywords, geo=request.geo
         )
-    elif scraper in ("X", "Threads", "Instagram", "TikTok"):
+    elif scraper in ("Threads", "Instagram", "TikTok"):
         background_tasks.add_task(
             collector.run_social_trends_scraper,
             scraper, niche_keywords, geo=request.geo
@@ -364,49 +364,6 @@ def get_youtube_trends(niche_name: str = Query(...), geo: Optional[str] = Query(
             # Re-filter for current niche to ensure relevance
             # We use niche_discovery to be robust
             processed_data = niche.filter_by_niche(yt_data, niche_name)
-            if not processed_data.empty:
-                processed_data = analytics.process_trends(processed_data)
-                return {"data": _sanitize_and_serialize(processed_data)}
-                
-    return {"data": []}
-
-@app.get("/social_trends")
-def get_social_trends(platform: str = Query(...), niche_name: str = Query(...), geo: Optional[str] = Query(None)):
-    # platform: "X", "Threads", "Instagram"
-    platform_map = {
-        "X": "X (Twitter)",
-        "Threads": "Threads",
-        "Instagram": "Instagram",
-        "TikTok": "TikTok"
-    }
-    target_platform = platform_map.get(platform)
-    if not target_platform:
-        raise HTTPException(status_code=400, detail="Invalid platform")
-
-    raw_data = collector.collect_all(geo=geo, include_social=True)
-    
-    needs_scrape = True
-    if not raw_data.empty and 'platform' in raw_data.columns:
-        social_data = raw_data[raw_data['platform'] == target_platform]
-        if not social_data.empty:
-            niche_keywords = niche.get_niche_keywords(niche_name)
-            niche_social_data = social_data[social_data['keyword'].isin(niche_keywords)]
-            
-            if not niche_social_data.empty:
-                last_extracted = pd.to_datetime(niche_social_data['extracted_at']).max()
-                if datetime.now() - last_extracted.to_pydatetime() < timedelta(hours=24):
-                    needs_scrape = False
-    
-    if needs_scrape:
-        niche_keywords = niche.get_niche_keywords(niche_name)
-        success = collector.run_social_trends_scraper(platform=platform, keywords=niche_keywords[:3])
-        if success:
-            raw_data = collector.collect_all(include_social=True)
-
-    if not raw_data.empty:
-        social_data = raw_data[raw_data['platform'] == target_platform].copy()
-        if not social_data.empty:
-            processed_data = niche.filter_by_niche(social_data, niche_name)
             if not processed_data.empty:
                 processed_data = analytics.process_trends(processed_data)
                 return {"data": _sanitize_and_serialize(processed_data)}

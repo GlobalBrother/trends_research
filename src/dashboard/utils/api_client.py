@@ -227,10 +227,6 @@ class APIClient:
                 scrape_threads(keywords, geo=geo)
             elif scraper_type == "reddit":
                 scrape_reddit(["all"], geo=geo)
-            elif scraper_type in ("X",):
-                # X not supported by ensembledata keyword search
-                st.warning("X/Twitter keyword search not available via ensembledata.")
-                return False
             elif scraper_type == "google_trends":
                 # Run all ensembledata scrapers as substitute
                 run_all_ensembledata(keywords, geo=geo)
@@ -247,7 +243,7 @@ class APIClient:
             platforms = [
                 "Google Interest", "Google Regions", "Google Related Queries",
                 "Google Related Topics", "TikTok", "Instagram", "YouTube",
-                "Threads", "Reddit", "X (Twitter)", "HackerNews", "News",
+                "Threads", "Reddit", "HackerNews", "News",
             ]
             df = _read_db(platform_filter=platforms, geo=geo)
             return _process_df(df, niche_name)
@@ -278,7 +274,44 @@ class APIClient:
             return _process_df(df)
 
     @st.cache_data(ttl=3600)
+    def get_youtube_videos(_self, niche_name=None, geo="US", limit=500):
+        """Read from the dedicated youtube_videos table."""
+        if not os.path.exists(DB_PATH):
+            return pd.DataFrame()
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            query = """
+                SELECT video_id, title, description, search_keyword, geo,
+                       channel_title, channel_id, published, duration, url,
+                       thumbnail_url, tags, language,
+                       view_count, like_count, dislike_count, comment_count,
+                       favorite_count, engagement_total,
+                       extracted_at
+                FROM youtube_videos WHERE 1=1
+            """
+            params = []
+            if geo and geo != "Global":
+                query += " AND (UPPER(geo) = UPPER(?) OR geo = '' OR UPPER(geo) = 'GLOBAL' OR geo IS NULL)"
+                params.append(geo)
+            if niche_name:
+                keywords = _self._get_niche_keywords(niche_name)
+                if keywords:
+                    placeholders = ", ".join(["?"] * len(keywords))
+                    query += f" AND search_keyword IN ({placeholders})"
+                    params.extend(keywords)
+            query += f" ORDER BY view_count DESC LIMIT {limit}"
+            df = pd.read_sql_query(query, conn, params=params)
+            conn.close()
+            if 'tags' in df.columns:
+                df['tags'] = df['tags'].apply(lambda x: ', '.join(json.loads(x)) if x and x.startswith('[') else (x or ''))
+            return df
+        except Exception as e:
+            print(f"youtube_videos read error: {e}")
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=3600)
     def get_youtube_trends(_self, niche_name, geo="US"):
+        """Fallback: read YouTube from generic trends table."""
         if _self.direct:
             keywords = _self._get_niche_keywords(niche_name)
             df = _read_db(platform_filter="YouTube", geo=geo, keyword_filter=keywords if keywords else None)
@@ -293,26 +326,116 @@ class APIClient:
             return _process_df(df, niche_name)
 
     @st.cache_data(ttl=3600)
-    def get_social_trends(_self, platform, niche_name, geo="US"):
-        platform_db_map = {
-            "X": "X (Twitter)",
-            "Threads": "Threads",
-            "Instagram": "Instagram",
-            "TikTok": "TikTok",
-        }
-        target = platform_db_map.get(platform, platform)
-        if _self.direct:
-            keywords = _self._get_niche_keywords(niche_name)
-            df = _read_db(platform_filter=target, geo=geo, keyword_filter=keywords if keywords else None)
-            return _process_df(df, niche_name)
+    def get_instagram_posts(_self, niche_name=None, geo="US", limit=500):
+        """Read from the dedicated instagram_posts table."""
+        if not os.path.exists(DB_PATH):
+            return pd.DataFrame()
         try:
-            params = {"platform": platform, "niche_name": niche_name, "geo": geo}
-            response = requests.get(f"{_self.base_url}/social_trends", params=params, timeout=30)
-            response.raise_for_status()
-            return pd.DataFrame(response.json().get("data", []))
-        except Exception:
-            df = _read_db(platform_filter=target, geo=geo)
-            return _process_df(df, niche_name)
+            conn = sqlite3.connect(DB_PATH)
+            query = """
+                SELECT post_pk, shortcode, search_keyword, geo,
+                       caption, media_type, url, thumbnail_url, taken_at,
+                       location_name,
+                       username, full_name, follower_count, is_verified,
+                       like_count, comment_count, share_count, save_count,
+                       video_view_count, video_play_count,
+                       engagement_total, hashtags,
+                       extracted_at
+                FROM instagram_posts WHERE 1=1
+            """
+            params = []
+            if geo and geo != "Global":
+                query += " AND (UPPER(geo) = UPPER(?) OR geo = '' OR UPPER(geo) = 'GLOBAL' OR geo IS NULL)"
+                params.append(geo)
+            if niche_name:
+                keywords = _self._get_niche_keywords(niche_name)
+                if keywords:
+                    placeholders = ", ".join(["?"] * len(keywords))
+                    query += f" AND search_keyword IN ({placeholders})"
+                    params.extend(keywords)
+            query += f" ORDER BY like_count DESC LIMIT {limit}"
+            df = pd.read_sql_query(query, conn, params=params)
+            conn.close()
+            if 'taken_at' in df.columns:
+                df['posted'] = pd.to_datetime(df['taken_at'], unit='s', errors='coerce').dt.strftime('%Y-%m-%d %H:%M')
+            if 'hashtags' in df.columns:
+                df['hashtags'] = df['hashtags'].apply(lambda x: ', '.join(json.loads(x)) if x and x.startswith('[') else (x or ''))
+            return df
+        except Exception as e:
+            print(f"instagram_posts read error: {e}")
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=3600)
+    def get_reddit_posts(_self, niche_name=None, geo="US", limit=500):
+        """Read from the dedicated reddit_posts table."""
+        if not os.path.exists(DB_PATH):
+            return pd.DataFrame()
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            query = """
+                SELECT post_id, title, selftext, search_keyword, geo,
+                       url, permalink, domain,
+                       subreddit, author,
+                       score, upvote_ratio, num_comments, num_crossposts, total_awards,
+                       engagement_total, link_flair_text,
+                       created_utc, extracted_at
+                FROM reddit_posts WHERE 1=1
+            """
+            params = []
+            if geo and geo != "Global":
+                query += " AND (UPPER(geo) = UPPER(?) OR geo = '' OR UPPER(geo) = 'GLOBAL' OR geo IS NULL)"
+                params.append(geo)
+            if niche_name:
+                keywords = _self._get_niche_keywords(niche_name)
+                if keywords:
+                    kw_placeholders = ", ".join(["?"] * len(keywords))
+                    query += f" AND search_keyword IN ({kw_placeholders})"
+                    params.extend(keywords)
+            query += f" ORDER BY score DESC LIMIT {limit}"
+            df = pd.read_sql_query(query, conn, params=params)
+            conn.close()
+            if 'created_utc' in df.columns:
+                df['posted'] = pd.to_datetime(df['created_utc'], unit='s', errors='coerce').dt.strftime('%Y-%m-%d %H:%M')
+            return df
+        except Exception as e:
+            print(f"reddit_posts read error: {e}")
+            return pd.DataFrame()
+
+    @st.cache_data(ttl=3600)
+    def get_threads_posts(_self, niche_name=None, geo="US", limit=500):
+        """Read from the dedicated threads_posts table."""
+        if not os.path.exists(DB_PATH):
+            return pd.DataFrame()
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            query = """
+                SELECT post_code, search_keyword, geo,
+                       caption, url, taken_at, media_type,
+                       username, full_name, follower_count, is_verified,
+                       like_count, reply_count, repost_count, quote_count, share_count,
+                       engagement_total,
+                       extracted_at
+                FROM threads_posts WHERE 1=1
+            """
+            params = []
+            if geo and geo != "Global":
+                query += " AND (UPPER(geo) = UPPER(?) OR geo = '' OR UPPER(geo) = 'GLOBAL' OR geo IS NULL)"
+                params.append(geo)
+            if niche_name:
+                keywords = _self._get_niche_keywords(niche_name)
+                if keywords:
+                    placeholders = ", ".join(["?"] * len(keywords))
+                    query += f" AND search_keyword IN ({placeholders})"
+                    params.extend(keywords)
+            query += f" ORDER BY like_count DESC LIMIT {limit}"
+            df = pd.read_sql_query(query, conn, params=params)
+            conn.close()
+            if 'taken_at' in df.columns:
+                df['posted'] = pd.to_datetime(df['taken_at'], unit='s', errors='coerce').dt.strftime('%Y-%m-%d %H:%M')
+            return df
+        except Exception as e:
+            print(f"threads_posts read error: {e}")
+            return pd.DataFrame()
 
     @st.cache_data(ttl=600)
     def get_hackernews_trends(_self, niche_name=None, geo="US"):
@@ -332,6 +455,7 @@ class APIClient:
 
     @st.cache_data(ttl=600)
     def get_reddit_trends(_self, subreddit='all', trend_type='hot', niche_name=None, geo="US"):
+        """Fallback: read Reddit from generic trends table."""
         if _self.direct:
             df = _read_db(platform_filter="Reddit", geo=geo)
             return _process_df(df, niche_name)
@@ -361,6 +485,49 @@ class APIClient:
         except Exception:
             df = _read_db(platform_filter="News", geo=geo)
             return _process_df(df, niche_name)
+
+    @st.cache_data(ttl=3600)
+    def get_tiktok_videos(_self, niche_name=None, geo="US", limit=500):
+        """Read from the dedicated tiktok_videos table."""
+        if not os.path.exists(DB_PATH):
+            return pd.DataFrame()
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            query = """
+                SELECT aweme_id, description, search_keyword, geo, region,
+                       create_time, duration, share_url,
+                       digg_count, comment_count, share_count, play_count,
+                       download_count, collect_count, engagement_total,
+                       author_unique_id, author_nickname, author_follower_count,
+                       author_verified,
+                       music_title, music_author,
+                       hashtags, video_ratio,
+                       extracted_at
+                FROM tiktok_videos WHERE 1=1
+            """
+            params = []
+            if geo and geo != "Global":
+                query += " AND (UPPER(geo) = UPPER(?) OR geo = '' OR UPPER(geo) = 'GLOBAL' OR geo IS NULL)"
+                params.append(geo)
+            if niche_name:
+                keywords = _self._get_niche_keywords(niche_name)
+                if keywords:
+                    placeholders = ", ".join(["?"] * len(keywords))
+                    query += f" AND search_keyword IN ({placeholders})"
+                    params.extend(keywords)
+            query += f" ORDER BY play_count DESC LIMIT {limit}"
+            df = pd.read_sql_query(query, conn, params=params)
+            conn.close()
+            # Parse create_time to human-readable
+            if 'create_time' in df.columns:
+                df['created'] = pd.to_datetime(df['create_time'], unit='s', errors='coerce').dt.strftime('%Y-%m-%d %H:%M')
+            # Parse hashtags JSON
+            if 'hashtags' in df.columns:
+                df['hashtags'] = df['hashtags'].apply(lambda x: ', '.join(json.loads(x)) if x else '')
+            return df
+        except Exception as e:
+            print(f"tiktok_videos read error: {e}")
+            return pd.DataFrame()
 
     @st.cache_data(ttl=60)
     def get_scrape_errors(_self, platform=None):

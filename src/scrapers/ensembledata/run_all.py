@@ -7,8 +7,11 @@ Usage:
 """
 
 import argparse
+import logging
 import os
 import sys
+
+logger = logging.getLogger(__name__)
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -22,7 +25,7 @@ from threads_scraper import scrape_threads
 def run_all(keywords, geo="Global", subreddits=None, tiktok_period="30",
             youtube_depth=1, youtube_period="month", reddit_sort="hot", reddit_period="day"):
     """Run all ensembledata platform scrapers."""
-    print(f"=== Ensembledata scrape: keywords={keywords}, geo={geo} ===\n")
+    logger.info("Starting ensembledata scrape: keywords=%s, geo=%s", keywords, geo)
 
     scrape_tiktok(keywords, geo=geo, period=tiktok_period)
     scrape_instagram(keywords, geo=geo)
@@ -32,10 +35,15 @@ def run_all(keywords, geo="Global", subreddits=None, tiktok_period="30",
     subs = subreddits or ["all"]
     scrape_reddit(subs, geo=geo, sort=reddit_sort, period=reddit_period)
 
-    print("\n=== All ensembledata scrapers finished ===")
+    logger.info("All ensembledata scrapers finished.")
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
     parser = argparse.ArgumentParser(description="Run all ensembledata scrapers")
     parser.add_argument("--keywords", required=True, help="Comma-separated keywords")
     parser.add_argument("--geo", default="Global")

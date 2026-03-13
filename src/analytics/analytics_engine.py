@@ -216,7 +216,6 @@ class AnalyticsEngine:
             "Google Interest": 1.0,
             "Google Regions": 1.2,
             "YouTube": 1.3,
-            "X (Twitter)": 1.2,
             "Reddit": 1.4,
             "HackerNews": 1.3,
             "News": 1.1

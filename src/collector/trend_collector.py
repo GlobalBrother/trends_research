@@ -50,7 +50,7 @@ class TrendCollector:
             if include_youtube:
                 included_platforms.append('YouTube')
             if include_social:
-                included_platforms.extend(['X (Twitter)', 'Threads', 'Instagram', 'TikTok'])
+                included_platforms.extend(['Threads', 'Instagram', 'TikTok'])
             if include_hackernews:
                 included_platforms.append('HackerNews')
             if include_reddit:
@@ -158,7 +158,7 @@ class TrendCollector:
         return True
 
     def run_social_trends_scraper(self, platform, keywords, geo="Global"):
-        """Runs the social media scraper via ensembledata (Scrapy for X only)."""
+        """Runs the social media scraper via ensembledata."""
         kw_list = keywords if isinstance(keywords, list) else [k.strip() for k in keywords.split(",")]
         if HAS_ENSEMBLEDATA and os.getenv("ENSEMBLEDATA_TOKEN"):
             scraper_map = {
@@ -170,9 +170,6 @@ class TrendCollector:
             if fn:
                 fn()
                 return True
-        # Scrapy fallback only for X
-        if platform == "X":
-            return self._run_scraper("x_trends", keywords=keywords, geo=geo)
         if platform in ("TikTok", "Instagram", "Threads"):
             print(f"[{platform.lower()}] ensembledata not available – skipping.")
             return False
@@ -211,7 +208,6 @@ class TrendCollector:
         self.run_youtube_trends_scraper(keywords, geo=geo)
         
         # 3. Social - Use ALL keywords
-        self.run_social_trends_scraper("X", keywords, geo=geo)
         self.run_social_trends_scraper("Threads", keywords, geo=geo)
         self.run_social_trends_scraper("Instagram", keywords, geo=geo)
         self.run_social_trends_scraper("TikTok", keywords, geo=geo)

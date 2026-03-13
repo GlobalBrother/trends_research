@@ -5,5 +5,4 @@
 # - threads_scraper.py (Threads) → ensembledata
 # - youtube_scraper.py (YouTube) → ensembledata
 # - reddit_scraper.py (Reddit) → ensembledata
-# Remaining Scrapy spider:
-# - x_spider.py (X/Twitter)
+# X/Twitter has been removed from the app.
