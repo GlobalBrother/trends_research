@@ -268,7 +268,9 @@ def get_social_trends(platform: str = Query(...), niche_name: str = Query(...), 
     platform_map = {
         "X": "X (Twitter)",
         "Threads": "Threads",
-        "Instagram": "Instagram"
+        "Instagram": "Instagram",
+        "TikTok": "TikTok",
+        "Facebook": "Facebook"
     }
     target_platform = platform_map.get(platform)
     if not target_platform:

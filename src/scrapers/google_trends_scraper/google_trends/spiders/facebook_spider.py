@@ -1,0 +1,9 @@
+from .social_base_spider import SocialBaseTrendsSpider
+
+
+class FacebookSpider(SocialBaseTrendsSpider):
+    """Discover Facebook-related trends via Google Trends API."""
+
+    name = "facebook_trends"
+    data_type = "facebook_trends"
+    platform_query_suffix = "facebook"

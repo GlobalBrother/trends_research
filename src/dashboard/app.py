@@ -243,8 +243,8 @@ def main():
 
     # ==================== TAB 3: Social Media (X + Threads + Instagram) ====================
     with tab3:
-        platform_choice = st.radio("Platform", ["𝕏 X", "💬 Threads", "📸 Instagram"], horizontal=True)
-        platform_map = {"𝕏 X": "X", "💬 Threads": "Threads", "📸 Instagram": "Instagram"}
+        platform_choice = st.radio("Platform", ["𝕏 X", "💬 Threads", "📸 Instagram", "🎵 TikTok", "👤 Facebook"], horizontal=True)
+        platform_map = {"𝕏 X": "X", "💬 Threads": "Threads", "📸 Instagram": "Instagram", "🎵 TikTok": "TikTok", "👤 Facebook": "Facebook"}
         platform_key = platform_map[platform_choice]
 
         if st.button("🔄 Refresh", key="refresh_social"):

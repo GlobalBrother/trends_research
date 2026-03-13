@@ -38,7 +38,7 @@ class TrendCollector:
             if include_youtube:
                 included_platforms.append('YouTube')
             if include_social:
-                included_platforms.extend(['X (Twitter)', 'Threads', 'Instagram'])
+                included_platforms.extend(['X (Twitter)', 'Threads', 'Instagram', 'TikTok', 'Facebook'])
             if include_hackernews:
                 included_platforms.append('HackerNews')
             if include_reddit:
@@ -141,8 +141,19 @@ class TrendCollector:
         return self._run_scraper("youtube_trends", keywords=keywords, geo=geo)
 
     def run_social_trends_scraper(self, platform, keywords, geo="Global"):
-        """Runs the Scrapy Social Trends spider for a specific platform."""
-        return self._run_scraper("social_trends", platform=platform, keywords=keywords, geo=geo)
+        """Runs the Scrapy spider for a specific social media platform."""
+        spider_map = {
+            "X": "x_trends",
+            "Threads": "threads_trends",
+            "Instagram": "instagram_trends",
+            "TikTok": "tiktok_trends",
+            "Facebook": "facebook_trends",
+        }
+        spider_name = spider_map.get(platform)
+        if not spider_name:
+            print(f"Unknown social platform: {platform}")
+            return False
+        return self._run_scraper(spider_name, keywords=keywords, geo=geo)
 
     def run_hackernews_scraper(self, keywords=None, geo="Global"):
         """Runs the Scrapy HackerNews spider."""
@@ -170,6 +181,8 @@ class TrendCollector:
         self.run_social_trends_scraper("X", keywords, geo=geo)
         self.run_social_trends_scraper("Threads", keywords, geo=geo)
         self.run_social_trends_scraper("Instagram", keywords, geo=geo)
+        self.run_social_trends_scraper("TikTok", keywords, geo=geo)
+        self.run_social_trends_scraper("Facebook", keywords, geo=geo)
         
         # 4. Reddit - Use ALL keywords
         self.run_reddit_scraper(keywords=keywords, geo=geo)

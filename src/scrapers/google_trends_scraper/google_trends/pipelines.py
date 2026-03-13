@@ -173,8 +173,8 @@ class SQLitePipeline:
                 growth = self._parse_views(res.get('views')) or 0
                 extra_data['published'] = res.get('published')
                 extra_data['video_id'] = res.get('video_id')
-            elif data_type in ['x_trends', 'threads_trends', 'instagram_trends']:
-                platform_map = {'x_trends': 'X (Twitter)', 'threads_trends': 'Threads', 'instagram_trends': 'Instagram'}
+            elif data_type in ['x_trends', 'threads_trends', 'instagram_trends', 'tiktok_trends', 'facebook_trends']:
+                platform_map = {'x_trends': 'X (Twitter)', 'threads_trends': 'Threads', 'instagram_trends': 'Instagram', 'tiktok_trends': 'TikTok', 'facebook_trends': 'Facebook'}
                 platform = platform_map.get(data_type)
                 topic = res.get('topic')
                 growth = res.get('engagement', 0)
