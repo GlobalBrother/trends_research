@@ -542,3 +542,17 @@ class APIClient:
             return pd.DataFrame(response.json().get("data", []))
         except Exception:
             return _read_errors(platform)
+
+    def clear_scrape_errors(self):
+        """Delete all rows from the scrape_errors table."""
+        if not os.path.exists(DB_PATH):
+            return True
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            conn.execute("DELETE FROM scrape_errors")
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            print(f"Failed to clear scrape_errors: {e}")
+            return False

@@ -1,5 +1,6 @@
-import sys
+﻿import sys
 import os
+import math
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -17,78 +18,6 @@ from src.dashboard.utils.api_client import APIClient
 
 st.set_page_config(page_title="Admin — Scraper Control", layout="wide", page_icon="🛠️")
 
-# ---------------------------------------------------------------------------
-# Custom CSS
-# ---------------------------------------------------------------------------
-
-st.markdown("""
-<style>
-.block-container { padding-top: 1.5rem; padding-bottom: 1rem; }
-[data-testid="stSidebar"] { background: linear-gradient(180deg, #0e1117 0%, #1a1d23 100%); }
-
-/* Metric cards */
-.metric-row { display: flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 1rem; }
-.metric-card {
-    flex: 1 1 140px;
-    background: linear-gradient(135deg, #1e2130 0%, #262a3a 100%);
-    border: 1px solid #333;
-    border-radius: 12px;
-    padding: 1rem 1.2rem;
-    text-align: center;
-    min-width: 140px;
-}
-.metric-card .metric-value {
-    font-size: 1.6rem; font-weight: 700; color: #58a6ff; line-height: 1.2;
-}
-.metric-card .metric-label {
-    font-size: 0.78rem; color: #8b949e; margin-top: 0.25rem;
-    text-transform: uppercase; letter-spacing: 0.5px;
-}
-
-/* Section headers */
-.section-header {
-    display: flex; align-items: center; gap: 0.5rem;
-    margin: 1.2rem 0 0.6rem 0; padding-bottom: 0.4rem;
-    border-bottom: 2px solid #30363d;
-}
-.section-header h3 { margin: 0; font-size: 1.1rem; font-weight: 600; color: #e6edf3; }
-
-/* Status badges */
-.status-badge {
-    display: inline-block; padding: 0.2rem 0.6rem; border-radius: 20px;
-    font-size: 0.72rem; font-weight: 600; letter-spacing: 0.3px;
-}
-.status-ok { background: #1a3a2a; color: #3fb950; border: 1px solid #238636; }
-.status-warn { background: #3a2a1a; color: #d29922; border: 1px solid #9e6a03; }
-.status-err { background: #3a1a1a; color: #f85149; border: 1px solid #da3633; }
-
-/* Scraper card */
-.scraper-card {
-    background: linear-gradient(135deg, #161b22 0%, #1c2333 100%);
-    border: 1px solid #30363d;
-    border-radius: 12px;
-    padding: 1.2rem;
-    margin-bottom: 0.75rem;
-}
-.scraper-card h4 { margin: 0 0 0.5rem 0; font-size: 1rem; }
-</style>
-""", unsafe_allow_html=True)
-
-
-def metric_cards(metrics):
-    html = '<div class="metric-row">'
-    for m in metrics:
-        html += f'''<div class="metric-card">
-            <div class="metric-value">{m.get("icon","")} {m["value"]}</div>
-            <div class="metric-label">{m["label"]}</div>
-        </div>'''
-    html += '</div>'
-    st.markdown(html, unsafe_allow_html=True)
-
-
-def section_header(icon, title):
-    st.markdown(f'<div class="section-header"><h3>{icon} {title}</h3></div>', unsafe_allow_html=True)
-
 
 def format_number(val):
     if not isinstance(val, (int, float)):
@@ -96,7 +25,6 @@ def format_number(val):
             val = float(val)
         except Exception:
             return str(val)
-    import math
     if math.isnan(val) or math.isinf(val):
         return "0"
     if val >= 1_000_000:
@@ -128,14 +56,14 @@ SCRAPERS = [
 
 def render_admin_sidebar(api):
     with st.sidebar:
-        st.markdown("### 🛠️ Admin Controls")
+        st.subheader("🛠️ Admin Controls")
 
         if api.direct:
-            st.markdown('<span class="status-badge status-ok">⚡ Direct mode</span>', unsafe_allow_html=True)
+            st.success("⚡ Direct mode", icon="⚡")
         else:
-            st.markdown('<span class="status-badge status-warn">🌐 API mode</span>', unsafe_allow_html=True)
+            st.warning("🌐 API mode", icon="🌐")
 
-        st.markdown("---")
+        st.divider()
 
         countries = {
             "United States": "US", "Global": "Global", "United Kingdom": "GB",
@@ -155,7 +83,7 @@ def render_admin_sidebar(api):
         niches = api.get_niches()
         niche = st.selectbox("🎯 Niche", niches, key="admin_niche")
 
-        st.markdown("---")
+        st.divider()
 
         timeframes = {
             "Last 12 Months": "today 12-m", "Last hour": "now 1-H",
@@ -180,7 +108,7 @@ def render_admin_sidebar(api):
         cat_name = st.selectbox("📂 Category", list(categories.keys()), key="admin_cat")
         category = categories[cat_name]
 
-        st.markdown("---")
+        st.divider()
 
         with st.expander("📥 Import Google Trends JSON", expanded=False):
             st.caption("Upload the JSON/TXT file from a 429 error.")
@@ -209,12 +137,10 @@ def _init_history():
 
 
 def _record_scrape(scraper_key, label, success, niche, geo):
-    _init_history()
     st.session_state.scrape_history.insert(0, {
         "time": datetime.now().strftime("%H:%M:%S"),
         "scraper": label,
-        "key": scraper_key,
-        "niche": niche,
+        "niche": niche or "—",
         "geo": geo,
         "status": "✅ Success" if success else "❌ Failed",
     })
@@ -227,7 +153,7 @@ def _record_scrape(scraper_key, label, success, niche, geo):
 # ---------------------------------------------------------------------------
 
 def admin_main():
-    st.markdown("## 🛠️ Admin — Scraper Control Panel")
+    st.header("🛠️ Admin — Scraper Control Panel")
 
     api = APIClient()
     cfg = render_admin_sidebar(api)
@@ -238,12 +164,15 @@ def admin_main():
     country = cfg["country_name"]
 
     # --- Top KPI ---
-    metric_cards([
-        {"label": "Active Niche", "value": niche or "—", "icon": "🎯"},
-        {"label": "Region", "value": country, "icon": "🌍"},
-        {"label": "Mode", "value": "Direct" if api.direct else "API", "icon": "⚡"},
-        {"label": "Session Scrapes", "value": str(len(st.session_state.scrape_history)), "icon": "📊"},
-    ])
+    kpi_cols = st.columns(4)
+    with kpi_cols[0]:
+        st.metric("🎯 Active Niche", niche or "—")
+    with kpi_cols[1]:
+        st.metric("🌍 Region", country)
+    with kpi_cols[2]:
+        st.metric("⚡ Mode", "Direct" if api.direct else "API")
+    with kpi_cols[3]:
+        st.metric("📊 Session Scrapes", str(len(st.session_state.scrape_history)))
 
     # --- Tabs ---
     tab_scrape, tab_batch, tab_history, tab_errors = st.tabs([
@@ -252,7 +181,7 @@ def admin_main():
 
     # ---- Tab 1: Per-platform scraping ----
     with tab_scrape:
-        section_header("🚀", "Launch Scrapers")
+        st.subheader("🚀 Launch Scrapers")
         st.caption(f"Scraping for niche **{niche}** in **{country}** ({geo})")
 
         for i in range(0, len(SCRAPERS), 2):
@@ -263,29 +192,28 @@ def admin_main():
                     break
                 s = SCRAPERS[idx]
                 with col:
-                    st.markdown(f"""<div class="scraper-card">
-                        <h4>{s['icon']} {s['label']}</h4>
-                        <p style="color:#8b949e;font-size:0.82rem;margin:0">{s['desc']}</p>
-                    </div>""", unsafe_allow_html=True)
+                    with st.container(border=True):
+                        st.markdown(f"**{s['icon']} {s['label']}**")
+                        st.caption(s['desc'])
 
-                    if st.button(f"🚀 Scrape {s['label']}", key=f"admin_scrape_{s['key']}",
-                                 use_container_width=True):
-                        with st.spinner(f"Running {s['label']} scraper…"):
-                            ok = api.trigger_scrape(
-                                niche_name=niche, geo=geo,
-                                timeframe=cfg["timeframe"],
-                                category=cfg["category"],
-                                scraper_type=s["key"],
-                            )
-                        _record_scrape(s["key"], s["label"], ok, niche, geo)
-                        if ok:
-                            st.toast(f"✅ {s['label']} scrape completed!", icon="🎉")
-                        else:
-                            st.error(f"❌ {s['label']} scrape failed")
+                        if st.button(f"🚀 Scrape {s['label']}", key=f"admin_scrape_{s['key']}",
+                                     width='stretch'):
+                            with st.spinner(f"Running {s['label']} scraper…"):
+                                ok = api.trigger_scrape(
+                                    niche_name=niche, geo=geo,
+                                    timeframe=cfg["timeframe"],
+                                    category=cfg["category"],
+                                    scraper_type=s["key"],
+                                )
+                            _record_scrape(s["key"], s["label"], ok, niche, geo)
+                            if ok:
+                                st.toast(f"✅ {s['label']} scrape completed!", icon="🎉")
+                            else:
+                                st.error(f"❌ {s['label']} scrape failed")
 
     # ---- Tab 2: Batch scrape ----
     with tab_batch:
-        section_header("⚡", "Batch Scrape — Run Multiple Scrapers")
+        st.subheader("⚡ Batch Scrape — Run Multiple Scrapers")
         st.caption(f"Select scrapers to run for **{niche}** in **{country}**")
 
         selected = []
@@ -295,14 +223,14 @@ def admin_main():
                 if st.checkbox(f"{s['icon']} {s['label']}", value=True, key=f"batch_{s['key']}"):
                     selected.append(s)
 
-        st.markdown("---")
+        st.divider()
 
         c1, c2, c3 = st.columns([1, 1, 3])
         with c1:
-            run_all = st.button("🚀 Run Selected", use_container_width=True, type="primary",
+            run_all = st.button("🚀 Run Selected", width='stretch', type="primary",
                                 key="admin_run_selected")
         with c2:
-            run_everything = st.button("⚡ Run ALL", use_container_width=True, key="admin_run_all")
+            run_everything = st.button("⚡ Run ALL", width='stretch', key="admin_run_all")
 
         if run_all and selected:
             progress = st.progress(0, text="Starting batch scrape…")
@@ -319,8 +247,8 @@ def admin_main():
                 results.append({"Scraper": f"{s['icon']} {s['label']}", "Status": "✅" if ok else "❌"})
             progress.empty()
 
-            st.markdown("#### Results")
-            st.dataframe(pd.DataFrame(results), hide_index=True, use_container_width=True)
+            st.subheader("Results")
+            st.dataframe(pd.DataFrame(results), hide_index=True, width='stretch')
 
             ok_count = sum(1 for r in results if "✅" in r["Status"])
             st.toast(f"Batch complete: {ok_count}/{len(results)} succeeded", icon="🏁")
@@ -340,21 +268,21 @@ def admin_main():
                 results.append({"Scraper": f"{s['icon']} {s['label']}", "Status": "✅" if ok else "❌"})
             progress.empty()
 
-            st.markdown("#### Results")
-            st.dataframe(pd.DataFrame(results), hide_index=True, use_container_width=True)
+            st.subheader("Results")
+            st.dataframe(pd.DataFrame(results), hide_index=True, width='stretch')
 
             ok_count = sum(1 for r in results if "✅" in r["Status"])
             st.toast(f"All scrapers done: {ok_count}/{len(results)} succeeded", icon="🏁")
 
     # ---- Tab 3: History ----
     with tab_history:
-        section_header("📋", "Scrape History (this session)")
+        st.subheader("📋 Scrape History (this session)")
 
         if st.session_state.scrape_history:
             hist_df = pd.DataFrame(st.session_state.scrape_history)
             st.dataframe(
                 hist_df[["time", "scraper", "niche", "geo", "status"]],
-                hide_index=True, use_container_width=True, height=400,
+                hide_index=True, width='stretch', height=400,
                 column_config={
                     "time": "Time", "scraper": "Scraper",
                     "niche": "Niche", "geo": "Region", "status": "Status",
@@ -369,26 +297,34 @@ def admin_main():
 
     # ---- Tab 4: Errors ----
     with tab_errors:
-        section_header("⚠️", "Scrape Errors")
+        st.subheader("⚠️ Scrape Errors")
 
-        if st.button("🔄 Refresh Errors", key="admin_refresh_errors"):
-            st.cache_data.clear()
-            st.rerun()
+        c_ref, c_clr = st.columns([1, 1])
+        with c_ref:
+            if st.button("🔄 Refresh Errors", key="admin_refresh_errors"):
+                st.cache_data.clear()
+                st.rerun()
+        with c_clr:
+            if st.button("🗑️ Clear All Errors", key="admin_clear_errors", type="primary"):
+                if api.clear_scrape_errors():
+                    st.cache_data.clear()
+                    st.toast("All scrape errors cleared!", icon="🗑️")
+                    st.rerun()
+                else:
+                    st.error("Failed to clear errors.")
 
         errors_df = api.get_scrape_errors()
         if errors_df.empty:
             st.success("No scrape errors recorded! 🚀")
         else:
-            metric_cards([
-                {"label": "Total Errors", "value": format_number(len(errors_df)), "icon": "⚠️"},
-            ])
+            st.metric("⚠️ Total Errors", format_number(len(errors_df)))
             st.dataframe(
                 errors_df,
                 column_config={
                     "url": st.column_config.LinkColumn("Failed URL"),
                     "status": "HTTP Status", "extracted_at": "Timestamp"
                 },
-                use_container_width=True, hide_index=True, height=400,
+                width='stretch', hide_index=True, height=400,
             )
 
 

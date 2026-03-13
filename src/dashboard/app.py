@@ -1,4 +1,4 @@
-import sys
+﻿import sys
 import os
 import streamlit as st
 import pandas as pd
@@ -157,15 +157,15 @@ def render_dataframe(df, columns, col_config=None, height=400):
         if 'virality_score' in columns:
             st.dataframe(
                 display_df[columns].style.background_gradient(subset=['virality_score'], cmap='viridis'),
-                column_config=col_config, height=height, use_container_width=True, hide_index=True
+                column_config=col_config, height=height, width='stretch', hide_index=True
             )
         else:
             st.dataframe(
                 display_df[columns],
-                column_config=col_config, height=height, use_container_width=True, hide_index=True
+                column_config=col_config, height=height, width='stretch', hide_index=True
             )
     except Exception:
-        st.dataframe(display_df[columns], column_config=col_config, height=height, use_container_width=True, hide_index=True)
+        st.dataframe(display_df[columns], column_config=col_config, height=height, width='stretch', hide_index=True)
 
 
 
@@ -193,12 +193,12 @@ def exclude_regions(df):
 def render_sidebar(api):
     """Build sidebar controls and return selections dict."""
     with st.sidebar:
-        st.markdown("### ⚙️ Controls")
+        st.markdown("### âš™ï¸ Controls")
 
         if api.direct:
-            st.markdown('<span class="status-badge status-ok">⚡ Direct mode</span>', unsafe_allow_html=True)
+            st.markdown('<span class="status-badge status-ok">âš¡ Direct mode</span>', unsafe_allow_html=True)
         else:
-            st.markdown('<span class="status-badge status-warn">🌐 API mode</span>', unsafe_allow_html=True)
+            st.markdown('<span class="status-badge status-warn">ðŸŒ API mode</span>', unsafe_allow_html=True)
 
         st.markdown("---")
 
@@ -214,11 +214,11 @@ def render_sidebar(api):
             "Norway": "NO", "Finland": "FI", "Portugal": "PT", "Greece": "GR",
             "Czech Republic": "CZ", "Hungary": "HU"
         }
-        country_name = st.selectbox("🌍 Country", list(countries.keys()))
+        country_name = st.selectbox("ðŸŒ Country", list(countries.keys()))
         geo = countries[country_name]
 
         niches = api.get_niches()
-        niche = st.selectbox("🎯 Niche", niches)
+        niche = st.selectbox("ðŸŽ¯ Niche", niches)
 
     return {
         "country_name": country_name, "geo": geo, "niche": niche,
@@ -230,18 +230,18 @@ def render_sidebar(api):
 # ---------------------------------------------------------------------------
 
 def tab_niche_research(api, cfg):
-    """Niche Research — overview with KPI cards, table, and charts."""
+    """Niche Research â€” overview with KPI cards, table, and charts."""
     niche, geo, country = cfg["niche"], cfg["geo"], cfg["country_name"]
 
     col_a, col_b = st.columns([3, 1])
     with col_a:
-        st.markdown(f"#### 🎯 {niche} — {country}")
+        st.markdown(f"#### ðŸŽ¯ {niche} â€” {country}")
     with col_b:
-        if st.button("🔄 Refresh", key="refresh_niche", use_container_width=True):
+        if st.button("ðŸ”„ Refresh", key="refresh_niche", width='stretch'):
             st.cache_data.clear()
             st.rerun()
 
-    with st.spinner(f"Loading trends…"):
+    with st.spinner(f"Loading trendsâ€¦"):
         df = api.get_trends(geo=geo, niche_name=niche)
 
     if df.empty:
@@ -258,14 +258,14 @@ def tab_niche_research(api, cfg):
     avg_virality = work['virality_score'].mean() if 'virality_score' in work.columns else 0
     top_growth = work['growth'].max() if 'growth' in work.columns else 0
     metric_cards([
-        {"label": "Total Trends", "value": format_number(total), "icon": "📊"},
-        {"label": "Platforms", "value": str(platforms), "icon": "🔗"},
-        {"label": "Avg Virality", "value": f"{avg_virality:.1f}", "icon": "🔥"},
-        {"label": "Top Growth", "value": format_number(top_growth), "icon": "📈"},
+        {"label": "Total Trends", "value": format_number(total), "icon": "ðŸ“Š"},
+        {"label": "Platforms", "value": str(platforms), "icon": "ðŸ”—"},
+        {"label": "Avg Virality", "value": f"{avg_virality:.1f}", "icon": "ðŸ”¥"},
+        {"label": "Top Growth", "value": format_number(top_growth), "icon": "ðŸ“ˆ"},
     ])
 
     # Table
-    section_header("📋", "Trending Topics")
+    section_header("ðŸ“‹", "Trending Topics")
     topic_col = 'aggregated_topic' if 'aggregated_topic' in work.columns else 'topic'
     cols = [topic_col, 'platform', 'growth', 'sentiment', 'virality_score']
     for opt in ('geo', 'keyword', 'url'):
@@ -281,8 +281,8 @@ def tab_niche_research(api, cfg):
         height=380,
     )
 
-    # Charts — always visible, side by side
-    section_header("📊", "Visual Breakdown")
+    # Charts â€” always visible, side by side
+    section_header("ðŸ“Š", "Visual Breakdown")
     c1, c2 = st.columns(2)
     plot_df = flatten_platform(work)
     with c1:
@@ -292,7 +292,7 @@ def tab_niche_research(api, cfg):
                          color_discrete_sequence=px.colors.sequential.Tealgrn)
             fig.update_layout(margin=dict(t=40, b=10, l=10, r=10), showlegend=False,
                               paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
     with c2:
         if not plot_df.empty:
             fig2 = px.bar(plot_df.head(15), x=topic_col, y='growth', color='platform',
@@ -300,7 +300,7 @@ def tab_niche_research(api, cfg):
                           color_discrete_sequence=px.colors.qualitative.Set2)
             fig2.update_layout(margin=dict(t=40, b=10, l=10, r=10), xaxis_tickangle=-40,
                                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, width='stretch')
 
     return df
 
@@ -315,15 +315,15 @@ def tab_daily_trends(api, cfg):
 
     col_a, col_b, col_c = st.columns([2, 1, 1])
     with col_a:
-        st.markdown(f"#### 📈 Daily Trends — {country}")
+        st.markdown(f"#### ðŸ“ˆ Daily Trends â€” {country}")
     with col_b:
         trend_type = st.radio("Type", ["daily", "realtime"], horizontal=True, label_visibility="collapsed")
     with col_c:
-        if st.button("🔄 Refresh", key="refresh_daily", use_container_width=True):
+        if st.button("ðŸ”„ Refresh", key="refresh_daily", width='stretch'):
             st.cache_data.clear()
             st.rerun()
 
-    with st.spinner(f"Fetching {trend_type} trends…"):
+    with st.spinner(f"Fetching {trend_type} trendsâ€¦"):
         df = api.get_trending_now(geo=geo, trend_type=trend_type)
 
     if df.empty:
@@ -332,9 +332,9 @@ def tab_daily_trends(api, cfg):
 
     # KPIs
     metric_cards([
-        {"label": "Trends", "value": format_number(len(df)), "icon": "🔥"},
-        {"label": "Top Traffic", "value": format_number(df['growth'].max()) if 'growth' in df.columns else "—", "icon": "📈"},
-        {"label": "Avg Virality", "value": f"{df['virality_score'].mean():.1f}" if 'virality_score' in df.columns else "—", "icon": "⚡"},
+        {"label": "Trends", "value": format_number(len(df)), "icon": "ðŸ”¥"},
+        {"label": "Top Traffic", "value": format_number(df['growth'].max()) if 'growth' in df.columns else "â€”", "icon": "ðŸ“ˆ"},
+        {"label": "Avg Virality", "value": f"{df['virality_score'].mean():.1f}" if 'virality_score' in df.columns else "â€”", "icon": "âš¡"},
     ])
 
     render_dataframe(
@@ -343,25 +343,25 @@ def tab_daily_trends(api, cfg):
         height=380,
     )
 
-    section_header("📊", f"Top {trend_type.capitalize()} Trends")
+    section_header("ðŸ“Š", f"Top {trend_type.capitalize()} Trends")
     fig = px.bar(df.head(15), x='topic', y='growth', color='virality_score',
                  color_continuous_scale='viridis')
     fig.update_layout(margin=dict(t=20, b=10, l=10, r=10), xaxis_tickangle=-40,
                       paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
 
 def tab_youtube(api, cfg):
-    """YouTube — dedicated tab using youtube_videos table."""
+    """YouTube â€” dedicated tab using youtube_videos table."""
     col_a, col_b = st.columns([3, 1])
     with col_a:
-        st.markdown("##### 🎬 YouTube Videos")
+        st.markdown("##### ðŸŽ¬ YouTube Videos")
     with col_b:
-        if st.button("🔄 Refresh", key="refresh_yt", use_container_width=True):
+        if st.button("ðŸ”„ Refresh", key="refresh_yt", width='stretch'):
                 st.cache_data.clear()
                 st.rerun()
 
-    with st.spinner("Fetching YouTube videos…"):
+    with st.spinner("Fetching YouTube videosâ€¦"):
         df = api.get_youtube_videos(niche_name=cfg["niche"], geo=cfg["geo"])
 
     if df.empty:
@@ -375,11 +375,11 @@ def tab_youtube(api, cfg):
     unique_channels = df['channel_title'].nunique() if 'channel_title' in df.columns else 0
 
     metric_cards([
-        {"label": "Videos", "value": format_number(len(df)), "icon": "🎬"},
-        {"label": "Total Views", "value": format_number(total_views), "icon": "👁️"},
-        {"label": "Total Engagement", "value": format_number(total_engagement), "icon": "🔥"},
-        {"label": "Top Likes", "value": format_number(top_likes), "icon": "❤️"},
-        {"label": "Channels", "value": format_number(unique_channels), "icon": "📺"},
+        {"label": "Videos", "value": format_number(len(df)), "icon": "ðŸŽ¬"},
+        {"label": "Total Views", "value": format_number(total_views), "icon": "ðŸ‘ï¸"},
+        {"label": "Total Engagement", "value": format_number(total_engagement), "icon": "ðŸ”¥"},
+        {"label": "Top Likes", "value": format_number(top_likes), "icon": "â¤ï¸"},
+        {"label": "Channels", "value": format_number(unique_channels), "icon": "ðŸ“º"},
     ])
 
     # --- Data table ---
@@ -398,10 +398,10 @@ def tab_youtube(api, cfg):
         display_df, display_cols,
         col_config={
             "url": st.column_config.LinkColumn("Link"),
-            "view_count": "👁️ Views",
-            "like_count": "❤️ Likes",
-            "comment_count": "💬 Comments",
-            "engagement_total": "🔥 Engagement",
+            "view_count": "ðŸ‘ï¸ Views",
+            "like_count": "â¤ï¸ Likes",
+            "comment_count": "ðŸ’¬ Comments",
+            "engagement_total": "ðŸ”¥ Engagement",
             "channel_title": "Channel",
             "title": "Title",
             "published": "Published",
@@ -413,36 +413,36 @@ def tab_youtube(api, cfg):
 
     # --- Charts ---
     if 'view_count' in df.columns and 'engagement_total' in df.columns:
-        section_header("📊", "Views vs Engagement")
+        section_header("ðŸ“Š", "Views vs Engagement")
         fig = px.scatter(df.head(50), x='view_count', y='engagement_total',
                          hover_name='title' if 'title' in df.columns else None,
                          color='engagement_total', color_continuous_scale='tealgrn',
                          size='view_count', size_max=30)
         fig.update_layout(margin=dict(t=20, b=10, l=10, r=10),
                           paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     if 'channel_title' in df.columns and 'view_count' in df.columns:
-        section_header("📊", "Top Channels by Views")
+        section_header("ðŸ“Š", "Top Channels by Views")
         top_channels = df.groupby('channel_title')['view_count'].sum().nlargest(15).reset_index()
         fig2 = px.bar(top_channels, x='channel_title', y='view_count',
                       color='view_count', color_continuous_scale='tealgrn')
         fig2.update_layout(margin=dict(t=20, b=10, l=10, r=10), xaxis_tickangle=-40,
                            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width='stretch')
 
 
 def tab_tiktok(api, cfg):
-    """TikTok — dedicated tab using tiktok_videos table."""
+    """TikTok â€” dedicated tab using tiktok_videos table."""
     col_a, col_b = st.columns([3, 1])
     with col_a:
-        st.markdown("##### 🎵 TikTok Videos")
+        st.markdown("##### ðŸŽµ TikTok Videos")
     with col_b:
-        if st.button("🔄 Refresh", key="refresh_tiktok", use_container_width=True):
+        if st.button("ðŸ”„ Refresh", key="refresh_tiktok", width='stretch'):
                 st.cache_data.clear()
                 st.rerun()
 
-    with st.spinner("Fetching TikTok videos…"):
+    with st.spinner("Fetching TikTok videosâ€¦"):
         df = api.get_tiktok_videos(niche_name=cfg["niche"], geo=cfg["geo"])
 
     if df.empty:
@@ -456,11 +456,11 @@ def tab_tiktok(api, cfg):
     unique_authors = df['author_unique_id'].nunique() if 'author_unique_id' in df.columns else 0
 
     metric_cards([
-        {"label": "Videos", "value": format_number(len(df)), "icon": "🎬"},
-        {"label": "Total Plays", "value": format_number(total_plays), "icon": "▶️"},
-        {"label": "Total Engagement", "value": format_number(total_engagement), "icon": "🔥"},
-        {"label": "Top Likes", "value": format_number(top_likes), "icon": "❤️"},
-        {"label": "Creators", "value": format_number(unique_authors), "icon": "👤"},
+        {"label": "Videos", "value": format_number(len(df)), "icon": "ðŸŽ¬"},
+        {"label": "Total Plays", "value": format_number(total_plays), "icon": "â–¶ï¸"},
+        {"label": "Total Engagement", "value": format_number(total_engagement), "icon": "ðŸ”¥"},
+        {"label": "Top Likes", "value": format_number(top_likes), "icon": "â¤ï¸"},
+        {"label": "Creators", "value": format_number(unique_authors), "icon": "ðŸ‘¤"},
     ])
 
     # --- Data table ---
@@ -482,23 +482,23 @@ def tab_tiktok(api, cfg):
         display_df, display_cols,
         col_config={
             "share_url": st.column_config.LinkColumn("Link"),
-            "play_count": "▶️ Plays",
-            "digg_count": "❤️ Likes",
-            "comment_count": "💬 Comments",
-            "share_count": "🔗 Shares",
-            "collect_count": "⭐ Saves",
-            "engagement_total": "🔥 Engagement",
+            "play_count": "â–¶ï¸ Plays",
+            "digg_count": "â¤ï¸ Likes",
+            "comment_count": "ðŸ’¬ Comments",
+            "share_count": "ðŸ”— Shares",
+            "collect_count": "â­ Saves",
+            "engagement_total": "ðŸ”¥ Engagement",
             "author_unique_id": "Creator",
             "description": "Description",
             "hashtags": "#Tags",
-            "music_title": "🎵 Sound",
+            "music_title": "ðŸŽµ Sound",
             "created": "Posted",
         },
         height=420,
     )
 
     # --- Charts ---
-    section_header("📊", "Plays vs Engagement")
+    section_header("ðŸ“Š", "Plays vs Engagement")
     if 'play_count' in df.columns and 'engagement_total' in df.columns:
         chart_df = df.head(30).copy()
         fig = px.scatter(
@@ -510,11 +510,11 @@ def tab_tiktok(api, cfg):
         )
         fig.update_layout(margin=dict(t=20, b=10, l=10, r=10),
                           paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # --- Top creators bar chart ---
     if 'author_unique_id' in df.columns and 'play_count' in df.columns:
-        section_header("👤", "Top Creators by Plays")
+        section_header("ðŸ‘¤", "Top Creators by Plays")
         creator_df = df.groupby('author_unique_id', as_index=False)['play_count'].sum() \
                        .sort_values('play_count', ascending=False).head(15)
         fig2 = px.bar(creator_df, x='author_unique_id', y='play_count',
@@ -522,11 +522,11 @@ def tab_tiktok(api, cfg):
                       labels={'author_unique_id': 'Creator', 'play_count': 'Total Plays'})
         fig2.update_layout(margin=dict(t=20, b=10, l=10, r=10), xaxis_tickangle=-40,
                            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width='stretch')
 
     # --- Engagement breakdown donut ---
     if all(c in df.columns for c in ['digg_count', 'comment_count', 'share_count', 'collect_count']):
-        section_header("📈", "Engagement Breakdown")
+        section_header("ðŸ“ˆ", "Engagement Breakdown")
         eng_data = {
             'Type': ['Likes', 'Comments', 'Shares', 'Saves'],
             'Count': [df['digg_count'].sum(), df['comment_count'].sum(),
@@ -536,20 +536,20 @@ def tab_tiktok(api, cfg):
                       color_discrete_sequence=['#ff6b6b', '#4ecdc4', '#45b7d1', '#f9ca24'])
         fig3.update_layout(margin=dict(t=20, b=10, l=10, r=10),
                            paper_bgcolor='rgba(0,0,0,0)')
-        st.plotly_chart(fig3, use_container_width=True)
+        st.plotly_chart(fig3, width='stretch')
 
 
 def tab_instagram(api, cfg):
     """Instagram posts from dedicated table."""
     col_a, col_b = st.columns([3, 1])
     with col_a:
-        st.markdown("##### 📸 Instagram")
+        st.markdown("##### ðŸ“¸ Instagram")
     with col_b:
-        if st.button("🔄 Refresh", key="refresh_instagram", use_container_width=True):
+        if st.button("ðŸ”„ Refresh", key="refresh_instagram", width='stretch'):
                 st.cache_data.clear()
                 st.rerun()
 
-    with st.spinner("Fetching Instagram posts…"):
+    with st.spinner("Fetching Instagram postsâ€¦"):
         df = api.get_instagram_posts(niche_name=cfg["niche"], geo=cfg["geo"])
 
     if df.empty:
@@ -561,10 +561,10 @@ def tab_instagram(api, cfg):
     unique_users = df['username'].nunique() if 'username' in df.columns else 0
 
     metric_cards([
-        {"label": "Posts", "value": format_number(len(df)), "icon": "📸"},
-        {"label": "Total Likes", "value": format_number(total_likes), "icon": "❤️"},
-        {"label": "Total Engagement", "value": format_number(total_engagement), "icon": "🔥"},
-        {"label": "Creators", "value": format_number(unique_users), "icon": "👤"},
+        {"label": "Posts", "value": format_number(len(df)), "icon": "ðŸ“¸"},
+        {"label": "Total Likes", "value": format_number(total_likes), "icon": "â¤ï¸"},
+        {"label": "Total Engagement", "value": format_number(total_engagement), "icon": "ðŸ”¥"},
+        {"label": "Creators", "value": format_number(unique_users), "icon": "ðŸ‘¤"},
     ])
 
     display_cols = [c for c in [
@@ -582,9 +582,9 @@ def tab_instagram(api, cfg):
         display_df, display_cols,
         col_config={
             "url": st.column_config.LinkColumn("Link"),
-            "like_count": "❤️ Likes", "comment_count": "💬 Comments",
-            "share_count": "🔗 Shares", "save_count": "⭐ Saves",
-            "engagement_total": "🔥 Engagement",
+            "like_count": "â¤ï¸ Likes", "comment_count": "ðŸ’¬ Comments",
+            "share_count": "ðŸ”— Shares", "save_count": "â­ Saves",
+            "engagement_total": "ðŸ”¥ Engagement",
             "username": "Creator", "caption": "Caption",
             "hashtags": "#Tags", "posted": "Posted",
         },
@@ -592,26 +592,26 @@ def tab_instagram(api, cfg):
     )
 
     if 'username' in df.columns and 'like_count' in df.columns:
-        section_header("📊", "Top Creators by Likes")
+        section_header("ðŸ“Š", "Top Creators by Likes")
         top_creators = df.groupby('username')['like_count'].sum().nlargest(15).reset_index()
         fig = px.bar(top_creators, x='username', y='like_count',
                      color='like_count', color_continuous_scale='purp')
         fig.update_layout(margin=dict(t=20, b=10, l=10, r=10), xaxis_tickangle=-40,
                           paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
 
 def tab_threads(api, cfg):
     """Threads posts from dedicated table."""
     col_a, col_b = st.columns([3, 1])
     with col_a:
-        st.markdown("##### 💬 Threads")
+        st.markdown("##### ðŸ’¬ Threads")
     with col_b:
-        if st.button("🔄 Refresh", key="refresh_threads", use_container_width=True):
+        if st.button("ðŸ”„ Refresh", key="refresh_threads", width='stretch'):
                 st.cache_data.clear()
                 st.rerun()
 
-    with st.spinner("Fetching Threads posts…"):
+    with st.spinner("Fetching Threads postsâ€¦"):
         df = api.get_threads_posts(niche_name=cfg["niche"], geo=cfg["geo"])
 
     if df.empty:
@@ -623,10 +623,10 @@ def tab_threads(api, cfg):
     unique_users = df['username'].nunique() if 'username' in df.columns else 0
 
     metric_cards([
-        {"label": "Posts", "value": format_number(len(df)), "icon": "💬"},
-        {"label": "Total Likes", "value": format_number(total_likes), "icon": "❤️"},
-        {"label": "Total Engagement", "value": format_number(total_engagement), "icon": "🔥"},
-        {"label": "Creators", "value": format_number(unique_users), "icon": "👤"},
+        {"label": "Posts", "value": format_number(len(df)), "icon": "ðŸ’¬"},
+        {"label": "Total Likes", "value": format_number(total_likes), "icon": "â¤ï¸"},
+        {"label": "Total Engagement", "value": format_number(total_engagement), "icon": "ðŸ”¥"},
+        {"label": "Creators", "value": format_number(unique_users), "icon": "ðŸ‘¤"},
     ])
 
     display_cols = [c for c in [
@@ -644,22 +644,22 @@ def tab_threads(api, cfg):
         display_df, display_cols,
         col_config={
             "url": st.column_config.LinkColumn("Link"),
-            "like_count": "❤️ Likes", "reply_count": "💬 Replies",
-            "repost_count": "🔁 Reposts", "quote_count": "💭 Quotes",
-            "engagement_total": "🔥 Engagement",
+            "like_count": "â¤ï¸ Likes", "reply_count": "ðŸ’¬ Replies",
+            "repost_count": "ðŸ” Reposts", "quote_count": "ðŸ’­ Quotes",
+            "engagement_total": "ðŸ”¥ Engagement",
             "username": "Creator", "caption": "Caption", "posted": "Posted",
         },
         height=380,
     )
 
     if 'username' in df.columns and 'like_count' in df.columns:
-        section_header("📊", "Top Creators by Likes")
+        section_header("ðŸ“Š", "Top Creators by Likes")
         top_creators = df.groupby('username')['like_count'].sum().nlargest(15).reset_index()
         fig = px.bar(top_creators, x='username', y='like_count',
                      color='like_count', color_continuous_scale='purp')
         fig.update_layout(margin=dict(t=20, b=10, l=10, r=10), xaxis_tickangle=-40,
                           paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
 
 
@@ -667,13 +667,13 @@ def tab_reddit(api, cfg):
     """Reddit posts from dedicated table."""
     col_a, col_b = st.columns([3, 1])
     with col_a:
-        st.markdown("##### 👽 Reddit")
+        st.markdown("##### ðŸ‘½ Reddit")
     with col_b:
-        if st.button("🔄 Refresh", key="refresh_reddit", use_container_width=True):
+        if st.button("ðŸ”„ Refresh", key="refresh_reddit", width='stretch'):
             st.cache_data.clear()
             st.rerun()
 
-    with st.spinner("Fetching Reddit posts…"):
+    with st.spinner("Fetching Reddit postsâ€¦"):
         df = api.get_reddit_posts(niche_name=cfg["niche"], geo=cfg["geo"])
 
     if df.empty:
@@ -686,10 +686,10 @@ def tab_reddit(api, cfg):
     unique_subs = df['subreddit'].nunique() if 'subreddit' in df.columns else 0
 
     metric_cards([
-        {"label": "Posts", "value": format_number(len(df)), "icon": "👽"},
-        {"label": "Total Score", "value": format_number(total_score), "icon": "⬆️"},
-        {"label": "Total Comments", "value": format_number(total_comments), "icon": "💬"},
-        {"label": "Subreddits", "value": format_number(unique_subs), "icon": "📂"},
+        {"label": "Posts", "value": format_number(len(df)), "icon": "ðŸ‘½"},
+        {"label": "Total Score", "value": format_number(total_score), "icon": "â¬†ï¸"},
+        {"label": "Total Comments", "value": format_number(total_comments), "icon": "ðŸ’¬"},
+        {"label": "Subreddits", "value": format_number(unique_subs), "icon": "ðŸ“‚"},
     ])
 
     display_cols = [c for c in [
@@ -707,8 +707,8 @@ def tab_reddit(api, cfg):
         display_df, display_cols,
         col_config={
             "url": st.column_config.LinkColumn("Link"),
-            "score": "⬆️ Score", "num_comments": "💬 Comments",
-            "upvote_ratio": "📊 Ratio", "engagement_total": "🔥 Engagement",
+            "score": "â¬†ï¸ Score", "num_comments": "ðŸ’¬ Comments",
+            "upvote_ratio": "ðŸ“Š Ratio", "engagement_total": "ðŸ”¥ Engagement",
             "subreddit": "Subreddit", "author": "Author",
             "title": "Title", "link_flair_text": "Flair", "posted": "Posted",
         },
@@ -716,7 +716,7 @@ def tab_reddit(api, cfg):
     )
 
     if 'score' in df.columns and 'num_comments' in df.columns:
-        section_header("📊", "Score vs Comments")
+        section_header("ðŸ“Š", "Score vs Comments")
         fig = px.scatter(df.head(50), x='score', y='num_comments',
                          hover_name='title' if 'title' in df.columns else None,
                          color='engagement_total' if 'engagement_total' in df.columns else None,
@@ -724,21 +724,21 @@ def tab_reddit(api, cfg):
                          size='score', size_max=30)
         fig.update_layout(margin=dict(t=20, b=10, l=10, r=10),
                           paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     if 'subreddit' in df.columns and 'score' in df.columns:
-        section_header("📊", "Top Subreddits by Score")
+        section_header("ðŸ“Š", "Top Subreddits by Score")
         top_subs = df.groupby('subreddit')['score'].sum().nlargest(15).reset_index()
         fig2 = px.bar(top_subs, x='subreddit', y='score',
                       color='score', color_continuous_scale='sunset')
         fig2.update_layout(margin=dict(t=20, b=10, l=10, r=10), xaxis_tickangle=-40,
                            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width='stretch')
 
 
 def tab_community_news(api, cfg):
     """Hacker News, News."""
-    sources = {"🧡 Hacker News": "hn", "📰 News": "news"}
+    sources = {"ðŸ§¡ Hacker News": "hn", "ðŸ“° News": "news"}
 
     col_a, col_b = st.columns([3, 1])
     with col_a:
@@ -748,11 +748,11 @@ def tab_community_news(api, cfg):
     # --- Hacker News ---
     if src == "hn":
         with col_b:
-            if st.button("🔄 Refresh", key="refresh_hn", use_container_width=True):
+            if st.button("ðŸ”„ Refresh", key="refresh_hn", width='stretch'):
                 st.cache_data.clear()
                 st.rerun()
 
-        with st.spinner("Fetching Hacker News…"):
+        with st.spinner("Fetching Hacker Newsâ€¦"):
             df = api.get_hackernews_trends(niche_name=cfg["niche"], geo=cfg["geo"])
 
         if df.empty:
@@ -760,8 +760,8 @@ def tab_community_news(api, cfg):
             return
 
         metric_cards([
-            {"label": "Stories", "value": format_number(len(df)), "icon": "🧡"},
-            {"label": "Top Points", "value": format_number(df['growth'].max()) if 'growth' in df.columns else "—", "icon": "⬆️"},
+            {"label": "Stories", "value": format_number(len(df)), "icon": "ðŸ§¡"},
+            {"label": "Top Points", "value": format_number(df['growth'].max()) if 'growth' in df.columns else "â€”", "icon": "â¬†ï¸"},
         ])
 
         render_dataframe(
@@ -771,21 +771,21 @@ def tab_community_news(api, cfg):
             height=380,
         )
 
-        section_header("📊", "Points vs Comments")
+        section_header("ðŸ“Š", "Points vs Comments")
         fig = px.scatter(df, x='growth', y='engagement', size='virality_score',
                          color='virality_score', hover_name='topic',
                          color_continuous_scale='tealgrn')
         fig.update_layout(margin=dict(t=20, b=10, l=10, r=10),
                           paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
     # --- News ---
     elif src == "news":
         with col_b:
             news_query = st.text_input("Query", value=cfg["niche"] or "Health",
-                                       label_visibility="collapsed", placeholder="query…")
+                                       label_visibility="collapsed", placeholder="queryâ€¦")
 
-        with st.spinner("Fetching News…"):
+        with st.spinner("Fetching Newsâ€¦"):
             df = api.get_news_trends(query=news_query, niche_name=cfg["niche"], geo=cfg["geo"])
 
         if df.empty:
@@ -793,7 +793,7 @@ def tab_community_news(api, cfg):
             return
 
         metric_cards([
-            {"label": "Articles", "value": format_number(len(df)), "icon": "📰"},
+            {"label": "Articles", "value": format_number(len(df)), "icon": "ðŸ“°"},
         ])
 
         render_dataframe(
@@ -810,10 +810,10 @@ def tab_community_news(api, cfg):
 # ---------------------------------------------------------------------------
 
 def main():
-    st.set_page_config(page_title="Trends Research", layout="wide", page_icon="🚀")
+    st.set_page_config(page_title="Trends Research", layout="wide", page_icon="ðŸš€")
     inject_custom_css()
 
-    st.markdown("## 🚀 Trends Research")
+    st.markdown("## ðŸš€ Trends Research")
 
     api = APIClient()
     cfg = render_sidebar(api)
@@ -825,8 +825,8 @@ def main():
 
     # Tabs
     tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-        "🎯 Niche Research", "📈 Daily Trends", "🎬 YouTube", "🎵 TikTok",
-        "👽 Reddit", "📸 Instagram", "💬 Threads", "🌐 Community & News"
+        "ðŸŽ¯ Niche Research", "ðŸ“ˆ Daily Trends", "ðŸŽ¬ YouTube", "ðŸŽµ TikTok",
+        "ðŸ‘½ Reddit", "ðŸ“¸ Instagram", "ðŸ’¬ Threads", "ðŸŒ Community & News"
     ])
 
     with tab1:
@@ -856,7 +856,7 @@ def main():
     # Sidebar export
     with st.sidebar:
         st.markdown("---")
-        with st.expander("📥 Export", expanded=False):
+        with st.expander("ðŸ“¥ Export", expanded=False):
             try:
                 if niche_df is not None and not niche_df.empty:
                     csv = niche_df.to_csv(index=False).encode('utf-8')
@@ -871,3 +871,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
