@@ -4,9 +4,9 @@ import urllib.parse
 import scrapy
 
 try:
-    from ..items import GoogleTrendItem, ScrapeErrorItem
+    from ..items import GoogleTrendsItem, ScrapeErrorItem
 except ImportError:
-    from google_trends.items import GoogleTrendItem, ScrapeErrorItem
+    from google_trends.items import GoogleTrendsItem, ScrapeErrorItem
 
 
 class GoogleTrendsSpider(scrapy.Spider):
@@ -314,7 +314,7 @@ class GoogleTrendsSpider(scrapy.Spider):
                         }
                     )
 
-        yield GoogleTrendItem(
+        yield GoogleTrendsItem(
             keyword=response.meta.get("keyword") or ", ".join(self.keywords),
             geo=response.meta.get("geo", self.geo),
             time_range=response.meta.get("timeframe", self.timeframe),

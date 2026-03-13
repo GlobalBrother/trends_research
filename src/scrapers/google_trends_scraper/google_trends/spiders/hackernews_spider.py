@@ -1,8 +1,8 @@
 import scrapy
 try:
-    from ..items import GoogleTrendItem
+    from ..items import HackerNewsItem
 except ImportError:
-    from google_trends.items import GoogleTrendItem
+    from google_trends.items import HackerNewsItem
 
 class HackerNewsSpider(scrapy.Spider):
     name = "hackernews"
@@ -37,7 +37,7 @@ class HackerNewsSpider(scrapy.Spider):
         hits = data.get('hits', [])
         # Limit to top 10 as requested
         for hit in hits[:10]:
-            yield GoogleTrendItem(
+            yield HackerNewsItem(
                 keyword=response.meta.get('keyword', "HackerNews Search"),
                 geo="Global",
                 time_range="current",
@@ -59,7 +59,7 @@ class HackerNewsSpider(scrapy.Spider):
 
         # Map HN story to GoogleTrendItem for compatibility
         # We'll use score as a proxy for growth/engagement
-        yield GoogleTrendItem(
+        yield HackerNewsItem(
             keyword="HackerNews Top",
             geo="Global",
             time_range="current",

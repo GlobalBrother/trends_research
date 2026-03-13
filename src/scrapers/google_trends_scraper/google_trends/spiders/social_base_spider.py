@@ -17,9 +17,9 @@ import urllib.parse
 import scrapy
 
 try:
-    from ..items import GoogleTrendItem, ScrapeErrorItem
+    from ..items import SocialMediaItem, ScrapeErrorItem
 except ImportError:
-    from google_trends.items import GoogleTrendItem, ScrapeErrorItem
+    from google_trends.items import SocialMediaItem, ScrapeErrorItem
 
 
 class SocialBaseTrendsSpider(scrapy.Spider):
@@ -235,7 +235,7 @@ class SocialBaseTrendsSpider(scrapy.Spider):
                 })
 
         if results:
-            yield GoogleTrendItem(
+            yield SocialMediaItem(
                 keyword=keyword,
                 geo=self.geo,
                 time_range=self.timeframe,

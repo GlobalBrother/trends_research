@@ -4,9 +4,9 @@ import urllib.parse
 import scrapy
 
 try:
-    from ..items import GoogleTrendItem, ScrapeErrorItem
+    from ..items import TokenImportItem, ScrapeErrorItem
 except ImportError:
-    from google_trends.items import GoogleTrendItem, ScrapeErrorItem
+    from google_trends.items import TokenImportItem, ScrapeErrorItem
 
 
 class TokenImportSpider(scrapy.Spider):
@@ -162,7 +162,7 @@ class TokenImportSpider(scrapy.Spider):
                         "type": list_type,
                     })
 
-        yield GoogleTrendItem(
+        yield TokenImportItem(
             keyword=response.meta.get("keyword", self.keyword),
             geo=response.meta.get("geo", self.geo),
             time_range="today 12-m",

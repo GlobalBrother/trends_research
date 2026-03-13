@@ -3,9 +3,9 @@ import json
 import urllib.parse
 from datetime import datetime
 try:
-    from ..items import GoogleTrendItem
+    from ..items import TrendingNowItem
 except ImportError:
-    from google_trends.items import GoogleTrendItem
+    from google_trends.items import TrendingNowItem
 
 class TrendingNowSpider(scrapy.Spider):
     name = "trending_now"
@@ -53,7 +53,7 @@ class TrendingNowSpider(scrapy.Spider):
                 'articles': articles
             })
 
-        yield GoogleTrendItem(
+        yield TrendingNowItem(
             keyword=f"Trending {self.type.capitalize()}",
             geo=self.geo,
             time_range="current",

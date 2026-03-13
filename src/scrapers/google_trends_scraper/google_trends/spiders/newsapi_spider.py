@@ -2,9 +2,9 @@ import os
 import scrapy
 from datetime import datetime
 try:
-    from ..items import GoogleTrendItem, ScrapeErrorItem
+    from ..items import NewsItem, ScrapeErrorItem
 except ImportError:
-    from google_trends.items import GoogleTrendItem, ScrapeErrorItem
+    from google_trends.items import NewsItem, ScrapeErrorItem
 
 class NewsApiSpider(scrapy.Spider):
     name = "newsapi"
@@ -28,7 +28,7 @@ class NewsApiSpider(scrapy.Spider):
         if self.api_key == "YOUR_NEWSAPI_KEY":
             self.logger.warning("No NewsAPI key provided. Using simulated data for demonstration.")
             # Yield a dummy item instead of making a real request that will fail
-            yield GoogleTrendItem(
+            yield NewsItem(
                 keyword=self.q,
                 geo="Global",
                 time_range="now",
@@ -106,7 +106,7 @@ class NewsApiSpider(scrapy.Spider):
                 'popularity': 50 # Default popularity since NewsAPI everything doesn't give a score directly
             })
 
-        yield GoogleTrendItem(
+        yield NewsItem(
             keyword=self.q,
             geo="Global",
             time_range="now",

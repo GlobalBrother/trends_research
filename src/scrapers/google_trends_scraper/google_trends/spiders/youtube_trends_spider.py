@@ -4,9 +4,9 @@ import re
 import urllib.parse
 from datetime import datetime
 try:
-    from ..items import GoogleTrendItem, ScrapeErrorItem
+    from ..items import YouTubeItem, ScrapeErrorItem
 except ImportError:
-    from google_trends.items import GoogleTrendItem, ScrapeErrorItem
+    from google_trends.items import YouTubeItem, ScrapeErrorItem
 
 class YoutubeTrendsSpider(scrapy.Spider):
     name = "youtube_trends"
@@ -127,7 +127,7 @@ class YoutubeTrendsSpider(scrapy.Spider):
             except (KeyError, IndexError) as e:
                 self.logger.error(f"Error navigating YouTube JSON: {e}")
 
-            yield GoogleTrendItem(
+            yield YouTubeItem(
                 keyword=response.meta['keyword'],
                 geo="Global", # YouTube search is mostly global unless restricted
                 time_range="month",

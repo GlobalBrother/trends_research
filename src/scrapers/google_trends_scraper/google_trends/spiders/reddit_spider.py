@@ -1,9 +1,9 @@
 import scrapy
 from datetime import datetime
 try:
-    from ..items import GoogleTrendItem, ScrapeErrorItem
+    from ..items import RedditItem, ScrapeErrorItem
 except ImportError:
-    from google_trends.items import GoogleTrendItem, ScrapeErrorItem
+    from google_trends.items import RedditItem, ScrapeErrorItem
 
 class RedditSpider(scrapy.Spider):
     name = "reddit"
@@ -98,7 +98,7 @@ class RedditSpider(scrapy.Spider):
                 'created_utc': pdata.get('created_utc')
             })
 
-        yield GoogleTrendItem(
+        yield RedditItem(
             keyword=response.meta.get('keyword', f"r/{self.subreddit}"),
             geo="Global",
             time_range=self.trend_type,

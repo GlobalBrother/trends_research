@@ -16,9 +16,9 @@ from urllib.parse import urlencode
 import scrapy
 
 try:
-    from ..items import GoogleTrendItem, ScrapeErrorItem
+    from ..items import TikTokItem, ScrapeErrorItem
 except ImportError:
-    from google_trends.items import GoogleTrendItem, ScrapeErrorItem
+    from google_trends.items import TikTokItem, ScrapeErrorItem
 
 
 class TikTokSpider(scrapy.Spider):
@@ -228,7 +228,7 @@ class TikTokSpider(scrapy.Spider):
             })
 
         if results:
-            yield GoogleTrendItem(
+            yield TikTokItem(
                 keyword=keyword,
                 geo=self.geo,
                 time_range=self.timeframe,
