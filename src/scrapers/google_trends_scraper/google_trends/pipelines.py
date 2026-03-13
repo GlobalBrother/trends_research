@@ -3,8 +3,8 @@ import sqlite3
 import os
 import datetime
 from .items import (
-    BaseItem, GoogleTrendsItem, TrendingNowItem, YouTubeItem,
-    SocialMediaItem, TikTokItem, HackerNewsItem, RedditItem,
+    BaseItem, GoogleTrendsItem, TrendingNowItem,
+    SocialMediaItem, HackerNewsItem,
     NewsItem, TokenImportItem, ScrapeErrorItem,
 )
 

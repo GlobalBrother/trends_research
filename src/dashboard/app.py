@@ -67,6 +67,10 @@ def main():
 
     # --- Sidebar ---
     st.sidebar.header("Controls")
+    if api.direct:
+        st.sidebar.success("⚡ Direct mode (ensembledata)")
+    else:
+        st.sidebar.info("🌐 API mode (FastAPI backend)")
     refresh = st.sidebar.button("🔄 Refresh")
     
     # Country Selection

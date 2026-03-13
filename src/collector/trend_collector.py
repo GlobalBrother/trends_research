@@ -149,15 +149,16 @@ class TrendCollector:
             return False
 
     def run_youtube_trends_scraper(self, keywords, geo="Global"):
-        """Runs the YouTube scraper via ensembledata (falls back to Scrapy)."""
-        if HAS_ENSEMBLEDATA and os.getenv("ENSEMBLEDATA_TOKEN"):
-            kw_list = keywords if isinstance(keywords, list) else [k.strip() for k in keywords.split(",")]
-            scrape_youtube(kw_list, geo=geo)
-            return True
-        return self._run_scraper("youtube_trends", keywords=keywords, geo=geo)
+        """Runs the YouTube scraper via ensembledata."""
+        if not HAS_ENSEMBLEDATA or not os.getenv("ENSEMBLEDATA_TOKEN"):
+            print("[youtube] ensembledata not available – skipping.")
+            return False
+        kw_list = keywords if isinstance(keywords, list) else [k.strip() for k in keywords.split(",")]
+        scrape_youtube(kw_list, geo=geo)
+        return True
 
     def run_social_trends_scraper(self, platform, keywords, geo="Global"):
-        """Runs the social media scraper via ensembledata (falls back to Scrapy)."""
+        """Runs the social media scraper via ensembledata (Scrapy for X only)."""
         kw_list = keywords if isinstance(keywords, list) else [k.strip() for k in keywords.split(",")]
         if HAS_ENSEMBLEDATA and os.getenv("ENSEMBLEDATA_TOKEN"):
             scraper_map = {
@@ -169,30 +170,27 @@ class TrendCollector:
             if fn:
                 fn()
                 return True
-        # Fallback to Scrapy for X or if ensembledata not available
-        spider_map = {
-            "X": "x_trends",
-            "Threads": "threads_trends",
-            "Instagram": "instagram_trends",
-            "TikTok": "tiktok_trends",
-        }
-        spider_name = spider_map.get(platform)
-        if not spider_name:
-            print(f"Unknown social platform: {platform}")
+        # Scrapy fallback only for X
+        if platform == "X":
+            return self._run_scraper("x_trends", keywords=keywords, geo=geo)
+        if platform in ("TikTok", "Instagram", "Threads"):
+            print(f"[{platform.lower()}] ensembledata not available – skipping.")
             return False
-        return self._run_scraper(spider_name, keywords=keywords, geo=geo)
+        print(f"Unknown social platform: {platform}")
+        return False
 
     def run_hackernews_scraper(self, keywords=None, geo="Global"):
         """Runs the Scrapy HackerNews spider."""
         return self._run_scraper("hackernews", keywords=keywords, geo=geo)
 
     def run_reddit_scraper(self, subreddit='all', trend_type='hot', keywords=None, geo="Global"):
-        """Runs the Reddit scraper via ensembledata (falls back to Scrapy)."""
-        if HAS_ENSEMBLEDATA and os.getenv("ENSEMBLEDATA_TOKEN"):
-            subs = [subreddit] if isinstance(subreddit, str) else subreddit
-            scrape_reddit(subs, geo=geo, sort=trend_type)
-            return True
-        return self._run_scraper("reddit", subreddit=subreddit, trend_type=trend_type, keywords=keywords, geo=geo)
+        """Runs the Reddit scraper via ensembledata."""
+        if not HAS_ENSEMBLEDATA or not os.getenv("ENSEMBLEDATA_TOKEN"):
+            print("[reddit] ensembledata not available – skipping.")
+            return False
+        subs = [subreddit] if isinstance(subreddit, str) else subreddit
+        scrape_reddit(subs, geo=geo, sort=trend_type)
+        return True
 
     def run_news_scraper(self, query='niche', api_key=None, geo="Global"):
         """Runs the Scrapy NewsAPI spider."""

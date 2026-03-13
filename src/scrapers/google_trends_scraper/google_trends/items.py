@@ -26,29 +26,14 @@ class TrendingNowItem(BaseItem):
     pass
 
 
-class YouTubeItem(BaseItem):
-    """Item for YouTube trends spider."""
-    pass
-
-
 class SocialMediaItem(BaseItem):
     """Item for social media spiders (X, Threads, Instagram, TikTok, Facebook)."""
     platform_name = scrapy.Field()
 
 
-class TikTokItem(SocialMediaItem):
-    """Item for TikTok Research API spider."""
-    access_token_used = scrapy.Field()
-
-
 class HackerNewsItem(BaseItem):
     """Item for Hacker News spider."""
     pass
-
-
-class RedditItem(BaseItem):
-    """Item for Reddit spider."""
-    subreddit = scrapy.Field()
 
 
 class NewsItem(BaseItem):

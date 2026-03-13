@@ -33,28 +33,44 @@ def scrape_tiktok(keywords, geo="Global", period="30"):
     for kw in keywords:
         try:
             result = client.tiktok.keyword_search(keyword=kw, period=period)
-            videos = result.data or []
-            if not isinstance(videos, list):
-                videos = videos.get("videos", []) if isinstance(videos, dict) else []
+            raw = result.data or []
+            # ensembledata may return nested structure: {data: [{aweme_info: ...}, ...]}
+            if isinstance(raw, dict):
+                inner = raw.get("data", raw.get("videos", []))
+                if isinstance(inner, list):
+                    raw = inner
+                else:
+                    raw = []
+            if not isinstance(raw, list):
+                raw = []
 
             count = 0
-            for v in videos[:50]:
-                likes = v.get("like_count") or v.get("diggCount") or 0
-                comments = v.get("comment_count") or v.get("commentCount") or 0
-                shares = v.get("share_count") or v.get("shareCount") or 0
-                views = v.get("view_count") or v.get("playCount") or 0
+            for item in raw[:50]:
+                # unwrap aweme_info envelope if present
+                v = item.get("aweme_info", item) if isinstance(item, dict) else item
+                if not isinstance(v, dict):
+                    continue
+                stats = v.get("statistics", {})
+                likes = stats.get("digg_count") or v.get("like_count") or v.get("diggCount") or 0
+                comments = stats.get("comment_count") or v.get("comment_count") or v.get("commentCount") or 0
+                shares = stats.get("share_count") or v.get("share_count") or v.get("shareCount") or 0
+                views = stats.get("play_count") or v.get("view_count") or v.get("playCount") or 0
                 engagement = likes + comments + shares
 
-                desc = v.get("video_description") or v.get("desc") or ""
+                desc = v.get("desc") or v.get("video_description") or ""
                 hashtags = v.get("hashtag_names") or []
-                if isinstance(v.get("textExtra"), list):
+                if not hashtags and isinstance(v.get("text_extra"), list):
+                    hashtags = [t.get("hashtag_name", "") for t in v["text_extra"] if t.get("hashtag_name")]
+                if not hashtags and isinstance(v.get("textExtra"), list):
                     hashtags = [t.get("hashtagName", "") for t in v["textExtra"] if t.get("hashtagName")]
-                topic = desc[:120] if desc else ", ".join(hashtags[:5]) if hashtags else f"Video {v.get('id', '')}"
+                if not hashtags and isinstance(v.get("cha_list"), list):
+                    hashtags = [c.get("cha_name", "") for c in v["cha_list"] if c.get("cha_name")]
+                topic = desc[:120] if desc else ", ".join(hashtags[:5]) if hashtags else f"Video {v.get('aweme_id', v.get('id', ''))}"
 
                 username = v.get("username") or ""
                 if not username and isinstance(v.get("author"), dict):
-                    username = v["author"].get("uniqueId", "")
-                video_id = str(v.get("id") or v.get("video_id") or "")
+                    username = v["author"].get("unique_id") or v["author"].get("uniqueId", "")
+                video_id = str(v.get("aweme_id") or v.get("id") or v.get("video_id") or "")
                 url = f"https://www.tiktok.com/@{username}/video/{video_id}" if username and video_id else ""
 
                 save_trend(
