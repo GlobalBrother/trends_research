@@ -11,3 +11,4 @@ openpyxl
 python-dotenv
 matplotlib
 scrapy
+ensembledata

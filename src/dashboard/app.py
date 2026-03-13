@@ -315,8 +315,8 @@ def main():
 
     # ==================== TAB 3: Social Media (X + Threads + Instagram) ====================
     with tab3:
-        platform_choice = st.radio("Platform", ["𝕏 X", "💬 Threads", "📸 Instagram", "🎵 TikTok", "👤 Facebook"], horizontal=True)
-        platform_map = {"𝕏 X": "X", "💬 Threads": "Threads", "📸 Instagram": "Instagram", "🎵 TikTok": "TikTok", "👤 Facebook": "Facebook"}
+        platform_choice = st.radio("Platform", ["𝕏 X", "💬 Threads", "📸 Instagram", "🎵 TikTok"], horizontal=True)
+        platform_map = {"𝕏 X": "X", "💬 Threads": "Threads", "📸 Instagram": "Instagram", "🎵 TikTok": "TikTok"}
         platform_key = platform_map[platform_choice]
 
         col_s1, col_s2, _ = st.columns([1, 1, 3])

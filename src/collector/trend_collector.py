@@ -5,6 +5,18 @@ import subprocess
 import sys
 import re
 
+# Ensembledata scrapers
+try:
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scrapers", "ensembledata")))
+    from tiktok_scraper import scrape_tiktok
+    from instagram_scraper import scrape_instagram
+    from youtube_scraper import scrape_youtube
+    from reddit_scraper import scrape_reddit
+    from threads_scraper import scrape_threads
+    HAS_ENSEMBLEDATA = True
+except ImportError:
+    HAS_ENSEMBLEDATA = False
+
 class TrendCollector:
     def __init__(self):
         # Define the path to SQLite database relative to project root
@@ -38,7 +50,7 @@ class TrendCollector:
             if include_youtube:
                 included_platforms.append('YouTube')
             if include_social:
-                included_platforms.extend(['X (Twitter)', 'Threads', 'Instagram', 'TikTok', 'Facebook'])
+                included_platforms.extend(['X (Twitter)', 'Threads', 'Instagram', 'TikTok'])
             if include_hackernews:
                 included_platforms.append('HackerNews')
             if include_reddit:
@@ -137,17 +149,32 @@ class TrendCollector:
             return False
 
     def run_youtube_trends_scraper(self, keywords, geo="Global"):
-        """Runs the Scrapy YouTube Trends spider for specific keywords."""
+        """Runs the YouTube scraper via ensembledata (falls back to Scrapy)."""
+        if HAS_ENSEMBLEDATA and os.getenv("ENSEMBLEDATA_TOKEN"):
+            kw_list = keywords if isinstance(keywords, list) else [k.strip() for k in keywords.split(",")]
+            scrape_youtube(kw_list, geo=geo)
+            return True
         return self._run_scraper("youtube_trends", keywords=keywords, geo=geo)
 
     def run_social_trends_scraper(self, platform, keywords, geo="Global"):
-        """Runs the Scrapy spider for a specific social media platform."""
+        """Runs the social media scraper via ensembledata (falls back to Scrapy)."""
+        kw_list = keywords if isinstance(keywords, list) else [k.strip() for k in keywords.split(",")]
+        if HAS_ENSEMBLEDATA and os.getenv("ENSEMBLEDATA_TOKEN"):
+            scraper_map = {
+                "TikTok": lambda: scrape_tiktok(kw_list, geo=geo),
+                "Instagram": lambda: scrape_instagram(kw_list, geo=geo),
+                "Threads": lambda: scrape_threads(kw_list, geo=geo),
+            }
+            fn = scraper_map.get(platform)
+            if fn:
+                fn()
+                return True
+        # Fallback to Scrapy for X or if ensembledata not available
         spider_map = {
             "X": "x_trends",
             "Threads": "threads_trends",
             "Instagram": "instagram_trends",
             "TikTok": "tiktok_trends",
-            "Facebook": "facebook_trends",
         }
         spider_name = spider_map.get(platform)
         if not spider_name:
@@ -160,7 +187,11 @@ class TrendCollector:
         return self._run_scraper("hackernews", keywords=keywords, geo=geo)
 
     def run_reddit_scraper(self, subreddit='all', trend_type='hot', keywords=None, geo="Global"):
-        """Runs the Scrapy Reddit spider."""
+        """Runs the Reddit scraper via ensembledata (falls back to Scrapy)."""
+        if HAS_ENSEMBLEDATA and os.getenv("ENSEMBLEDATA_TOKEN"):
+            subs = [subreddit] if isinstance(subreddit, str) else subreddit
+            scrape_reddit(subs, geo=geo, sort=trend_type)
+            return True
         return self._run_scraper("reddit", subreddit=subreddit, trend_type=trend_type, keywords=keywords, geo=geo)
 
     def run_news_scraper(self, query='niche', api_key=None, geo="Global"):
@@ -186,7 +217,6 @@ class TrendCollector:
         self.run_social_trends_scraper("Threads", keywords, geo=geo)
         self.run_social_trends_scraper("Instagram", keywords, geo=geo)
         self.run_social_trends_scraper("TikTok", keywords, geo=geo)
-        self.run_social_trends_scraper("Facebook", keywords, geo=geo)
         
         # 4. Reddit - Use ALL keywords
         self.run_reddit_scraper(keywords=keywords, geo=geo)

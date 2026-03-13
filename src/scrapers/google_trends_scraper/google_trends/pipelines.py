@@ -180,8 +180,8 @@ class SQLitePipeline:
                 extra_data['channel'] = res.get('channel')
                 extra_data['duration'] = res.get('duration')
                 extra_data['description'] = res.get('description')
-            elif data_type in ['x_trends', 'threads_trends', 'instagram_trends', 'tiktok_trends', 'facebook_trends']:
-                platform_map = {'x_trends': 'X (Twitter)', 'threads_trends': 'Threads', 'instagram_trends': 'Instagram', 'tiktok_trends': 'TikTok', 'facebook_trends': 'Facebook'}
+            elif data_type in ['x_trends', 'threads_trends', 'instagram_trends', 'tiktok_trends']:
+                platform_map = {'x_trends': 'X (Twitter)', 'threads_trends': 'Threads', 'instagram_trends': 'Instagram', 'tiktok_trends': 'TikTok'}
                 platform = platform_map.get(data_type)
                 topic = res.get('topic')
                 growth = res.get('engagement', 0)

@@ -97,7 +97,7 @@ def scrape_niche(request: ScrapeRequest, background_tasks: BackgroundTasks):
             collector.run_youtube_trends_scraper,
             niche_keywords, geo=request.geo
         )
-    elif scraper in ("X", "Threads", "Instagram", "TikTok", "Facebook"):
+    elif scraper in ("X", "Threads", "Instagram", "TikTok"):
         background_tasks.add_task(
             collector.run_social_trends_scraper,
             scraper, niche_keywords, geo=request.geo
@@ -377,8 +377,7 @@ def get_social_trends(platform: str = Query(...), niche_name: str = Query(...), 
         "X": "X (Twitter)",
         "Threads": "Threads",
         "Instagram": "Instagram",
-        "TikTok": "TikTok",
-        "Facebook": "Facebook"
+        "TikTok": "TikTok"
     }
     target_platform = platform_map.get(platform)
     if not target_platform:
