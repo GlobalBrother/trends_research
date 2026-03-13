@@ -168,19 +168,6 @@ def render_dataframe(df, columns, col_config=None, height=400):
         st.dataframe(display_df[columns], column_config=col_config, height=height, use_container_width=True, hide_index=True)
 
 
-def scrape_button(api, label, scraper_type, niche, geo, timeframe, category, key):
-    """Compact scrape trigger that returns True on success."""
-    if st.button(f"🚀 {label}", key=key, use_container_width=True):
-        with st.spinner(f"Scraping {label}..."):
-            ok = api.trigger_scrape(niche_name=niche, geo=geo, timeframe=timeframe,
-                                    category=category, scraper_type=scraper_type)
-            if ok:
-                st.toast(f"✅ {label} scrape started!", icon="🎉")
-                st.cache_data.clear()
-            else:
-                st.error("❌ Scraping failed")
-            return ok
-    return False
 
 
 def flatten_platform(df):
@@ -233,47 +220,8 @@ def render_sidebar(api):
         niches = api.get_niches()
         niche = st.selectbox("🎯 Niche", niches)
 
-        st.markdown("---")
-
-        with st.expander("🔧 Scraper Settings", expanded=False):
-            timeframes = {
-                "Last 12 Months": "today 12-m", "Last hour": "now 1-H",
-                "Last 4 hours": "now 4-H", "Last day": "now 1-d",
-                "Last 7 days": "now 7-d", "Last 30 days": "today 1-m",
-                "Last 90 days": "today 3-m", "Last 5 years": "today 5-y",
-                "All (since 2004)": "all"
-            }
-            tf_name = st.selectbox("Time Range", list(timeframes.keys()))
-            timeframe = timeframes[tf_name]
-
-            categories = {
-                "All Categories": 0, "Arts & Entertainment": 3, "Autos & Vehicles": 47,
-                "Beauty & Fitness": 44, "Books & Literature": 22, "Business & Industrial": 12,
-                "Computers & Electronics": 5, "Finance": 7, "Food & Drink": 71, "Games": 8,
-                "Health": 45, "Hobbies & Leisure": 65, "Home & Garden": 11,
-                "Internet & Telecom": 13, "Jobs & Education": 958, "Law & Government": 19,
-                "News": 16, "Online Communities": 299, "People & Society": 14,
-                "Pets & Animals": 66, "Real Estate": 29, "Reference": 533, "Science": 174,
-                "Shopping": 18, "Sports": 20, "Travel": 67
-            }
-            cat_name = st.selectbox("Category", list(categories.keys()))
-            category = categories[cat_name]
-
-        with st.expander("📥 Import Google Trends JSON", expanded=False):
-            st.caption("Upload the JSON/TXT file from a 429 error.")
-            uploaded = st.file_uploader("Choose file", type=["json", "txt"], key="token_upload")
-            if uploaded is not None and st.button("⬆️ Import", key="import_btn"):
-                with st.spinner("Importing..."):
-                    result = api.import_tokens(uploaded.getvalue(), uploaded.name, geo=geo)
-                    if result:
-                        st.success(result.get("message", "Import started!"))
-                        st.cache_data.clear()
-                    else:
-                        st.error("❌ Import failed")
-
     return {
         "country_name": country_name, "geo": geo, "niche": niche,
-        "timeframe": timeframe, "category": category,
     }
 
 
@@ -285,13 +233,10 @@ def tab_niche_research(api, cfg):
     """Niche Research — overview with KPI cards, table, and charts."""
     niche, geo, country = cfg["niche"], cfg["geo"], cfg["country_name"]
 
-    col_a, col_b, col_c = st.columns([2, 1, 1])
+    col_a, col_b = st.columns([3, 1])
     with col_a:
         st.markdown(f"#### 🎯 {niche} — {country}")
     with col_b:
-        scrape_button(api, f"Scrape {niche}", "google_trends", niche, geo,
-                       cfg["timeframe"], cfg["category"], "scrape_niche")
-    with col_c:
         if st.button("🔄 Refresh", key="refresh_niche", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
@@ -368,15 +313,12 @@ def tab_daily_trends(api, cfg):
         country = "United States (default)"
         geo = "US"
 
-    col_a, col_b, col_c, col_d = st.columns([2, 1, 1, 1])
+    col_a, col_b, col_c = st.columns([2, 1, 1])
     with col_a:
         st.markdown(f"#### 📈 Daily Trends — {country}")
     with col_b:
         trend_type = st.radio("Type", ["daily", "realtime"], horizontal=True, label_visibility="collapsed")
     with col_c:
-        scrape_button(api, "Scrape Daily", "daily", cfg["niche"], geo,
-                       cfg["timeframe"], cfg["category"], "scrape_daily")
-    with col_d:
         if st.button("🔄 Refresh", key="refresh_daily", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
@@ -415,12 +357,7 @@ def tab_youtube(api, cfg):
     with col_a:
         st.markdown("##### 🎬 YouTube Videos")
     with col_b:
-        c1, c2 = st.columns(2)
-        with c1:
-            scrape_button(api, "YouTube", "youtube", cfg["niche"], cfg["geo"],
-                          cfg["timeframe"], cfg["category"], "scrape_yt")
-        with c2:
-            if st.button("🔄", key="refresh_yt", use_container_width=True):
+        if st.button("🔄 Refresh", key="refresh_yt", use_container_width=True):
                 st.cache_data.clear()
                 st.rerun()
 
@@ -501,12 +438,7 @@ def tab_tiktok(api, cfg):
     with col_a:
         st.markdown("##### 🎵 TikTok Videos")
     with col_b:
-        c1, c2 = st.columns(2)
-        with c1:
-            scrape_button(api, "TikTok", "TikTok", cfg["niche"], cfg["geo"],
-                          cfg["timeframe"], cfg["category"], "scrape_tiktok")
-        with c2:
-            if st.button("🔄", key="refresh_tiktok", use_container_width=True):
+        if st.button("🔄 Refresh", key="refresh_tiktok", use_container_width=True):
                 st.cache_data.clear()
                 st.rerun()
 
@@ -610,13 +542,10 @@ def tab_tiktok(api, cfg):
 def tab_instagram(api, cfg):
     """Instagram posts from dedicated table."""
     col_a, col_b = st.columns([3, 1])
+    with col_a:
+        st.markdown("##### 📸 Instagram")
     with col_b:
-        c1, c2 = st.columns(2)
-        with c1:
-            scrape_button(api, "Instagram", "Instagram", cfg["niche"], cfg["geo"],
-                           cfg["timeframe"], cfg["category"], "scrape_instagram")
-        with c2:
-            if st.button("🔄", key="refresh_instagram", use_container_width=True):
+        if st.button("🔄 Refresh", key="refresh_instagram", use_container_width=True):
                 st.cache_data.clear()
                 st.rerun()
 
@@ -675,13 +604,10 @@ def tab_instagram(api, cfg):
 def tab_threads(api, cfg):
     """Threads posts from dedicated table."""
     col_a, col_b = st.columns([3, 1])
+    with col_a:
+        st.markdown("##### 💬 Threads")
     with col_b:
-        c1, c2 = st.columns(2)
-        with c1:
-            scrape_button(api, "Threads", "Threads", cfg["niche"], cfg["geo"],
-                           cfg["timeframe"], cfg["category"], "scrape_threads")
-        with c2:
-            if st.button("🔄", key="refresh_threads", use_container_width=True):
+        if st.button("🔄 Refresh", key="refresh_threads", use_container_width=True):
                 st.cache_data.clear()
                 st.rerun()
 
@@ -740,15 +666,12 @@ def tab_threads(api, cfg):
 def tab_reddit(api, cfg):
     """Reddit posts from dedicated table."""
     col_a, col_b = st.columns([3, 1])
+    with col_a:
+        st.markdown("##### 👽 Reddit")
     with col_b:
-        c1, c2 = st.columns(2)
-        with c1:
-            scrape_button(api, "Reddit", "reddit", cfg["niche"], cfg["geo"],
-                           cfg["timeframe"], cfg["category"], "scrape_reddit")
-        with c2:
-            if st.button("🔄", key="refresh_reddit", use_container_width=True):
-                st.cache_data.clear()
-                st.rerun()
+        if st.button("🔄 Refresh", key="refresh_reddit", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
 
     with st.spinner("Fetching Reddit posts…"):
         df = api.get_reddit_posts(niche_name=cfg["niche"], geo=cfg["geo"])
@@ -825,14 +748,9 @@ def tab_community_news(api, cfg):
     # --- Hacker News ---
     if src == "hn":
         with col_b:
-            c1, c2 = st.columns(2)
-            with c1:
-                scrape_button(api, "HN", "hackernews", cfg["niche"], cfg["geo"],
-                               cfg["timeframe"], cfg["category"], "scrape_hn")
-            with c2:
-                if st.button("🔄", key="refresh_hn", use_container_width=True):
-                    st.cache_data.clear()
-                    st.rerun()
+            if st.button("🔄 Refresh", key="refresh_hn", use_container_width=True):
+                st.cache_data.clear()
+                st.rerun()
 
         with st.spinner("Fetching Hacker News…"):
             df = api.get_hackernews_trends(niche_name=cfg["niche"], geo=cfg["geo"])
@@ -867,11 +785,6 @@ def tab_community_news(api, cfg):
             news_query = st.text_input("Query", value=cfg["niche"] or "Health",
                                        label_visibility="collapsed", placeholder="query…")
 
-        c1, c2 = st.columns([1, 5])
-        with c1:
-            scrape_button(api, "News", "news", cfg["niche"], cfg["geo"],
-                           cfg["timeframe"], cfg["category"], "scrape_news")
-
         with st.spinner("Fetching News…"):
             df = api.get_news_trends(query=news_query, niche_name=cfg["niche"], geo=cfg["geo"])
 
@@ -890,29 +803,6 @@ def tab_community_news(api, cfg):
         )
 
 
-def tab_errors(api):
-    """Scrape errors log."""
-    if st.button("🔄 Refresh", key="refresh_errors"):
-        st.cache_data.clear()
-        st.rerun()
-
-    errors_df = api.get_scrape_errors()
-    if errors_df.empty:
-        st.success("No scrape errors recorded! 🚀")
-        return
-
-    metric_cards([
-        {"label": "Total Errors", "value": format_number(len(errors_df)), "icon": "⚠️"},
-    ])
-
-    st.dataframe(
-        errors_df,
-        column_config={
-            "url": st.column_config.LinkColumn("Failed URL"),
-            "status": "HTTP Status", "extracted_at": "Timestamp"
-        },
-        use_container_width=True, hide_index=True, height=400,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -934,9 +824,9 @@ def main():
         st.session_state.last_geo = cfg["geo"]
 
     # Tabs
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
         "🎯 Niche Research", "📈 Daily Trends", "🎬 YouTube", "🎵 TikTok",
-        "👽 Reddit", "📸 Instagram", "💬 Threads", "🌐 Community & News", "⚠️ Errors"
+        "👽 Reddit", "📸 Instagram", "💬 Threads", "🌐 Community & News"
     ])
 
     with tab1:
@@ -962,9 +852,6 @@ def main():
 
     with tab8:
         tab_community_news(api, cfg)
-
-    with tab9:
-        tab_errors(api)
 
     # Sidebar export
     with st.sidebar:
