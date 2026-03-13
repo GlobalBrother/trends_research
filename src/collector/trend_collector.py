@@ -22,44 +22,44 @@ class TrendCollector:
 
         try:
             conn = sqlite3.connect(self.db_path)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA cache_size=-8000")  # 8MB cache
+            conn.execute("PRAGMA mmap_size=67108864")  # 64MB memory-mapped I/O
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
-            query = "SELECT * FROM trends WHERE 1=1"
+            query = "SELECT platform, topic, growth, keyword, geo, url, extracted_at, extra_data FROM trends WHERE 1=1"
             params = []
 
-            # Platform filtering
-            excluded_platforms = []
-            if not include_trending_now:
-                excluded_platforms.append('Google Trends')
-            if not include_youtube:
-                excluded_platforms.append('YouTube')
-            if not include_social:
-                excluded_platforms.extend(['X (Twitter)', 'Threads', 'Instagram'])
-            if not include_hackernews:
-                excluded_platforms.append('HackerNews')
-            if not include_reddit:
-                excluded_platforms.append('Reddit')
-            if not include_news:
-                excluded_platforms.append('News')
+            # Platform filtering - use IN for included platforms (faster with index)
+            included_platforms = []
+            if include_trending_now:
+                included_platforms.append('Google Trends')
+            if include_youtube:
+                included_platforms.append('YouTube')
+            if include_social:
+                included_platforms.extend(['X (Twitter)', 'Threads', 'Instagram'])
+            if include_hackernews:
+                included_platforms.append('HackerNews')
+            if include_reddit:
+                included_platforms.append('Reddit')
+            if include_news:
+                included_platforms.append('News')
             
-            if excluded_platforms:
-                placeholders = ', '.join(['?'] * len(excluded_platforms))
-                query += f" AND platform NOT IN ({placeholders})"
-                params.extend(excluded_platforms)
+            # Always include Google niche platforms
+            always_included = ['Google Interest', 'Google Regions', 'Google Related Queries', 'Google Related Topics']
+            included_platforms.extend(always_included)
+            
+            placeholders = ', '.join(['?'] * len(included_platforms))
+            query += f" AND platform IN ({placeholders})"
+            params.extend(included_platforms)
 
-            # Geo filtering (only for Google platforms that have geo)
-            if geo is not None:
-                # We want trends that either have no geo (Global) OR match requested geo
-                # But wait, original logic was:
-                # if data_type not in [...] and geo is not None:
-                #     if str(item_geo).upper() != str(geo).upper(): continue
-                
-                google_platforms = ['Google Trends', 'Google Related Queries', 'Google Related Topics', 'Google Interest', 'Google Regions']
-                gp_placeholders = ', '.join(['?'] * len(google_platforms))
-                query += f" AND (platform NOT IN ({gp_placeholders}) OR UPPER(geo) = UPPER(?) OR geo = '' OR geo = 'Global' OR geo IS NULL)"
-                params.extend(google_platforms)
+            # Geo filtering
+            if geo is not None and geo != "Global":
+                query += " AND (UPPER(geo) = UPPER(?) OR geo = '' OR UPPER(geo) = 'GLOBAL' OR geo IS NULL)"
                 params.append(geo)
+            elif geo == "Global":
+                query += " AND (UPPER(geo) = 'GLOBAL' OR geo = '' OR geo IS NULL)"
 
             query += " ORDER BY extracted_at DESC"
             
@@ -68,17 +68,10 @@ class TrendCollector:
             conn.close()
 
             trends = []
-            seen = set()
             for row in rows:
-                platform = row['platform']
-                topic = row['topic']
-                
-                if (platform, topic) in seen:
-                    continue
-                
                 item = {
-                    "platform": platform,
-                    "topic": topic,
+                    "platform": row['platform'],
+                    "topic": row['topic'],
                     "growth": row['growth'],
                     "keyword": row['keyword'],
                     "geo": row['geo'],
@@ -87,15 +80,15 @@ class TrendCollector:
                 }
                 
                 # Expand extra_data
-                if row['extra_data']:
+                extra_data = row['extra_data']
+                if extra_data:
                     try:
-                        extra = json.loads(row['extra_data'])
+                        extra = json.loads(extra_data)
                         item.update(extra)
                     except:
                         pass
                 
                 trends.append(item)
-                seen.add((platform, topic))
                 
             return trends
         except Exception as e:
@@ -143,52 +136,49 @@ class TrendCollector:
             print(f"Failed to run Scrapy scraper {spider_name}: {e}")
             return False
 
-    def run_youtube_trends_scraper(self, keywords):
+    def run_youtube_trends_scraper(self, keywords, geo="Global"):
         """Runs the Scrapy YouTube Trends spider for specific keywords."""
-        return self._run_scraper("youtube_trends", keywords=keywords)
+        return self._run_scraper("youtube_trends", keywords=keywords, geo=geo)
 
-    def run_social_trends_scraper(self, platform, keywords):
+    def run_social_trends_scraper(self, platform, keywords, geo="Global"):
         """Runs the Scrapy Social Trends spider for a specific platform."""
-        return self._run_scraper("social_trends", platform=platform, keywords=keywords)
+        return self._run_scraper("social_trends", platform=platform, keywords=keywords, geo=geo)
 
-    def run_hackernews_scraper(self, keywords=None):
+    def run_hackernews_scraper(self, keywords=None, geo="Global"):
         """Runs the Scrapy HackerNews spider."""
-        return self._run_scraper("hackernews", keywords=keywords)
+        return self._run_scraper("hackernews", keywords=keywords, geo=geo)
 
-    def run_reddit_scraper(self, subreddit='all', trend_type='hot', keywords=None):
+    def run_reddit_scraper(self, subreddit='all', trend_type='hot', keywords=None, geo="Global"):
         """Runs the Scrapy Reddit spider."""
-        return self._run_scraper("reddit", subreddit=subreddit, trend_type=trend_type, keywords=keywords)
+        return self._run_scraper("reddit", subreddit=subreddit, trend_type=trend_type, keywords=keywords, geo=geo)
 
-    def run_news_scraper(self, query='niche', api_key=None):
+    def run_news_scraper(self, query='niche', api_key=None, geo="Global"):
         """Runs the Scrapy NewsAPI spider."""
-        return self._run_scraper("newsapi", q=query, api_key=api_key)
+        return self._run_scraper("newsapi", q=query, api_key=api_key, geo=geo)
 
     def run_niche_comprehensive_scrape(self, niche_name, keywords, geo="US", timeframe="today 12-m", category=0):
         """Triggers all scrapers for a specific niche in sequence."""
         print(f"Starting comprehensive scrape for niche: {niche_name}")
         
-        # We'll use a subset of keywords for more performant scraping across many platforms
-        limited_keywords = keywords[:3] if len(keywords) > 3 else keywords
-        
-        # 1. Google Trends (the core scraper)
+        # 1. Google Trends (the core scraper) - Use ALL keywords
         self.run_google_trends_scraper(keywords, geo=geo, timeframe=timeframe, category=category)
         
-        # 2. YouTube
-        self.run_youtube_trends_scraper(limited_keywords)
+        # 2. YouTube - Use ALL keywords
+        self.run_youtube_trends_scraper(keywords, geo=geo)
         
-        # 3. Social
-        self.run_social_trends_scraper("X", limited_keywords)
-        self.run_social_trends_scraper("Threads", limited_keywords)
-        self.run_social_trends_scraper("Instagram", limited_keywords)
+        # 3. Social - Use ALL keywords
+        self.run_social_trends_scraper("X", keywords, geo=geo)
+        self.run_social_trends_scraper("Threads", keywords, geo=geo)
+        self.run_social_trends_scraper("Instagram", keywords, geo=geo)
         
-        # 4. Reddit
-        self.run_reddit_scraper(keywords=limited_keywords)
+        # 4. Reddit - Use ALL keywords
+        self.run_reddit_scraper(keywords=keywords, geo=geo)
         
-        # 5. HackerNews
-        self.run_hackernews_scraper(keywords=limited_keywords)
+        # 5. HackerNews - Use ALL keywords
+        self.run_hackernews_scraper(keywords=keywords, geo=geo)
         
         # 6. NewsAPI (just use the niche name for NewsAPI)
-        self.run_news_scraper(query=niche_name)
+        self.run_news_scraper(query=niche_name, geo=geo)
         
         print(f"Comprehensive scrape for {niche_name} finished.")
         return True
@@ -203,3 +193,26 @@ class TrendCollector:
         else:
             # Return empty DataFrame with expected columns
             return pd.DataFrame(columns=['platform', 'topic', 'growth', 'keyword', 'extracted_at'])
+
+    def get_scrape_errors(self, platform=None):
+        """Reads scrape errors from SQLite database."""
+        import sqlite3
+        import pandas as pd
+        
+        try:
+            conn = sqlite3.connect(self.db_path)
+            query = "SELECT platform, keyword, url, status, reason, extracted_at FROM scrape_errors"
+            params = []
+            
+            if platform:
+                query += " WHERE platform = ?"
+                params.append(platform)
+            
+            query += " ORDER BY extracted_at DESC"
+            
+            df = pd.read_sql_query(query, conn, params=params)
+            conn.close()
+            return df
+        except Exception as e:
+            print(f"Error reading scrape errors from DB: {e}")
+            return pd.DataFrame(columns=['platform', 'keyword', 'url', 'status', 'reason', 'extracted_at'])
