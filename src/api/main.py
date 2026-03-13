@@ -7,6 +7,13 @@ import pandas as pd
 import os
 import sys
 
+import logging
+import traceback
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Ensure the project root is in sys.path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if project_root not in sys.path:
@@ -75,51 +82,101 @@ def scrape_niche(request: ScrapeRequest, background_tasks: BackgroundTasks):
     
     return {"message": f"Comprehensive scraping for {request.niche} started in background. Results will be available soon."}
 
+import json
+import time
+import hashlib
+
+# Simple in-memory cache for processed trends
+_trends_cache = {}
+_CACHE_TTL_SECONDS = 300  # 5 minutes
+
+def _get_cached_or_compute(cache_key, compute_fn):
+    """Returns cached result if fresh, otherwise computes and caches."""
+    now = time.time()
+    if cache_key in _trends_cache:
+        cached_time, cached_data = _trends_cache[cache_key]
+        if now - cached_time < _CACHE_TTL_SECONDS:
+            logger.info(f"Cache hit for {cache_key}")
+            return cached_data
+    result = compute_fn()
+    _trends_cache[cache_key] = (now, result)
+    return result
+
+class JSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if hasattr(obj, 'tolist'):
+            return obj.tolist()
+        if isinstance(obj, (datetime, pd.Timestamp)):
+            return obj.isoformat()
+        if isinstance(obj, set):
+            return list(obj)
+        try:
+            return super().default(obj)
+        except TypeError:
+            return str(obj)
+
+def _sanitize_and_serialize(processed_data):
+    """Replace NaN/Inf values and serialize DataFrame to JSON-compatible records."""
+    processed_data = processed_data.copy()
+    processed_data = processed_data.fillna("")
+    processed_data = processed_data.replace([float('inf'), float('-inf')], None)
+    records = processed_data.to_dict(orient="records")
+    return json.loads(json.dumps(records, cls=JSONEncoder))
+
 @app.get("/trends")
 def get_trends(geo: Optional[str] = Query(None), niche_name: Optional[str] = Query(None)):
-    # Normalize geo: empty string or "None" string from frontend means we want specifically Global data ("")
-    # if geo is literal None (not provided), we return everything.
-    if geo == "" or geo == "None":
-        geo = ""
+    try:
+        # Normalize geo
+        if geo == "" or geo == "None":
+            geo = ""
         
-    raw_data = collector.collect_all(
-        geo=geo,
-        include_trending_now=False if niche_name else True,
-        include_youtube=True,
-        include_social=True,
-        include_hackernews=True,
-        include_reddit=True,
-        include_news=True
-    )
-    if raw_data.empty:
-        return {"data": []}
-    
-    processed_data = analytics.process_trends(raw_data)
-    
-    if niche_name:
-        processed_data = niche.filter_by_niche(processed_data, niche_name)
-    
-    # Discover micro-niches if enough data
-    if len(processed_data) >= 5:
-        processed_data = niche.discover_micro_niches(processed_data)
+        cache_key = f"trends_{geo}_{niche_name}"
         
-    # Replace NaN values with appropriate defaults before JSON serialization
-    # Pydantic/FastAPI don't handle 'NaN' (Not a Number) well in JSON response.
-    # Use .loc to avoid SettingWithCopyWarning
-    processed_data = processed_data.copy()
-    processed_data = processed_data.fillna(0)
-    
-    # Explicitly ensure integers for clustering if it exists
-    if 'niche_cluster' in processed_data.columns:
-        processed_data.loc[:, 'niche_cluster'] = processed_data['niche_cluster'].astype(int)
+        def _compute_trends():
+            raw_data = collector.collect_all(
+                geo=geo,
+                include_trending_now=False if niche_name else True,
+                include_youtube=True,
+                include_social=True,
+                include_hackernews=True,
+                include_reddit=True,
+                include_news=True
+            )
+            if raw_data.empty:
+                return []
+            
+            processed_data = analytics.process_trends(raw_data)
+            
+            if niche_name:
+                processed_data = niche.filter_by_niche(processed_data, niche_name)
+            
+            if len(processed_data) >= 5 and 'topic' in processed_data.columns:
+                processed_data = niche.discover_micro_niches(processed_data)
+                
+            processed_data = processed_data.copy()
+            
+            if 'niche_cluster' in processed_data.columns:
+                processed_data['niche_cluster'] = pd.array(processed_data['niche_cluster'].fillna(-1).astype(int), dtype=pd.Int64Dtype())
+
+            # Replace all remaining NaN/Inf values to ensure JSON compatibility
+            processed_data = processed_data.fillna("")
+            processed_data = processed_data.replace([float('inf'), float('-inf')], None)
+
+            records = processed_data.to_dict(orient="records")
+            return json.loads(json.dumps(records, cls=JSONEncoder))
         
-    return {"data": processed_data.to_dict(orient="records")}
+        return {"data": _get_cached_or_compute(cache_key, _compute_trends)}
+    except Exception as e:
+        logger.error(f"Error in get_trends: {e}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/trending_now")
 def get_trending_now(geo: str = Query("US"), trend_type: str = Query("daily")):
-    # Normalize geo: "None" or "" means Global for Google RSS
-    if geo == "None" or geo is None:
-        geo = ""
+    # Normalize geo: Daily trends should never be "Global" for scraping
+    # Default to "US" if "Global" or None is provided
+    if geo == "None" or geo is None or geo == "Global" or geo == "":
+        geo = "US"
         
     # Check if we have recent data (within 12 hours)
     raw_data = collector.collect_all(geo=geo, include_trending_now=True)
@@ -143,19 +200,33 @@ def get_trending_now(geo: str = Query("US"), trend_type: str = Query("daily")):
 
     # Filter for trending searches specifically
     if not raw_data.empty:
-        # Use .copy() to ensure we're not working on a slice
-        trending_data = raw_data[raw_data['platform'] == "Google Trends"].copy()
-        if not trending_data.empty:
-            processed_data = analytics.process_trends(trending_data)
-            processed_data = processed_data.fillna(0)
-            return {"data": processed_data.to_dict(orient="records")}
+        try:
+            # Use .copy() to ensure we're not working on a slice
+            trending_data = raw_data[raw_data['platform'] == "Google Trends"].copy()
+            if not trending_data.empty:
+                processed_data = analytics.process_trends(trending_data)
+                
+                # Replace NaN/Inf values to ensure JSON compatibility
+                processed_data = processed_data.copy()
+                processed_data = processed_data.fillna("")
+                processed_data = processed_data.replace([float('inf'), float('-inf')], None)
+                
+                # Convert to records and handle non-serializable types
+                records = processed_data.to_dict(orient="records")
+                json_compatible_records = json.loads(json.dumps(records, cls=JSONEncoder))
+                
+                return {"data": json_compatible_records}
+        except Exception as e:
+            logger.error(f"Error in processing trending_now: {e}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
             
     return {"data": []}
 
 @app.get("/youtube_trends")
-def get_youtube_trends(niche_name: str = Query(...)):
+def get_youtube_trends(niche_name: str = Query(...), geo: Optional[str] = Query(None)):
     # YouTube trends are always niche-specific in our implementation
-    raw_data = collector.collect_all(include_youtube=True)
+    raw_data = collector.collect_all(geo=geo, include_youtube=True)
     
     needs_scrape = True
     if not raw_data.empty and 'platform' in raw_data.columns:
@@ -187,14 +258,12 @@ def get_youtube_trends(niche_name: str = Query(...)):
             processed_data = niche.filter_by_niche(yt_data, niche_name)
             if not processed_data.empty:
                 processed_data = analytics.process_trends(processed_data)
-                processed_data = processed_data.fillna(0)
-                # Ensure URL and published date are in the response
-                return {"data": processed_data.to_dict(orient="records")}
+                return {"data": _sanitize_and_serialize(processed_data)}
                 
     return {"data": []}
 
 @app.get("/social_trends")
-def get_social_trends(platform: str = Query(...), niche_name: str = Query(...)):
+def get_social_trends(platform: str = Query(...), niche_name: str = Query(...), geo: Optional[str] = Query(None)):
     # platform: "X", "Threads", "Instagram"
     platform_map = {
         "X": "X (Twitter)",
@@ -205,7 +274,7 @@ def get_social_trends(platform: str = Query(...), niche_name: str = Query(...)):
     if not target_platform:
         raise HTTPException(status_code=400, detail="Invalid platform")
 
-    raw_data = collector.collect_all(include_social=True)
+    raw_data = collector.collect_all(geo=geo, include_social=True)
     
     needs_scrape = True
     if not raw_data.empty and 'platform' in raw_data.columns:
@@ -231,15 +300,14 @@ def get_social_trends(platform: str = Query(...), niche_name: str = Query(...)):
             processed_data = niche.filter_by_niche(social_data, niche_name)
             if not processed_data.empty:
                 processed_data = analytics.process_trends(processed_data)
-                processed_data = processed_data.fillna(0)
-                return {"data": processed_data.to_dict(orient="records")}
+                return {"data": _sanitize_and_serialize(processed_data)}
                 
     return {"data": []}
 
 @app.get("/hackernews_trends")
-def get_hackernews_trends(niche_name: Optional[str] = Query(None)):
+def get_hackernews_trends(niche_name: Optional[str] = Query(None), geo: Optional[str] = Query(None)):
     # Check if we have recent data
-    raw_data = collector.collect_all(include_hackernews=True)
+    raw_data = collector.collect_all(geo=geo, include_hackernews=True)
     
     needs_scrape = True
     if not raw_data.empty and 'platform' in raw_data.columns:
@@ -270,15 +338,14 @@ def get_hackernews_trends(niche_name: Optional[str] = Query(None)):
                 hn_data = niche.filter_by_niche(hn_data, niche_name)
             if not hn_data.empty:
                 processed_data = analytics.process_trends(hn_data)
-                processed_data = processed_data.fillna(0)
-                return {"data": processed_data.to_dict(orient="records")}
+                return {"data": _sanitize_and_serialize(processed_data)}
                 
     return {"data": []}
 
 @app.get("/reddit_trends")
-def get_reddit_trends(subreddit: str = Query("all"), trend_type: str = Query("hot"), niche_name: Optional[str] = Query(None)):
+def get_reddit_trends(subreddit: str = Query("all"), trend_type: str = Query("hot"), niche_name: Optional[str] = Query(None), geo: Optional[str] = Query(None)):
     # Check if we have recent data
-    raw_data = collector.collect_all(include_reddit=True)
+    raw_data = collector.collect_all(geo=geo, include_reddit=True)
     
     needs_scrape = True
     if not raw_data.empty and 'platform' in raw_data.columns:
@@ -309,15 +376,14 @@ def get_reddit_trends(subreddit: str = Query("all"), trend_type: str = Query("ho
                 reddit_data = niche.filter_by_niche(reddit_data, niche_name)
             if not reddit_data.empty:
                 processed_data = analytics.process_trends(reddit_data)
-                processed_data = processed_data.fillna(0)
-                return {"data": processed_data.to_dict(orient="records")}
+                return {"data": _sanitize_and_serialize(processed_data)}
                 
     return {"data": []}
 
 @app.get("/news_trends")
-def get_news_trends(query: str = Query("niche"), niche_name: Optional[str] = Query(None)):
+def get_news_trends(query: str = Query("niche"), niche_name: Optional[str] = Query(None), geo: Optional[str] = Query(None)):
     target_query = niche_name if niche_name else query
-    raw_data = collector.collect_all(include_news=True)
+    raw_data = collector.collect_all(geo=geo, include_news=True)
     
     needs_scrape = True
     if not raw_data.empty and 'platform' in raw_data.columns:
@@ -341,8 +407,7 @@ def get_news_trends(query: str = Query("niche"), niche_name: Optional[str] = Que
                 news_data = niche.filter_by_niche(news_data, niche_name)
             if not news_data.empty:
                 processed_data = analytics.process_trends(news_data)
-                processed_data = processed_data.fillna(0)
-                return {"data": processed_data.to_dict(orient="records")}
+                return {"data": _sanitize_and_serialize(processed_data)}
                 
     return {"data": []}
 
@@ -359,9 +424,14 @@ def get_all_trends():
     
     if not raw_data.empty:
         processed_data = analytics.process_trends(raw_data)
-        processed_data = processed_data.fillna(0)
-        return {"data": processed_data.to_dict(orient="records")}
-                
+        return {"data": _sanitize_and_serialize(processed_data)}
+    return {"data": []}
+
+@app.get("/scrape_errors")
+def get_scrape_errors(platform: Optional[str] = Query(None)):
+    df = collector.get_scrape_errors(platform=platform)
+    if not df.empty:
+        return {"data": _sanitize_and_serialize(df)}
     return {"data": []}
 
 if __name__ == "__main__":
