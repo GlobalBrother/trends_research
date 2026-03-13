@@ -1,2 +1,4 @@
 *.json
 *.db
+/src/collector/trends.db-shm
+/src/collector/trends.db-wal
