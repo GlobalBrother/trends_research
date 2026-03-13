@@ -167,6 +167,10 @@ class TrendCollector:
         """Runs the Scrapy NewsAPI spider."""
         return self._run_scraper("newsapi", q=query, api_key=api_key, geo=geo)
 
+    def run_token_import(self, widgets_json, geo="US", keyword="Unknown"):
+        """Runs the token import spider with pre-parsed widget tokens from a downloaded JSON file."""
+        return self._run_scraper("token_import", widgets_json=widgets_json, geo=geo, keyword=keyword)
+
     def run_niche_comprehensive_scrape(self, niche_name, keywords, geo="US", timeframe="today 12-m", category=0):
         """Triggers all scrapers for a specific niche in sequence."""
         print(f"Starting comprehensive scrape for niche: {niche_name}")

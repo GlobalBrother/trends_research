@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, File, HTTPException, Query, BackgroundTasks, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List
@@ -81,6 +81,66 @@ def scrape_niche(request: ScrapeRequest, background_tasks: BackgroundTasks):
     )
     
     return {"message": f"Comprehensive scraping for {request.niche} started in background. Results will be available soon."}
+
+
+@app.post("/import_tokens")
+async def import_tokens(
+    file: UploadFile = File(...),
+    geo: str = Query("US"),
+    background_tasks: BackgroundTasks = None,
+):
+    """
+    Import a Google Trends JSON file downloaded manually when the API returns 429.
+    Parses widget tokens and fetches data using those tokens directly.
+    """
+    try:
+        content = await file.read()
+        text = content.decode("utf-8")
+
+        # Strip Google's XSSI prefix: )]}'\n
+        if text.startswith(")]}',"):
+            text = text[5:]
+        elif text.startswith(")]}'"):
+            text = text[4:].lstrip("\n")
+
+        data = json.loads(text)
+        widgets = data.get("widgets", [])
+        if not widgets:
+            raise HTTPException(status_code=400, detail="No widgets found in the uploaded JSON file.")
+
+        # Extract keyword from the JSON
+        keywords_info = data.get("keywords", [])
+        keyword = keywords_info[0].get("keyword", "Unknown") if keywords_info else "Unknown"
+
+        # Extract geo from widget requests if not provided
+        for w in widgets:
+            req = w.get("request", {})
+            widget_geo = req.get("geo", {}).get("country") or req.get("restriction", {}).get("geo", {}).get("country")
+            if widget_geo:
+                geo = widget_geo
+                break
+
+        widgets_json = json.dumps(widgets)
+
+        background_tasks.add_task(
+            collector.run_token_import,
+            widgets_json=widgets_json,
+            geo=geo,
+            keyword=keyword,
+        )
+
+        return {
+            "message": f"Token import started for keyword '{keyword}' (geo={geo}). "
+                       f"Found {len(widgets)} widget(s). Data will be available soon."
+        }
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON file.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error importing tokens: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 import json
 import time

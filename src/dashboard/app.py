@@ -114,20 +114,19 @@ def main():
         selected_category_name = st.selectbox("Category", list(categories.keys()))
         selected_category = categories[selected_category_name]
     
-    # Scrape button
-    if st.sidebar.button(f"🚀 Scrape {selected_niche}"):
-        with st.status(f"Scraping {selected_niche}...", expanded=True) as status:
-            st.write(f"Requesting data for {selected_niche}...")
-            success = api.trigger_scrape(
-                niche_name=selected_niche, geo=selected_geo,
-                timeframe=selected_timeframe, category=selected_category
-            )
-            if success:
-                status.update(label=f"✅ {selected_niche} scrape started!", state="complete", expanded=False)
-                refresh = True
-                st.cache_data.clear()
-            else:
-                status.update(label="❌ Scraping failed", state="error", expanded=True)
+    # Token Import (for 429 workaround)
+    with st.sidebar.expander("📥 Import Google Trends JSON", expanded=False):
+        st.caption("Upload the JSON file Google Trends gives you when it returns a 429 error.")
+        uploaded_file = st.file_uploader("Choose JSON file", type=["json"], key="token_upload")
+        if uploaded_file is not None:
+            if st.button("⬆️ Import Tokens", key="import_tokens_btn"):
+                with st.spinner("Importing tokens..."):
+                    result = api.import_tokens(uploaded_file.getvalue(), uploaded_file.name, geo=selected_geo)
+                    if result:
+                        st.success(result.get("message", "Import started!"))
+                        st.cache_data.clear()
+                    else:
+                        st.error("❌ Import failed")
 
     # --- Tabs (consolidated from 10 → 5) ---
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -139,6 +138,20 @@ def main():
         if refresh or st.session_state.get("last_geo") != selected_geo:
             st.cache_data.clear()
             st.session_state.last_geo = selected_geo
+
+        col_scrape1, _ = st.columns([1, 4])
+        with col_scrape1:
+            if st.button(f"🚀 Scrape {selected_niche}", key="scrape_niche"):
+                with st.spinner(f"Scraping {selected_niche}..."):
+                    success = api.trigger_scrape(
+                        niche_name=selected_niche, geo=selected_geo,
+                        timeframe=selected_timeframe, category=selected_category
+                    )
+                    if success:
+                        st.success(f"✅ {selected_niche} scrape started!")
+                        st.cache_data.clear()
+                    else:
+                        st.error("❌ Scraping failed")
 
         with st.spinner(f"Loading {selected_niche} trends for {selected_country_name}..."):
             df = api.get_trends(geo=selected_geo, niche_name=selected_niche)
@@ -216,6 +229,17 @@ def main():
             trend_type = st.radio("Type", ["daily", "realtime"], index=0)
             if st.button("🔄 Refresh", key="refresh_daily"):
                 st.cache_data.clear()
+            if st.button("🚀 Scrape Daily", key="scrape_daily"):
+                with st.spinner("Scraping daily trends..."):
+                    success = api.trigger_scrape(
+                        niche_name=selected_niche, geo=effective_geo,
+                        timeframe=selected_timeframe, category=selected_category
+                    )
+                    if success:
+                        st.success("✅ Scrape started!")
+                        st.cache_data.clear()
+                    else:
+                        st.error("❌ Scraping failed")
         
         with st.spinner(f"Fetching {trend_type} trends for {display_geo_name}..."):
             daily_df = api.get_trending_now(geo=effective_geo, trend_type=trend_type)
@@ -247,8 +271,22 @@ def main():
         platform_map = {"𝕏 X": "X", "💬 Threads": "Threads", "📸 Instagram": "Instagram", "🎵 TikTok": "TikTok", "👤 Facebook": "Facebook"}
         platform_key = platform_map[platform_choice]
 
-        if st.button("🔄 Refresh", key="refresh_social"):
-            st.cache_data.clear()
+        col_s1, col_s2, _ = st.columns([1, 1, 3])
+        with col_s1:
+            if st.button("🔄 Refresh", key="refresh_social"):
+                st.cache_data.clear()
+        with col_s2:
+            if st.button(f"🚀 Scrape {platform_key}", key="scrape_social"):
+                with st.spinner(f"Scraping {platform_key}..."):
+                    success = api.trigger_scrape(
+                        niche_name=selected_niche, geo=selected_geo,
+                        timeframe=selected_timeframe, category=selected_category
+                    )
+                    if success:
+                        st.success(f"✅ {platform_key} scrape started!")
+                        st.cache_data.clear()
+                    else:
+                        st.error("❌ Scraping failed")
 
         with st.spinner(f"Fetching {platform_key} trends for {selected_niche}..."):
             social_df = api.get_social_trends(platform=platform_key, niche_name=selected_niche, geo=selected_geo)
@@ -282,8 +320,22 @@ def main():
         source_choice = st.radio("Source", ["🧡 Hacker News", "👽 Reddit", "📰 News"], horizontal=True)
 
         if source_choice == "🧡 Hacker News":
-            if st.button("🔄 Refresh", key="refresh_hn"):
-                st.cache_data.clear()
+            col_h1, col_h2, _ = st.columns([1, 1, 3])
+            with col_h1:
+                if st.button("🔄 Refresh", key="refresh_hn"):
+                    st.cache_data.clear()
+            with col_h2:
+                if st.button("🚀 Scrape HN", key="scrape_hn"):
+                    with st.spinner("Scraping Hacker News..."):
+                        success = api.trigger_scrape(
+                            niche_name=selected_niche, geo=selected_geo,
+                            timeframe=selected_timeframe, category=selected_category
+                        )
+                        if success:
+                            st.success("✅ HN scrape started!")
+                            st.cache_data.clear()
+                        else:
+                            st.error("❌ Scraping failed")
             with st.spinner("Fetching Hacker News..."):
                 hn_df = api.get_hackernews_trends(niche_name=selected_niche, geo=selected_geo)
             if not hn_df.empty:
@@ -309,8 +361,22 @@ def main():
             col_r1, col_r2 = st.columns([3, 1])
             with col_r2:
                 subreddit = st.text_input("Subreddit", value="all")
-            if st.button("🔄 Refresh", key="refresh_reddit"):
-                st.cache_data.clear()
+            col_rd1, col_rd2, _ = st.columns([1, 1, 3])
+            with col_rd1:
+                if st.button("🔄 Refresh", key="refresh_reddit"):
+                    st.cache_data.clear()
+            with col_rd2:
+                if st.button("🚀 Scrape Reddit", key="scrape_reddit"):
+                    with st.spinner("Scraping Reddit..."):
+                        success = api.trigger_scrape(
+                            niche_name=selected_niche, geo=selected_geo,
+                            timeframe=selected_timeframe, category=selected_category
+                        )
+                        if success:
+                            st.success("✅ Reddit scrape started!")
+                            st.cache_data.clear()
+                        else:
+                            st.error("❌ Scraping failed")
             with st.spinner("Fetching Reddit..."):
                 reddit_df = api.get_reddit_trends(subreddit=subreddit, niche_name=selected_niche, geo=selected_geo)
             if not reddit_df.empty:
@@ -334,8 +400,22 @@ def main():
 
         elif source_choice == "📰 News":
             news_query = st.text_input("Query", value=selected_niche or "Health")
-            if st.button("🔄 Refresh", key="refresh_news"):
-                st.cache_data.clear()
+            col_n1, col_n2, _ = st.columns([1, 1, 3])
+            with col_n1:
+                if st.button("🔄 Refresh", key="refresh_news"):
+                    st.cache_data.clear()
+            with col_n2:
+                if st.button("🚀 Scrape News", key="scrape_news"):
+                    with st.spinner("Scraping News..."):
+                        success = api.trigger_scrape(
+                            niche_name=selected_niche, geo=selected_geo,
+                            timeframe=selected_timeframe, category=selected_category
+                        )
+                        if success:
+                            st.success("✅ News scrape started!")
+                            st.cache_data.clear()
+                        else:
+                            st.error("❌ Scraping failed")
             with st.spinner("Fetching News..."):
                 news_df = api.get_news_trends(query=news_query, niche_name=selected_niche, geo=selected_geo)
             if not news_df.empty:

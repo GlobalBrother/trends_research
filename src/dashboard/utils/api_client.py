@@ -25,6 +25,17 @@ class APIClient:
             st.error(f"Failed to fetch keywords for {niche_name}: {e}")
             return []
 
+    def import_tokens(self, file_bytes, filename, geo="US"):
+        try:
+            files = {"file": (filename, file_bytes, "application/json")}
+            params = {"geo": geo}
+            response = requests.post(f"{self.base_url}/import_tokens", files=files, params=params)
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            st.error(f"Token import failed: {e}")
+            return None
+
     def trigger_scrape(self, niche_name, geo="US", timeframe="today 12-m", category=0):
         try:
             payload = {
