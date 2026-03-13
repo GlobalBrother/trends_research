@@ -116,8 +116,8 @@ def main():
     
     # Token Import (for 429 workaround)
     with st.sidebar.expander("📥 Import Google Trends JSON", expanded=False):
-        st.caption("Upload the JSON file Google Trends gives you when it returns a 429 error.")
-        uploaded_file = st.file_uploader("Choose JSON file", type=["json"], key="token_upload")
+        st.caption("Upload the JSON/TXT file Google Trends gives you when it returns a 429 error.")
+        uploaded_file = st.file_uploader("Choose JSON or TXT file", type=["json", "txt"], key="token_upload")
         if uploaded_file is not None:
             if st.button("⬆️ Import Tokens", key="import_tokens_btn"):
                 with st.spinner("Importing tokens..."):
@@ -128,9 +128,9 @@ def main():
                     else:
                         st.error("❌ Import failed")
 
-    # --- Tabs (consolidated from 10 → 5) ---
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "🎯 Niche Research", "📈 Daily Trends", "📱 Social Media", "🌐 Community & News", "⚠️ Errors"
+    # --- Tabs (consolidated from 10 → 6) ---
+    tab1, tab2, tab_yt, tab3, tab4, tab5 = st.tabs([
+        "🎯 Niche Research", "📈 Daily Trends", "🎬 YouTube", "📱 Social Media", "🌐 Community & News", "⚠️ Errors"
     ])
 
     # ==================== TAB 1: Niche Research ====================
@@ -145,7 +145,8 @@ def main():
                 with st.spinner(f"Scraping {selected_niche}..."):
                     success = api.trigger_scrape(
                         niche_name=selected_niche, geo=selected_geo,
-                        timeframe=selected_timeframe, category=selected_category
+                        timeframe=selected_timeframe, category=selected_category,
+                        scraper_type="google_trends"
                     )
                     if success:
                         st.success(f"✅ {selected_niche} scrape started!")
@@ -233,7 +234,8 @@ def main():
                 with st.spinner("Scraping daily trends..."):
                     success = api.trigger_scrape(
                         niche_name=selected_niche, geo=effective_geo,
-                        timeframe=selected_timeframe, category=selected_category
+                        timeframe=selected_timeframe, category=selected_category,
+                        scraper_type="daily"
                     )
                     if success:
                         st.success("✅ Scrape started!")
@@ -265,6 +267,52 @@ def main():
                 fig_daily.update_layout(margin=dict(t=40, b=10, l=10, r=10), xaxis_tickangle=-45)
                 st.plotly_chart(fig_daily, use_container_width=True)
 
+    # ==================== TAB: YouTube ====================
+    with tab_yt:
+        col_yt1, col_yt2, _ = st.columns([1, 1, 3])
+        with col_yt1:
+            if st.button("🔄 Refresh", key="refresh_yt"):
+                st.cache_data.clear()
+        with col_yt2:
+            if st.button(f"🚀 Scrape YouTube", key="scrape_yt"):
+                with st.spinner("Scraping YouTube trends..."):
+                    success = api.trigger_scrape(
+                        niche_name=selected_niche, geo=selected_geo,
+                        timeframe=selected_timeframe, category=selected_category,
+                        scraper_type="youtube"
+                    )
+                    if success:
+                        st.success("✅ YouTube scrape started!")
+                        st.cache_data.clear()
+                    else:
+                        st.error("❌ Scraping failed")
+
+        with st.spinner(f"Fetching YouTube trends for {selected_niche}..."):
+            yt_df = api.get_youtube_trends(niche_name=selected_niche, geo=selected_geo)
+
+        if not yt_df.empty:
+            data_cols = ['topic', 'channel', 'growth', 'duration', 'published', 'virality_score', 'description', 'url']
+            safe_dataframe_display(
+                yt_df, data_cols,
+                col_config={
+                    "url": st.column_config.LinkColumn("Link"),
+                    "growth": "Views",
+                    "channel": "Channel",
+                    "duration": "Duration",
+                    "published": "Published",
+                    "description": "Description",
+                },
+                height=350
+            )
+
+            with st.expander("📊 Chart", expanded=False):
+                fig_yt = px.bar(yt_df.head(15), x='topic', y='virality_score',
+                                title="YouTube Virality", height=350)
+                fig_yt.update_layout(margin=dict(t=40, b=10, l=10, r=10), xaxis_tickangle=-45)
+                st.plotly_chart(fig_yt, use_container_width=True)
+        else:
+            st.info(f"No YouTube trends found for **{selected_niche}**. Run the scraper to populate data.")
+
     # ==================== TAB 3: Social Media (X + Threads + Instagram) ====================
     with tab3:
         platform_choice = st.radio("Platform", ["𝕏 X", "💬 Threads", "📸 Instagram", "🎵 TikTok", "👤 Facebook"], horizontal=True)
@@ -280,7 +328,8 @@ def main():
                 with st.spinner(f"Scraping {platform_key}..."):
                     success = api.trigger_scrape(
                         niche_name=selected_niche, geo=selected_geo,
-                        timeframe=selected_timeframe, category=selected_category
+                        timeframe=selected_timeframe, category=selected_category,
+                        scraper_type=platform_key
                     )
                     if success:
                         st.success(f"✅ {platform_key} scrape started!")
@@ -329,7 +378,8 @@ def main():
                     with st.spinner("Scraping Hacker News..."):
                         success = api.trigger_scrape(
                             niche_name=selected_niche, geo=selected_geo,
-                            timeframe=selected_timeframe, category=selected_category
+                            timeframe=selected_timeframe, category=selected_category,
+                            scraper_type="hackernews"
                         )
                         if success:
                             st.success("✅ HN scrape started!")
@@ -370,7 +420,8 @@ def main():
                     with st.spinner("Scraping Reddit..."):
                         success = api.trigger_scrape(
                             niche_name=selected_niche, geo=selected_geo,
-                            timeframe=selected_timeframe, category=selected_category
+                            timeframe=selected_timeframe, category=selected_category,
+                            scraper_type="reddit"
                         )
                         if success:
                             st.success("✅ Reddit scrape started!")
@@ -409,7 +460,8 @@ def main():
                     with st.spinner("Scraping News..."):
                         success = api.trigger_scrape(
                             niche_name=selected_niche, geo=selected_geo,
-                            timeframe=selected_timeframe, category=selected_category
+                            timeframe=selected_timeframe, category=selected_category,
+                            scraper_type="news"
                         )
                         if success:
                             st.success("✅ News scrape started!")

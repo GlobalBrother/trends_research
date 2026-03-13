@@ -1,4 +1,7 @@
-from .social_base_spider import SocialBaseTrendsSpider
+try:
+    from .social_base_spider import SocialBaseTrendsSpider
+except ImportError:
+    from social_base_spider import SocialBaseTrendsSpider
 
 
 class XSpider(SocialBaseTrendsSpider):
@@ -7,3 +10,8 @@ class XSpider(SocialBaseTrendsSpider):
     name = "x_trends"
     data_type = "x_trends"
     platform_query_suffix = "twitter"
+
+
+if __name__ == "__main__":
+    from run_spider import run
+    run(XSpider)

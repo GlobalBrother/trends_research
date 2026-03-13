@@ -44,6 +44,7 @@ class ScrapeRequest(BaseModel):
     geo: str = "US"
     timeframe: str = "today 12-m"
     category: int = 0
+    scraper_type: str = "all"
 
 class TrendItem(BaseModel):
     platform: str
@@ -69,25 +70,71 @@ def get_niche_keywords(niche_name: str):
 @app.post("/scrape")
 def scrape_niche(request: ScrapeRequest, background_tasks: BackgroundTasks):
     niche_keywords = niche.get_niche_keywords(request.niche)
-    
-    # Run comprehensive scrape in background to avoid timeouts
-    background_tasks.add_task(
-        collector.run_niche_comprehensive_scrape,
-        niche_name=request.niche,
-        keywords=niche_keywords,
-        geo=request.geo,
-        timeframe=request.timeframe,
-        category=request.category
-    )
-    
-    return {"message": f"Comprehensive scraping for {request.niche} started in background. Results will be available soon."}
+    scraper = request.scraper_type
+
+    if scraper == "all":
+        background_tasks.add_task(
+            collector.run_niche_comprehensive_scrape,
+            niche_name=request.niche,
+            keywords=niche_keywords,
+            geo=request.geo,
+            timeframe=request.timeframe,
+            category=request.category
+        )
+    elif scraper == "google_trends":
+        background_tasks.add_task(
+            collector.run_google_trends_scraper,
+            niche_keywords, geo=request.geo,
+            timeframe=request.timeframe, category=request.category
+        )
+    elif scraper == "daily":
+        background_tasks.add_task(
+            collector.run_trending_now_scraper,
+            geo=request.geo
+        )
+    elif scraper == "youtube":
+        background_tasks.add_task(
+            collector.run_youtube_trends_scraper,
+            niche_keywords, geo=request.geo
+        )
+    elif scraper in ("X", "Threads", "Instagram", "TikTok", "Facebook"):
+        background_tasks.add_task(
+            collector.run_social_trends_scraper,
+            scraper, niche_keywords, geo=request.geo
+        )
+    elif scraper == "hackernews":
+        background_tasks.add_task(
+            collector.run_hackernews_scraper,
+            keywords=niche_keywords, geo=request.geo
+        )
+    elif scraper == "reddit":
+        background_tasks.add_task(
+            collector.run_reddit_scraper,
+            keywords=niche_keywords, geo=request.geo
+        )
+    elif scraper == "news":
+        background_tasks.add_task(
+            collector.run_news_scraper,
+            query=request.niche, geo=request.geo
+        )
+    else:
+        background_tasks.add_task(
+            collector.run_niche_comprehensive_scrape,
+            niche_name=request.niche,
+            keywords=niche_keywords,
+            geo=request.geo,
+            timeframe=request.timeframe,
+            category=request.category
+        )
+
+    return {"message": f"Scraping ({scraper}) for {request.niche} started in background. Results will be available soon."}
 
 
 @app.post("/import_tokens")
 async def import_tokens(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     geo: str = Query("US"),
-    background_tasks: BackgroundTasks = None,
 ):
     """
     Import a Google Trends JSON file downloaded manually when the API returns 429.
@@ -97,11 +144,12 @@ async def import_tokens(
         content = await file.read()
         text = content.decode("utf-8")
 
-        # Strip Google's XSSI prefix: )]}'\n
-        if text.startswith(")]}',"):
-            text = text[5:]
-        elif text.startswith(")]}'"):
-            text = text[4:].lstrip("\n")
+        # Strip Google's XSSI prefix which can appear in various forms:
+        # )]}'\n{...}  or  )\n]\n}'\n{...}  or  )]}',\n{...}
+        # Find the first '{' which starts the actual JSON object
+        brace_idx = text.find("{")
+        if brace_idx > 0:
+            text = text[brace_idx:]
 
         data = json.loads(text)
         widgets = data.get("widgets", [])

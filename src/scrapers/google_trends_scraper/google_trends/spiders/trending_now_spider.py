@@ -2,7 +2,10 @@ import scrapy
 import json
 import urllib.parse
 from datetime import datetime
-from ..items import GoogleTrendItem
+try:
+    from ..items import GoogleTrendItem
+except ImportError:
+    from google_trends.items import GoogleTrendItem
 
 class TrendingNowSpider(scrapy.Spider):
     name = "trending_now"
@@ -58,3 +61,8 @@ class TrendingNowSpider(scrapy.Spider):
             data_type="trending_searches",
             results=results
         )
+
+
+if __name__ == "__main__":
+    from run_spider import run
+    run(TrendingNowSpider)

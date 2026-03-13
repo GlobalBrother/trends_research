@@ -1,5 +1,8 @@
 import scrapy
-from ..items import GoogleTrendItem
+try:
+    from ..items import GoogleTrendItem
+except ImportError:
+    from google_trends.items import GoogleTrendItem
 
 class HackerNewsSpider(scrapy.Spider):
     name = "hackernews"
@@ -70,3 +73,8 @@ class HackerNewsSpider(scrapy.Spider):
                 'descendants': story.get('descendants', 0) # number of comments
             }]
         )
+
+
+if __name__ == "__main__":
+    from run_spider import run
+    run(HackerNewsSpider)

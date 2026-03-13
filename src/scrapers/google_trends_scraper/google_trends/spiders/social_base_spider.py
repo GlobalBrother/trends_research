@@ -16,7 +16,10 @@ import urllib.parse
 
 import scrapy
 
-from ..items import GoogleTrendItem, ScrapeErrorItem
+try:
+    from ..items import GoogleTrendItem, ScrapeErrorItem
+except ImportError:
+    from google_trends.items import GoogleTrendItem, ScrapeErrorItem
 
 
 class SocialBaseTrendsSpider(scrapy.Spider):

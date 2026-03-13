@@ -36,13 +36,14 @@ class APIClient:
             st.error(f"Token import failed: {e}")
             return None
 
-    def trigger_scrape(self, niche_name, geo="US", timeframe="today 12-m", category=0):
+    def trigger_scrape(self, niche_name, geo="US", timeframe="today 12-m", category=0, scraper_type="all"):
         try:
             payload = {
                 "niche": niche_name,
                 "geo": geo,
                 "timeframe": timeframe,
-                "category": category
+                "category": category,
+                "scraper_type": scraper_type
             }
             response = requests.post(f"{self.base_url}/scrape", json=payload)
             response.raise_for_status()

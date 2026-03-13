@@ -3,7 +3,10 @@ import urllib.parse
 
 import scrapy
 
-from ..items import GoogleTrendItem, ScrapeErrorItem
+try:
+    from ..items import GoogleTrendItem, ScrapeErrorItem
+except ImportError:
+    from google_trends.items import GoogleTrendItem, ScrapeErrorItem
 
 
 class TokenImportSpider(scrapy.Spider):
@@ -167,3 +170,8 @@ class TokenImportSpider(scrapy.Spider):
             data_type=data_type,
             results=results,
         )
+
+
+if __name__ == "__main__":
+    from run_spider import run
+    run(TokenImportSpider)

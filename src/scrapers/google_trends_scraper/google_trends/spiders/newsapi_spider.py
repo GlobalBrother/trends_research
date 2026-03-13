@@ -1,7 +1,10 @@
 import os
 import scrapy
 from datetime import datetime
-from ..items import GoogleTrendItem, ScrapeErrorItem
+try:
+    from ..items import GoogleTrendItem, ScrapeErrorItem
+except ImportError:
+    from google_trends.items import GoogleTrendItem, ScrapeErrorItem
 
 class NewsApiSpider(scrapy.Spider):
     name = "newsapi"
@@ -112,3 +115,8 @@ class NewsApiSpider(scrapy.Spider):
             results=results,
             extracted_at=datetime.now().isoformat()
         )
+
+
+if __name__ == "__main__":
+    from run_spider import run
+    run(NewsApiSpider)

@@ -3,7 +3,10 @@ import json
 import re
 import urllib.parse
 from datetime import datetime
-from ..items import GoogleTrendItem, ScrapeErrorItem
+try:
+    from ..items import GoogleTrendItem, ScrapeErrorItem
+except ImportError:
+    from google_trends.items import GoogleTrendItem, ScrapeErrorItem
 
 class YoutubeTrendsSpider(scrapy.Spider):
     name = "youtube_trends"
@@ -98,6 +101,17 @@ class YoutubeTrendsSpider(scrapy.Spider):
                         view_count_text = vr.get('viewCountText', {}).get('simpleText') or \
                                          vr.get('viewCountText', {}).get('runs', [{}])[0].get('text')
                         published_time = vr.get('publishedTimeText', {}).get('simpleText')
+                        channel = vr.get('ownerText', {}).get('runs', [{}])[0].get('text')
+                        duration = vr.get('lengthText', {}).get('simpleText') or \
+                                   vr.get('lengthText', {}).get('accessibility', {}).get('accessibilityData', {}).get('label')
+                        description_snippet = ''
+                        snippets = vr.get('detailedMetadataSnippets', [])
+                        if snippets:
+                            runs = snippets[0].get('snippetText', {}).get('runs', [])
+                            description_snippet = ''.join(r.get('text', '') for r in runs)
+                        if not description_snippet:
+                            desc_runs = vr.get('descriptionSnippet', {}).get('runs', [])
+                            description_snippet = ''.join(r.get('text', '') for r in desc_runs)
                         
                         if title and video_id:
                             results.append({
@@ -105,6 +119,9 @@ class YoutubeTrendsSpider(scrapy.Spider):
                                 'video_id': video_id,
                                 'views': view_count_text,
                                 'published': published_time,
+                                'channel': channel,
+                                'duration': duration,
+                                'description': description_snippet,
                                 'url': f"https://www.youtube.com/watch?v={video_id}"
                             })
             except (KeyError, IndexError) as e:
@@ -122,3 +139,8 @@ class YoutubeTrendsSpider(scrapy.Spider):
 
         except json.JSONDecodeError as e:
             self.logger.error(f"Failed to parse ytInitialData: {e}")
+
+
+if __name__ == "__main__":
+    from run_spider import run
+    run(YoutubeTrendsSpider)
