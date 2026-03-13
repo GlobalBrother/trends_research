@@ -22,41 +22,44 @@ class TrendCollector:
 
         try:
             conn = sqlite3.connect(self.db_path)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA cache_size=-8000")  # 8MB cache
+            conn.execute("PRAGMA mmap_size=67108864")  # 64MB memory-mapped I/O
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
-            query = "SELECT * FROM trends WHERE 1=1"
+            query = "SELECT platform, topic, growth, keyword, geo, url, extracted_at, extra_data FROM trends WHERE 1=1"
             params = []
 
-            # Platform filtering
-            excluded_platforms = []
-            if not include_trending_now:
-                excluded_platforms.append('Google Trends')
-            if not include_youtube:
-                excluded_platforms.append('YouTube')
-            if not include_social:
-                excluded_platforms.extend(['X (Twitter)', 'Threads', 'Instagram'])
-            if not include_hackernews:
-                excluded_platforms.append('HackerNews')
-            if not include_reddit:
-                excluded_platforms.append('Reddit')
-            if not include_news:
-                excluded_platforms.append('News')
+            # Platform filtering - use IN for included platforms (faster with index)
+            included_platforms = []
+            if include_trending_now:
+                included_platforms.append('Google Trends')
+            if include_youtube:
+                included_platforms.append('YouTube')
+            if include_social:
+                included_platforms.extend(['X (Twitter)', 'Threads', 'Instagram'])
+            if include_hackernews:
+                included_platforms.append('HackerNews')
+            if include_reddit:
+                included_platforms.append('Reddit')
+            if include_news:
+                included_platforms.append('News')
             
-            if excluded_platforms:
-                placeholders = ', '.join(['?'] * len(excluded_platforms))
-                query += f" AND platform NOT IN ({placeholders})"
-                params.extend(excluded_platforms)
+            # Always include Google niche platforms
+            always_included = ['Google Interest', 'Google Regions', 'Google Related Queries', 'Google Related Topics']
+            included_platforms.extend(always_included)
+            
+            placeholders = ', '.join(['?'] * len(included_platforms))
+            query += f" AND platform IN ({placeholders})"
+            params.extend(included_platforms)
 
-            # Geo filtering (only for Google platforms that have geo)
+            # Geo filtering
             if geo is not None and geo != "Global":
-                # We want trends that either have no geo (Global) OR match requested geo
-                # For Google platforms, we want it to match or be 'Global'
-                query += f" AND (UPPER(geo) = UPPER(?) OR geo = '' OR UPPER(geo) = 'GLOBAL' OR geo IS NULL)"
+                query += " AND (UPPER(geo) = UPPER(?) OR geo = '' OR UPPER(geo) = 'GLOBAL' OR geo IS NULL)"
                 params.append(geo)
             elif geo == "Global":
-                # If specifically 'Global' is requested, filter for 'Global', '', or NULL
-                query += f" AND (UPPER(geo) = 'GLOBAL' OR geo = '' OR geo IS NULL)"
+                query += " AND (UPPER(geo) = 'GLOBAL' OR geo = '' OR geo IS NULL)"
 
             query += " ORDER BY extracted_at DESC"
             
@@ -66,12 +69,9 @@ class TrendCollector:
 
             trends = []
             for row in rows:
-                platform = row['platform']
-                topic = row['topic']
-                
                 item = {
-                    "platform": platform,
-                    "topic": topic,
+                    "platform": row['platform'],
+                    "topic": row['topic'],
                     "growth": row['growth'],
                     "keyword": row['keyword'],
                     "geo": row['geo'],
@@ -80,9 +80,10 @@ class TrendCollector:
                 }
                 
                 # Expand extra_data
-                if row['extra_data']:
+                extra_data = row['extra_data']
+                if extra_data:
                     try:
-                        extra = json.loads(row['extra_data'])
+                        extra = json.loads(extra_data)
                         item.update(extra)
                     except:
                         pass

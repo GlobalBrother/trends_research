@@ -75,9 +75,15 @@ class SQLitePipeline:
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_keyword ON trends(keyword)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_geo ON trends(geo)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_extracted_at ON trends(extracted_at)")
+        # Composite indexes for common query patterns
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_platform_geo ON trends(platform, geo)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_geo_platform_extracted ON trends(geo, platform, extracted_at DESC)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_error_platform ON scrape_errors(platform)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_error_extracted_at ON scrape_errors(extracted_at)")
         self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_log_platform_id ON scrape_log(platform, identifier)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_log_extracted ON scrape_log(platform, identifier, status, extracted_at)")
+        # Enable WAL mode for better concurrent read performance
+        self.cursor.execute("PRAGMA journal_mode=WAL")
         self.conn.commit()
 
     def is_recently_scraped(self, platform, identifier, hours=24):

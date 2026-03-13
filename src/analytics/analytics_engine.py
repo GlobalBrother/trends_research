@@ -87,14 +87,17 @@ class AnalyticsEngine:
             return {w for w in words if w not in stop_words and len(w) > 2}
 
         topic_keywords = [get_keywords(t) for t in topics]
+        topic_lower = [t.strip().lower() for t in topics]
+        is_meta = [df.iloc[i]['platform'] in ['Google Interest', 'Google Regions'] for i in range(len(topics))]
         
-        # Union-Find
+        # Union-Find with rank for balanced trees
         parent = list(range(len(topics)))
+        rank = [0] * len(topics)
+        
         def find(i):
             root = i
             while parent[root] != root:
                 root = parent[root]
-            # Path compression (iterative)
             while parent[i] != root:
                 next_node = parent[i]
                 parent[i] = root
@@ -105,51 +108,61 @@ class AnalyticsEngine:
             root_i = find(i)
             root_j = find(j)
             if root_i != root_j:
-                parent[root_i] = root_j
-                
+                if rank[root_i] < rank[root_j]:
+                    parent[root_i] = root_j
+                elif rank[root_i] > rank[root_j]:
+                    parent[root_j] = root_i
+                else:
+                    parent[root_i] = root_j
+                    rank[root_j] += 1
+        
+        # Build inverted index: keyword -> list of topic indices (for non-meta topics)
+        keyword_to_indices = {}
+        for i, kws in enumerate(topic_keywords):
+            if not is_meta[i]:
+                for kw in kws:
+                    if kw not in keyword_to_indices:
+                        keyword_to_indices[kw] = []
+                    keyword_to_indices[kw].append(i)
+        
+        # Group exact-match meta topics using a hash map
+        exact_groups = {}
         for i in range(len(topics)):
-            for j in range(i + 1, len(topics)):
-                # Check for keyword overlap
-                # If they share at least 2 significant words, or 1 if the shorter topic only has 1-2 words
-                
-                # SPECIAL CASE: Don't aggregate if one is a meta-platform topic (like seed keyword) 
-                # and the other is a regular trend, unless it's a very strong match.
-                # This prevents "Survival" from swallowing "Survival Plan" and "Minecraft Survival".
-                is_meta_i = df.iloc[i]['platform'] in ['Google Interest', 'Google Regions']
-                is_meta_j = df.iloc[j]['platform'] in ['Google Interest', 'Google Regions']
-                
-                if is_meta_i or is_meta_j:
-                    # Only group if topics match exactly
-                    if topics[i].strip().lower() == topics[j].strip().lower():
-                        union(i, j)
-                    continue
-
-                # Normal trend grouping
-                intersection = topic_keywords[i].intersection(topic_keywords[j])
-                min_len = min(len(topic_keywords[i]), len(topic_keywords[j]))
-                
-                if not intersection:
-                    continue
+            if is_meta[i]:
+                key = topic_lower[i]
+                if key in exact_groups:
+                    union(i, exact_groups[key])
+                else:
+                    exact_groups[key] = i
+        
+        # For non-meta topics, use inverted index to find candidates sharing keywords
+        # This avoids O(n²) by only comparing topics that share at least one keyword
+        checked_pairs = set()
+        for kw, indices in keyword_to_indices.items():
+            for idx_a in range(len(indices)):
+                i = indices[idx_a]
+                for idx_b in range(idx_a + 1, len(indices)):
+                    j = indices[idx_b]
+                    pair = (min(i, j), max(i, j))
+                    if pair in checked_pairs:
+                        continue
+                    checked_pairs.add(pair)
                     
-                match = False
-                if len(intersection) >= 2:
-                    match = True
-                elif len(intersection) >= 1 and min_len == 1:
-                    # If it's a 1-word match, only group if they match exactly (after cleaning)
-                    if topics[i].strip().lower() == topics[j].strip().lower():
+                    intersection = topic_keywords[i].intersection(topic_keywords[j])
+                    min_len = min(len(topic_keywords[i]), len(topic_keywords[j]))
+                    
+                    if not intersection:
+                        continue
+                        
+                    match = False
+                    if len(intersection) >= 2:
                         match = True
-                elif len(intersection) >= 1 and min_len == 2:
-                    # For 2-word topics, 1 word intersection is often not enough (e.g., 'Survival' vs 'Survival Plan')
-                    # Match only if intersection covers at least half of the words
-                    if len(intersection) / min_len >= 0.5:
-                        match = False # wait, 1/2 is 0.5. Let's make it stricter.
-                        if topics[i].strip().lower() == topics[j].strip().lower():
+                    elif len(intersection) >= 1 and min_len <= 2:
+                        if topic_lower[i] == topic_lower[j]:
                             match = True
-                        # Actually let's just use exact match for 1-word intersection in ALL cases where min_len <= 2
-                        pass
-                
-                if match:
-                    union(i, j)
+                    
+                    if match:
+                        union(i, j)
         
         # Build mapping from original index to representative topic
         group_to_indices = {}

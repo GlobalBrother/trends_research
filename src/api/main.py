@@ -83,6 +83,24 @@ def scrape_niche(request: ScrapeRequest, background_tasks: BackgroundTasks):
     return {"message": f"Comprehensive scraping for {request.niche} started in background. Results will be available soon."}
 
 import json
+import time
+import hashlib
+
+# Simple in-memory cache for processed trends
+_trends_cache = {}
+_CACHE_TTL_SECONDS = 300  # 5 minutes
+
+def _get_cached_or_compute(cache_key, compute_fn):
+    """Returns cached result if fresh, otherwise computes and caches."""
+    now = time.time()
+    if cache_key in _trends_cache:
+        cached_time, cached_data = _trends_cache[cache_key]
+        if now - cached_time < _CACHE_TTL_SECONDS:
+            logger.info(f"Cache hit for {cache_key}")
+            return cached_data
+    result = compute_fn()
+    _trends_cache[cache_key] = (now, result)
+    return result
 
 class JSONEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -97,52 +115,57 @@ class JSONEncoder(json.JSONEncoder):
         except TypeError:
             return str(obj)
 
+def _sanitize_and_serialize(processed_data):
+    """Replace NaN/Inf values and serialize DataFrame to JSON-compatible records."""
+    processed_data = processed_data.copy()
+    processed_data = processed_data.fillna("")
+    processed_data = processed_data.replace([float('inf'), float('-inf')], None)
+    records = processed_data.to_dict(orient="records")
+    return json.loads(json.dumps(records, cls=JSONEncoder))
+
 @app.get("/trends")
 def get_trends(geo: Optional[str] = Query(None), niche_name: Optional[str] = Query(None)):
     try:
-        # Normalize geo: empty string or "None" string from frontend means we want specifically Global data ("")
-        # if geo is literal None (not provided), we return everything.
+        # Normalize geo
         if geo == "" or geo == "None":
             geo = ""
+        
+        cache_key = f"trends_{geo}_{niche_name}"
+        
+        def _compute_trends():
+            raw_data = collector.collect_all(
+                geo=geo,
+                include_trending_now=False if niche_name else True,
+                include_youtube=True,
+                include_social=True,
+                include_hackernews=True,
+                include_reddit=True,
+                include_news=True
+            )
+            if raw_data.empty:
+                return []
             
-        raw_data = collector.collect_all(
-            geo=geo,
-            include_trending_now=False if niche_name else True,
-            include_youtube=True,
-            include_social=True,
-            include_hackernews=True,
-            include_reddit=True,
-            include_news=True
-        )
-        if raw_data.empty:
-            return {"data": []}
-        
-        processed_data = analytics.process_trends(raw_data)
-        
-        if niche_name:
-            processed_data = niche.filter_by_niche(processed_data, niche_name)
-        
-        # Discover micro-niches if enough data
-        if len(processed_data) >= 5 and 'topic' in processed_data.columns:
-            processed_data = niche.discover_micro_niches(processed_data)
+            processed_data = analytics.process_trends(raw_data)
             
-        # Replace NaN values with appropriate defaults before JSON serialization
-        processed_data = processed_data.copy()
-        
-        # Explicitly ensure integers for clustering if it exists
-        if 'niche_cluster' in processed_data.columns:
-            processed_data.loc[:, 'niche_cluster'] = processed_data['niche_cluster'].fillna(-1).astype(int)
+            if niche_name:
+                processed_data = niche.filter_by_niche(processed_data, niche_name)
             
-        # Convert to records and handle non-serializable types
-        records = processed_data.to_dict(orient="records")
+            if len(processed_data) >= 5 and 'topic' in processed_data.columns:
+                processed_data = niche.discover_micro_niches(processed_data)
+                
+            processed_data = processed_data.copy()
+            
+            if 'niche_cluster' in processed_data.columns:
+                processed_data.loc[:, 'niche_cluster'] = processed_data['niche_cluster'].fillna(-1).astype(int)
+
+            # Replace all remaining NaN/Inf values to ensure JSON compatibility
+            processed_data = processed_data.fillna("")
+            processed_data = processed_data.replace([float('inf'), float('-inf')], None)
+
+            records = processed_data.to_dict(orient="records")
+            return json.loads(json.dumps(records, cls=JSONEncoder))
         
-        # Use our custom encoder to ensure JSON compatibility
-        # FastAPI's return will use its own encoder, so we might need to pre-serialize or 
-        # just rely on the fact that we've cleaned up most things.
-        # Actually, let's just manually clean the records list to be safe.
-        json_compatible_records = json.loads(json.dumps(records, cls=JSONEncoder))
-        
-        return {"data": json_compatible_records}
+        return {"data": _get_cached_or_compute(cache_key, _compute_trends)}
     except Exception as e:
         logger.error(f"Error in get_trends: {e}")
         logger.error(traceback.format_exc())
@@ -183,8 +206,10 @@ def get_trending_now(geo: str = Query("US"), trend_type: str = Query("daily")):
             if not trending_data.empty:
                 processed_data = analytics.process_trends(trending_data)
                 
-                # Replace NaN values with appropriate defaults before JSON serialization
+                # Replace NaN/Inf values to ensure JSON compatibility
                 processed_data = processed_data.copy()
+                processed_data = processed_data.fillna("")
+                processed_data = processed_data.replace([float('inf'), float('-inf')], None)
                 
                 # Convert to records and handle non-serializable types
                 records = processed_data.to_dict(orient="records")
@@ -233,9 +258,7 @@ def get_youtube_trends(niche_name: str = Query(...), geo: Optional[str] = Query(
             processed_data = niche.filter_by_niche(yt_data, niche_name)
             if not processed_data.empty:
                 processed_data = analytics.process_trends(processed_data)
-                processed_data = processed_data.fillna(0)
-                # Ensure URL and published date are in the response
-                return {"data": processed_data.to_dict(orient="records")}
+                return {"data": _sanitize_and_serialize(processed_data)}
                 
     return {"data": []}
 
@@ -277,8 +300,7 @@ def get_social_trends(platform: str = Query(...), niche_name: str = Query(...), 
             processed_data = niche.filter_by_niche(social_data, niche_name)
             if not processed_data.empty:
                 processed_data = analytics.process_trends(processed_data)
-                processed_data = processed_data.fillna(0)
-                return {"data": processed_data.to_dict(orient="records")}
+                return {"data": _sanitize_and_serialize(processed_data)}
                 
     return {"data": []}
 
@@ -316,8 +338,7 @@ def get_hackernews_trends(niche_name: Optional[str] = Query(None), geo: Optional
                 hn_data = niche.filter_by_niche(hn_data, niche_name)
             if not hn_data.empty:
                 processed_data = analytics.process_trends(hn_data)
-                processed_data = processed_data.fillna(0)
-                return {"data": processed_data.to_dict(orient="records")}
+                return {"data": _sanitize_and_serialize(processed_data)}
                 
     return {"data": []}
 
@@ -355,8 +376,7 @@ def get_reddit_trends(subreddit: str = Query("all"), trend_type: str = Query("ho
                 reddit_data = niche.filter_by_niche(reddit_data, niche_name)
             if not reddit_data.empty:
                 processed_data = analytics.process_trends(reddit_data)
-                processed_data = processed_data.fillna(0)
-                return {"data": processed_data.to_dict(orient="records")}
+                return {"data": _sanitize_and_serialize(processed_data)}
                 
     return {"data": []}
 
@@ -387,8 +407,7 @@ def get_news_trends(query: str = Query("niche"), niche_name: Optional[str] = Que
                 news_data = niche.filter_by_niche(news_data, niche_name)
             if not news_data.empty:
                 processed_data = analytics.process_trends(news_data)
-                processed_data = processed_data.fillna(0)
-                return {"data": processed_data.to_dict(orient="records")}
+                return {"data": _sanitize_and_serialize(processed_data)}
                 
     return {"data": []}
 
@@ -405,15 +424,14 @@ def get_all_trends():
     
     if not raw_data.empty:
         processed_data = analytics.process_trends(raw_data)
-        processed_data = processed_data.fillna(0)
-        return {"data": processed_data.to_dict(orient="records")}
+        return {"data": _sanitize_and_serialize(processed_data)}
     return {"data": []}
 
 @app.get("/scrape_errors")
 def get_scrape_errors(platform: Optional[str] = Query(None)):
     df = collector.get_scrape_errors(platform=platform)
     if not df.empty:
-        return {"data": df.to_dict(orient="records")}
+        return {"data": _sanitize_and_serialize(df)}
     return {"data": []}
 
 if __name__ == "__main__":
