@@ -39,7 +39,7 @@ DOWNLOADER_MIDDLEWARES = {
 }
 
 # Scrape freshness in hours
-SCRAPE_FRESHNESS_HOURS = 24
+SCRAPE_FRESHNESS_HOURS = 144  # 6 days (6 * 24)
 
 # AutoThrottle settings
 AUTOTHROTTLE_ENABLED = os.getenv('SCRAPY_AUTOTHROTTLE_ENABLED', 'True') == 'True'

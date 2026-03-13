@@ -65,13 +65,9 @@ class TrendCollector:
             conn.close()
 
             trends = []
-            seen = set()
             for row in rows:
                 platform = row['platform']
                 topic = row['topic']
-                
-                if (platform, topic) in seen:
-                    continue
                 
                 item = {
                     "platform": platform,
@@ -92,7 +88,6 @@ class TrendCollector:
                         pass
                 
                 trends.append(item)
-                seen.add((platform, topic))
                 
             return trends
         except Exception as e:
@@ -164,25 +159,22 @@ class TrendCollector:
         """Triggers all scrapers for a specific niche in sequence."""
         print(f"Starting comprehensive scrape for niche: {niche_name}")
         
-        # We'll use a subset of keywords for more performant scraping across many platforms
-        limited_keywords = keywords[:3] if len(keywords) > 3 else keywords
-        
-        # 1. Google Trends (the core scraper)
+        # 1. Google Trends (the core scraper) - Use ALL keywords
         self.run_google_trends_scraper(keywords, geo=geo, timeframe=timeframe, category=category)
         
-        # 2. YouTube
-        self.run_youtube_trends_scraper(limited_keywords, geo=geo)
+        # 2. YouTube - Use ALL keywords
+        self.run_youtube_trends_scraper(keywords, geo=geo)
         
-        # 3. Social
-        self.run_social_trends_scraper("X", limited_keywords, geo=geo)
-        self.run_social_trends_scraper("Threads", limited_keywords, geo=geo)
-        self.run_social_trends_scraper("Instagram", limited_keywords, geo=geo)
+        # 3. Social - Use ALL keywords
+        self.run_social_trends_scraper("X", keywords, geo=geo)
+        self.run_social_trends_scraper("Threads", keywords, geo=geo)
+        self.run_social_trends_scraper("Instagram", keywords, geo=geo)
         
-        # 4. Reddit
-        self.run_reddit_scraper(keywords=limited_keywords, geo=geo)
+        # 4. Reddit - Use ALL keywords
+        self.run_reddit_scraper(keywords=keywords, geo=geo)
         
-        # 5. HackerNews
-        self.run_hackernews_scraper(keywords=limited_keywords, geo=geo)
+        # 5. HackerNews - Use ALL keywords
+        self.run_hackernews_scraper(keywords=keywords, geo=geo)
         
         # 6. NewsAPI (just use the niche name for NewsAPI)
         self.run_news_scraper(query=niche_name, geo=geo)

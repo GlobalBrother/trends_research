@@ -70,8 +70,8 @@ def main():
     
     # Country Selection
     countries = {
-        "Global": "Global",
         "United States": "US",
+        "Global": "Global",
         "United Kingdom": "GB",
         "Canada": "CA",
         "Australia": "AU",

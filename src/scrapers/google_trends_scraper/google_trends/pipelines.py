@@ -203,9 +203,22 @@ class SQLitePipeline:
             elif data_type == 'interest_by_region':
                 platform = "Google Regions"
                 topic = item.get('keyword')
-                regions = [r for r in results if r.get('value', [0])[0] > 0]
-                growth = len(regions) * 10
-                extra_data['spread'] = len(regions)
+                regions = [r for r in results if (r.get('value', [0])[0] if isinstance(r.get('value'), list) else r.get('value', 0)) > 0]
+                for r in regions:
+                    reg_topic = f"{topic} in {r.get('geoName')}"
+                    reg_growth = r.get('value', [0])[0] if isinstance(r.get('value'), list) else r.get('value', 0)
+                    reg_extra = {
+                        'geoCode': r.get('geoCode'),
+                        'geoName': r.get('geoName'),
+                        'region_value': reg_growth
+                    }
+                    self.cursor.execute('''
+                        INSERT INTO trends (platform, topic, growth, keyword, geo, url, extracted_at, extra_data)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (platform, reg_topic, reg_growth, keyword, geo, url, extracted_at, json.dumps(reg_extra)))
+                
+                # We skip the default insert for Google Regions since we added per-region rows
+                continue
 
             if platform and topic:
                 self.cursor.execute('''

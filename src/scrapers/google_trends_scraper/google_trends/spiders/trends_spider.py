@@ -160,12 +160,16 @@ class GoogleTrendsSpider(scrapy.Spider):
                 continue
 
             # Add a small delay between widget requests to avoid 429
-            meta_with_delay = {**response.meta, "download_delay": 3.0}
+            # Also clear any conflicting cookies or ensure a fresh state if possible
+            # For now, just focus on the Referer and delay.
+            meta_with_delay = {**response.meta, "download_delay": 5.0}
 
             if "TIMESERIES" in widget_id:
                 yield self.fetch_interest_over_time(token, req, meta_with_delay)
 
             elif "RELATED_QUERIES" in widget_id:
+                # IMPORTANT: Related queries often use 'IZG' or 'ISG' backend.
+                # Ensure the request payload is not modified from what Google provided.
                 yield self.fetch_related_data(
                     self.RELATED_QUERIES_URL,
                     token,

@@ -111,6 +111,20 @@ class AnalyticsEngine:
             for j in range(i + 1, len(topics)):
                 # Check for keyword overlap
                 # If they share at least 2 significant words, or 1 if the shorter topic only has 1-2 words
+                
+                # SPECIAL CASE: Don't aggregate if one is a meta-platform topic (like seed keyword) 
+                # and the other is a regular trend, unless it's a very strong match.
+                # This prevents "Survival" from swallowing "Survival Plan" and "Minecraft Survival".
+                is_meta_i = df.iloc[i]['platform'] in ['Google Interest', 'Google Regions']
+                is_meta_j = df.iloc[j]['platform'] in ['Google Interest', 'Google Regions']
+                
+                if is_meta_i or is_meta_j:
+                    # Only group if topics match exactly
+                    if topics[i].strip().lower() == topics[j].strip().lower():
+                        union(i, j)
+                    continue
+
+                # Normal trend grouping
                 intersection = topic_keywords[i].intersection(topic_keywords[j])
                 min_len = min(len(topic_keywords[i]), len(topic_keywords[j]))
                 
@@ -120,8 +134,19 @@ class AnalyticsEngine:
                 match = False
                 if len(intersection) >= 2:
                     match = True
-                elif len(intersection) >= 1 and min_len <= 2:
-                    match = True
+                elif len(intersection) >= 1 and min_len == 1:
+                    # If it's a 1-word match, only group if they match exactly (after cleaning)
+                    if topics[i].strip().lower() == topics[j].strip().lower():
+                        match = True
+                elif len(intersection) >= 1 and min_len == 2:
+                    # For 2-word topics, 1 word intersection is often not enough (e.g., 'Survival' vs 'Survival Plan')
+                    # Match only if intersection covers at least half of the words
+                    if len(intersection) / min_len >= 0.5:
+                        match = False # wait, 1/2 is 0.5. Let's make it stricter.
+                        if topics[i].strip().lower() == topics[j].strip().lower():
+                            match = True
+                        # Actually let's just use exact match for 1-word intersection in ALL cases where min_len <= 2
+                        pass
                 
                 if match:
                     union(i, j)
