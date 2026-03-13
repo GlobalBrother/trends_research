@@ -156,7 +156,7 @@ def get_trends(geo: Optional[str] = Query(None), niche_name: Optional[str] = Que
             processed_data = processed_data.copy()
             
             if 'niche_cluster' in processed_data.columns:
-                processed_data.loc[:, 'niche_cluster'] = processed_data['niche_cluster'].fillna(-1).astype(int)
+                processed_data['niche_cluster'] = pd.array(processed_data['niche_cluster'].fillna(-1).astype(int), dtype=pd.Int64Dtype())
 
             # Replace all remaining NaN/Inf values to ensure JSON compatibility
             processed_data = processed_data.fillna("")

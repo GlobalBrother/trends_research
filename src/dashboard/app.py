@@ -45,17 +45,17 @@ def safe_dataframe_display(df, required_cols, col_config=None, cmap='viridis', h
                 display_df[required_cols].style.background_gradient(subset=['virality_score'], cmap=cmap),
                 column_config=col_config,
                 height=height,
-                use_container_width=True
+                width='stretch'
             )
         else:
             st.dataframe(
                 display_df[required_cols],
                 column_config=col_config,
                 height=height,
-                use_container_width=True
+                width='stretch'
             )
     except Exception as e:
-        st.dataframe(display_df[required_cols], column_config=col_config, height=height, use_container_width=True)
+        st.dataframe(display_df[required_cols], column_config=col_config, height=height, width='stretch')
 
 
 def main():
