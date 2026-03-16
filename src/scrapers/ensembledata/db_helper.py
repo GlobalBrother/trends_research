@@ -42,6 +42,22 @@ def save_trend(platform, topic, growth, keyword, geo, url, extra_data=None):
         conn.close()
 
 
+def save_token_usage(platform, keyword, units_charged, geo=""):
+    """Record EnsembleData API token/units consumption."""
+    conn = _get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO token_usage (platform, keyword, units_charged, geo, created_at) VALUES (?, ?, ?, ?, ?)",
+            (platform, keyword, units_charged, geo, datetime.now().isoformat()),
+        )
+        conn.commit()
+        logger.debug("Saved token usage: platform=%s, keyword=%s, units=%s", platform, keyword, units_charged)
+    except Exception:
+        logger.error("Failed to save token usage: platform=%s, keyword=%s", platform, keyword, exc_info=True)
+    finally:
+        conn.close()
+
+
 def save_error(platform, keyword, url, status, reason):
     """Insert a scrape error row."""
     conn = _get_connection()

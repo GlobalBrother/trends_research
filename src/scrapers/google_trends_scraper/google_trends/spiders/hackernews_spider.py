@@ -9,7 +9,7 @@ class HackerNewsSpider(scrapy.Spider):
     allowed_domains = ["hacker-news.firebaseio.com", "hn.algolia.com"]
     
     TOP_STORIES_URL = "https://hacker-news.firebaseio.com/v0/topstories.json"
-    ITEM_URL = "https://hacker-news.firebaseio.com/v0/item/{}.json"
+    ITEM_URL = "https://hacker-news.firebaseio.com/v0/item/{}.md.json"
     SEARCH_URL = "https://hn.algolia.com/api/v1/search?query={}&tags=story"
 
     def __init__(self, keywords=None, *args, **kwargs):

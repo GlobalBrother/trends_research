@@ -23,7 +23,7 @@ COOKIES_ENABLED = True
 
 # Default headers
 DEFAULT_REQUEST_HEADERS = {
-    'Accept': 'application/json, text/plain, */*',
+    'Accept': 'application/md.json, text/plain, */*',
     'Accept-Language': 'en-US,en;q=0.9',
     'Referer': 'https://trends.google.com/',
     'Sec-Fetch-Site': 'same-origin',

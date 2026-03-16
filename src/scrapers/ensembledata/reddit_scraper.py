@@ -13,11 +13,12 @@ from datetime import datetime
 
 from dotenv import load_dotenv
 from ensembledata.api import EDClient
+from ensembledata.api.errors import EDError
 
 logger = logging.getLogger(__name__)
 
 sys.path.insert(0, os.path.dirname(__file__))
-from db_helper import save_trend, save_error, DB_PATH
+from db_helper import save_trend, save_error, save_token_usage, DB_PATH
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".env"))
 
@@ -248,7 +249,15 @@ def scrape_reddit(subreddits, geo="Global", sort="hot", period="day"):
                 count += 1
 
             logger.info("Saved %d posts for r/%s (units charged: %s)", count, sub, result.units_charged)
+            if result.units_charged:
+                save_token_usage(PLATFORM, sub, result.units_charged, geo)
 
+        except EDError as e:
+            save_error(PLATFORM, f"r/{sub}", None, 0, str(e))
+            if e.status_code == 495:
+                logger.warning("Daily API limit reached. Stopping Reddit scraper.")
+                break
+            logger.error("Error for r/%s: %s", sub, e, exc_info=True)
         except Exception as e:
             save_error(PLATFORM, f"r/{sub}", None, 0, str(e))
             logger.error("Error for r/%s: %s", sub, e, exc_info=True)
