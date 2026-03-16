@@ -11,7 +11,7 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "collector", "trends.db"))
+DB_PATH = os.environ.get("DB_PATH", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "collector", "trends.db")))
 
 
 def _get_connection():

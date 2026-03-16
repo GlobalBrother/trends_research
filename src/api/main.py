@@ -43,7 +43,7 @@ try:
 except ImportError:
     HAS_GETHOOKEDAI = False
 
-DB_PATH = os.path.join(project_root, "src", "collector", "trends.db")
+DB_PATH = os.environ.get("DB_PATH", os.path.join(project_root, "src", "collector", "trends.db"))
 
 # Resend API config
 resend.api_key = os.getenv("RESEND_API_KEY", "")
