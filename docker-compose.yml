@@ -7,12 +7,14 @@ services:
       dockerfile: Dockerfile.api
     ports:
       - "8000:8000"
-    volumes:
-      - db-data:/data
     env_file:
       - .env
     environment:
-      - DB_PATH=/data/trends.db
+      - AZURE_SQL_SERVER=${AZURE_SQL_SERVER}
+      - AZURE_SQL_DB=${AZURE_SQL_DB}
+      - AZURE_SQL_USER=${AZURE_SQL_USER}
+      - AZURE_SQL_PASS=${AZURE_SQL_PASS}
+      - AZURE_SQL_DRIVER=ODBC Driver 18 for SQL Server
     restart: unless-stopped
 
   dashboard:
@@ -28,6 +30,3 @@ services:
     depends_on:
       - api
     restart: unless-stopped
-
-volumes:
-  db-data:

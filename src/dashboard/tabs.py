@@ -4,6 +4,8 @@ import math
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
+import plotly.io as pio
 
 # Ensure the project root (the directory containing 'src') is in sys.path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -11,6 +13,63 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from src.dashboard.utils.api_client import APIClient
+
+
+# ---------------------------------------------------------------------------
+# Modern dark Plotly template
+# ---------------------------------------------------------------------------
+
+_MODERN_TEMPLATE = go.layout.Template(
+    layout=go.Layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter, -apple-system, sans-serif", color="#c9d1d9", size=12),
+        title=dict(font=dict(size=14, color="#e6edf3"), x=0.01, xanchor="left"),
+        xaxis=dict(
+            gridcolor="rgba(48,54,61,0.5)", zerolinecolor="rgba(48,54,61,0.5)",
+            tickfont=dict(size=11), title_font=dict(size=12),
+        ),
+        yaxis=dict(
+            gridcolor="rgba(48,54,61,0.5)", zerolinecolor="rgba(48,54,61,0.5)",
+            tickfont=dict(size=11), title_font=dict(size=12),
+        ),
+        colorway=[
+            "#58a6ff", "#3fb950", "#d29922", "#f778ba",
+            "#79c0ff", "#56d364", "#e3b341", "#db61a2",
+            "#a5d6ff", "#7ee787", "#f0c74f", "#ff7b72",
+        ],
+        margin=dict(t=40, b=20, l=20, r=20),
+        hoverlabel=dict(
+            bgcolor="#1c2128", bordercolor="#58a6ff",
+            font=dict(color="#e6edf3", size=12),
+        ),
+        legend=dict(
+            bgcolor="rgba(0,0,0,0)", bordercolor="rgba(48,54,61,0.5)",
+            font=dict(size=11),
+        ),
+    )
+)
+
+pio.templates["modern_dark"] = _MODERN_TEMPLATE
+pio.templates.default = "modern_dark"
+
+# Shared color scales
+GRADIENT_TEAL = ["#0d3b4f", "#0e6655", "#1abc9c", "#58d68d", "#abebc6"]
+GRADIENT_BLUE = ["#0a1929", "#1a3a5c", "#2e6da4", "#58a6ff", "#a5d6ff"]
+GRADIENT_PURPLE = ["#1a0a2e", "#3b1f6e", "#6c3fa0", "#a855f7", "#d8b4fe"]
+GRADIENT_SUNSET = ["#1a0a0a", "#6b2020", "#d35400", "#f39c12", "#f9e79f"]
+
+
+def _apply_modern_layout(fig, **overrides):
+    """Apply consistent modern styling to any plotly figure."""
+    defaults = dict(
+        template="modern_dark",
+        margin=dict(t=40, b=20, l=20, r=20),
+    )
+    defaults.update(overrides)
+    fig.update_layout(**defaults)
+    fig.update_traces(marker=dict(line=dict(width=0)))
+    return fig
 
 
 # ---------------------------------------------------------------------------
@@ -51,20 +110,37 @@ def section_header(icon, title):
     st.markdown(f'<div class="section-header"><h3>{icon} {title}</h3></div>', unsafe_allow_html=True)
 
 
-def render_dataframe(df, columns, col_config=None, height=400):
-    """Render a dataframe with only the specified columns, handling missing cols gracefully."""
+def render_dataframe(df, columns, col_config=None, height=400, search_key=None):
+    """Render an interactive dataframe with search/filter and column sorting."""
     available = [c for c in columns if c in df.columns]
     if not available:
         st.info("No data columns available.")
         return
     display_df = df[available].copy()
-    kwargs = dict(column_config=col_config, width="stretch", hide_index=True)
+
+    # Interactive search filter
+    if search_key and len(display_df) > 5:
+        search_term = st.text_input(
+            "🔍 Search table…", key=search_key, placeholder="Type to filter rows…",
+            label_visibility="collapsed",
+        )
+        if search_term:
+            mask = display_df.apply(
+                lambda row: row.astype(str).str.contains(search_term, case=False, na=False).any(),
+                axis=1,
+            )
+            display_df = display_df[mask]
+            if display_df.empty:
+                st.caption(f"No results for _{search_term}_")
+                return
+
+    kwargs = dict(column_config=col_config, use_container_width=True, hide_index=True)
     if height is not None:
         kwargs["height"] = height
     try:
         st.dataframe(display_df, **kwargs)
     except Exception:
-        st.dataframe(display_df[columns], **kwargs)
+        st.dataframe(display_df, **kwargs)
 
 
 def flatten_platform(df):
@@ -158,6 +234,7 @@ def tab_niche_research(api):
             "virality_score": st.column_config.NumberColumn("Virality", format="%.2f"),
         },
         height=380,
+        search_key="search_niche",
     )
 
     # Charts — always visible, side by side
@@ -167,19 +244,20 @@ def tab_niche_research(api):
     with c1:
         if not plot_df.empty:
             fig = px.pie(plot_df.head(15), names=topic_col, values='virality_score',
-                         title="Virality Share", hole=0.4,
-                         color_discrete_sequence=px.colors.sequential.Tealgrn)
-            fig.update_layout(margin=dict(t=40, b=10, l=10, r=10), showlegend=False,
-                              paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-            st.plotly_chart(fig, width='stretch')
+                         title="Virality Share", hole=0.45,
+                         color_discrete_sequence=GRADIENT_TEAL)
+            _apply_modern_layout(fig, showlegend=False)
+            fig.update_traces(textinfo="percent+label", textfont_size=11,
+                              marker=dict(line=dict(color="#0e1117", width=1.5)))
+            st.plotly_chart(fig, use_container_width=True)
     with c2:
         if not plot_df.empty:
             fig2 = px.bar(plot_df.head(15), x=topic_col, y='growth', color='platform',
-                          title="Growth by Platform",
-                          color_discrete_sequence=px.colors.qualitative.Set2)
-            fig2.update_layout(margin=dict(t=40, b=10, l=10, r=10), xaxis_tickangle=-40,
-                               paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-            st.plotly_chart(fig2, width='stretch')
+                          title="Growth by Platform")
+            _apply_modern_layout(fig2, xaxis_tickangle=-40, bargap=0.15)
+            fig2.update_traces(marker=dict(line=dict(width=0),
+                               opacity=0.9))
+            st.plotly_chart(fig2, use_container_width=True)
 
     return df
 
@@ -221,14 +299,14 @@ def tab_daily_trends(api):
         df, ['topic', 'growth', 'virality_score', 'url'],
         col_config={"url": st.column_config.LinkColumn("Link"), "growth": "Traffic"},
         height=380,
+        search_key="search_daily",
     )
 
     section_header("📊", f"Top {trend_type.capitalize()} Trends")
     fig = px.bar(df.head(15), x='topic', y='growth', color='virality_score',
-                 color_continuous_scale='viridis')
-    fig.update_layout(margin=dict(t=20, b=10, l=10, r=10), xaxis_tickangle=-40,
-                      paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-    st.plotly_chart(fig, width='stretch')
+                 color_continuous_scale=GRADIENT_BLUE)
+    _apply_modern_layout(fig, xaxis_tickangle=-40, bargap=0.15)
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def tab_youtube(api):
@@ -291,6 +369,7 @@ def tab_youtube(api):
             "tags": "Tags",
         },
         height=380,
+        search_key="search_yt",
     )
 
     # --- Charts ---
@@ -298,20 +377,18 @@ def tab_youtube(api):
         section_header("📊", "Views vs Engagement")
         fig = px.scatter(df.head(50), x='view_count', y='engagement_total',
                          hover_name='title' if 'title' in df.columns else None,
-                         color='engagement_total', color_continuous_scale='tealgrn',
+                         color='engagement_total', color_continuous_scale=GRADIENT_TEAL,
                          size='view_count', size_max=30)
-        fig.update_layout(margin=dict(t=20, b=10, l=10, r=10),
-                          paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-        st.plotly_chart(fig, width='stretch')
+        _apply_modern_layout(fig)
+        st.plotly_chart(fig, use_container_width=True)
 
     if 'channel_title' in df.columns and 'view_count' in df.columns:
         section_header("📊", "Top Channels by Views")
         top_channels = df.groupby('channel_title')['view_count'].sum().nlargest(15).reset_index()
         fig2 = px.bar(top_channels, x='channel_title', y='view_count',
-                      color='view_count', color_continuous_scale='tealgrn')
-        fig2.update_layout(margin=dict(t=20, b=10, l=10, r=10), xaxis_tickangle=-40,
-                           paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-        st.plotly_chart(fig2, width='stretch')
+                      color='view_count', color_continuous_scale=GRADIENT_TEAL)
+        _apply_modern_layout(fig2, xaxis_tickangle=-40, bargap=0.15)
+        st.plotly_chart(fig2, use_container_width=True)
 
 
 def tab_tiktok(api):
@@ -379,22 +456,40 @@ def tab_tiktok(api):
             "created": "Posted",
         },
         height=420,
+        search_key="search_tiktok",
     )
 
-    # --- Charts ---
-    section_header("📊", "Plays vs Engagement")
-    if 'play_count' in df.columns and 'engagement_total' in df.columns:
-        chart_df = df.head(30).copy()
-        fig = px.scatter(
-            chart_df, x='play_count', y='engagement_total',
-            size='digg_count' if 'digg_count' in chart_df.columns else None,
-            color='engagement_total', hover_name='description',
-            color_continuous_scale='purp',
-            labels={'play_count': 'Plays', 'engagement_total': 'Engagement'},
-        )
-        fig.update_layout(margin=dict(t=20, b=10, l=10, r=10),
-                          paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-        st.plotly_chart(fig, width='stretch')
+    # --- Charts side by side ---
+    c1, c2 = st.columns(2)
+    with c1:
+        section_header("📊", "Plays vs Engagement")
+        if 'play_count' in df.columns and 'engagement_total' in df.columns:
+            chart_df = df.head(30).copy()
+            fig = px.scatter(
+                chart_df, x='play_count', y='engagement_total',
+                size='digg_count' if 'digg_count' in chart_df.columns else None,
+                color='engagement_total', hover_name='description',
+                color_continuous_scale=GRADIENT_PURPLE,
+                labels={'play_count': 'Plays', 'engagement_total': 'Engagement'},
+            )
+            _apply_modern_layout(fig)
+            st.plotly_chart(fig, use_container_width=True)
+
+    with c2:
+        # --- Engagement breakdown donut ---
+        if all(c in df.columns for c in ['digg_count', 'comment_count', 'share_count', 'collect_count']):
+            section_header("📈", "Engagement Breakdown")
+            eng_data = {
+                'Type': ['Likes', 'Comments', 'Shares', 'Saves'],
+                'Count': [df['digg_count'].sum(), df['comment_count'].sum(),
+                          df['share_count'].sum(), df['collect_count'].sum()]
+            }
+            fig3 = px.pie(pd.DataFrame(eng_data), names='Type', values='Count', hole=0.5,
+                          color_discrete_sequence=['#f778ba', '#58a6ff', '#3fb950', '#d29922'])
+            _apply_modern_layout(fig3)
+            fig3.update_traces(textinfo="percent+label", textfont_size=11,
+                              marker=dict(line=dict(color="#0e1117", width=1.5)))
+            st.plotly_chart(fig3, use_container_width=True)
 
     # --- Top creators bar chart ---
     if 'author_unique_id' in df.columns and 'play_count' in df.columns:
@@ -402,25 +497,10 @@ def tab_tiktok(api):
         creator_df = df.groupby('author_unique_id', as_index=False)['play_count'].sum() \
                        .sort_values('play_count', ascending=False).head(15)
         fig2 = px.bar(creator_df, x='author_unique_id', y='play_count',
-                      color='play_count', color_continuous_scale='tealgrn',
+                      color='play_count', color_continuous_scale=GRADIENT_PURPLE,
                       labels={'author_unique_id': 'Creator', 'play_count': 'Total Plays'})
-        fig2.update_layout(margin=dict(t=20, b=10, l=10, r=10), xaxis_tickangle=-40,
-                           paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-        st.plotly_chart(fig2, width='stretch')
-
-    # --- Engagement breakdown donut ---
-    if all(c in df.columns for c in ['digg_count', 'comment_count', 'share_count', 'collect_count']):
-        section_header("📈", "Engagement Breakdown")
-        eng_data = {
-            'Type': ['Likes', 'Comments', 'Shares', 'Saves'],
-            'Count': [df['digg_count'].sum(), df['comment_count'].sum(),
-                      df['share_count'].sum(), df['collect_count'].sum()]
-        }
-        fig3 = px.pie(pd.DataFrame(eng_data), names='Type', values='Count', hole=0.45,
-                      color_discrete_sequence=['#ff6b6b', '#4ecdc4', '#45b7d1', '#f9ca24'])
-        fig3.update_layout(margin=dict(t=20, b=10, l=10, r=10),
-                           paper_bgcolor='rgba(0,0,0,0)')
-        st.plotly_chart(fig3, width='stretch')
+        _apply_modern_layout(fig2, xaxis_tickangle=-40, bargap=0.15)
+        st.plotly_chart(fig2, use_container_width=True)
 
 
 def tab_instagram(api):
@@ -475,16 +555,16 @@ def tab_instagram(api):
             "hashtags": "#Tags", "posted": "Posted",
         },
         height=380,
+        search_key="search_instagram",
     )
 
     if 'username' in df.columns and 'like_count' in df.columns:
         section_header("📊", "Top Creators by Likes")
         top_creators = df.groupby('username')['like_count'].sum().nlargest(15).reset_index()
         fig = px.bar(top_creators, x='username', y='like_count',
-                     color='like_count', color_continuous_scale='purp')
-        fig.update_layout(margin=dict(t=20, b=10, l=10, r=10), xaxis_tickangle=-40,
-                          paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-        st.plotly_chart(fig, width='stretch')
+                     color='like_count', color_continuous_scale=GRADIENT_PURPLE)
+        _apply_modern_layout(fig, xaxis_tickangle=-40, bargap=0.15)
+        st.plotly_chart(fig, use_container_width=True)
 
 
 def tab_threads(api):
@@ -538,16 +618,16 @@ def tab_threads(api):
             "username": "Creator", "caption": "Caption", "posted": "Posted",
         },
         height=380,
+        search_key="search_threads",
     )
 
     if 'username' in df.columns and 'like_count' in df.columns:
         section_header("📊", "Top Creators by Likes")
         top_creators = df.groupby('username')['like_count'].sum().nlargest(15).reset_index()
         fig = px.bar(top_creators, x='username', y='like_count',
-                     color='like_count', color_continuous_scale='purp')
-        fig.update_layout(margin=dict(t=20, b=10, l=10, r=10), xaxis_tickangle=-40,
-                          paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-        st.plotly_chart(fig, width='stretch')
+                     color='like_count', color_continuous_scale=GRADIENT_BLUE)
+        _apply_modern_layout(fig, xaxis_tickangle=-40, bargap=0.15)
+        st.plotly_chart(fig, use_container_width=True)
 
 
 
@@ -601,27 +681,29 @@ def tab_reddit(api):
             "title": "Title", "link_flair_text": "Flair", "posted": "Posted",
         },
         height=None,
+        search_key="search_reddit",
     )
 
-    if 'score' in df.columns and 'num_comments' in df.columns:
-        section_header("📊", "Score vs Comments")
-        fig = px.scatter(df.head(50), x='score', y='num_comments',
-                         hover_name='title' if 'title' in df.columns else None,
-                         color='engagement_total' if 'engagement_total' in df.columns else None,
-                         color_continuous_scale='sunset',
-                         size='score', size_max=30)
-        fig.update_layout(margin=dict(t=20, b=10, l=10, r=10),
-                          paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-        st.plotly_chart(fig, width='stretch')
+    c1, c2 = st.columns(2)
+    with c1:
+        if 'score' in df.columns and 'num_comments' in df.columns:
+            section_header("📊", "Score vs Comments")
+            fig = px.scatter(df.head(50), x='score', y='num_comments',
+                             hover_name='title' if 'title' in df.columns else None,
+                             color='engagement_total' if 'engagement_total' in df.columns else None,
+                             color_continuous_scale=GRADIENT_SUNSET,
+                             size='score', size_max=30)
+            _apply_modern_layout(fig)
+            st.plotly_chart(fig, use_container_width=True)
 
-    if 'subreddit' in df.columns and 'score' in df.columns:
-        section_header("📊", "Top Subreddits by Score")
-        top_subs = df.groupby('subreddit')['score'].sum().nlargest(15).reset_index()
-        fig2 = px.bar(top_subs, x='subreddit', y='score',
-                      color='score', color_continuous_scale='sunset')
-        fig2.update_layout(margin=dict(t=20, b=10, l=10, r=10), xaxis_tickangle=-40,
-                           paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-        st.plotly_chart(fig2, width='stretch')
+    with c2:
+        if 'subreddit' in df.columns and 'score' in df.columns:
+            section_header("📊", "Top Subreddits by Score")
+            top_subs = df.groupby('subreddit')['score'].sum().nlargest(15).reset_index()
+            fig2 = px.bar(top_subs, x='subreddit', y='score',
+                          color='score', color_continuous_scale=GRADIENT_SUNSET)
+            _apply_modern_layout(fig2, xaxis_tickangle=-40, bargap=0.15)
+            st.plotly_chart(fig2, use_container_width=True)
 
 
 def tab_community_news(api):
@@ -658,15 +740,15 @@ def tab_community_news(api):
             col_config={"url": st.column_config.LinkColumn("Link"), "growth": "Points",
                         "engagement": "Comments", "author": "By"},
             height=380,
+            search_key="search_hn",
         )
 
         section_header("📊", "Points vs Comments")
         fig = px.scatter(df, x='growth', y='engagement', size='virality_score',
                          color='virality_score', hover_name='topic',
-                         color_continuous_scale='tealgrn')
-        fig.update_layout(margin=dict(t=20, b=10, l=10, r=10),
-                          paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-        st.plotly_chart(fig, width='stretch')
+                         color_continuous_scale=GRADIENT_TEAL)
+        _apply_modern_layout(fig)
+        st.plotly_chart(fig, use_container_width=True)
 
     # --- News ---
     elif src == "news":
@@ -689,4 +771,5 @@ def tab_community_news(api):
             df, ['topic', 'source', 'virality_score', 'url'],
             col_config={"url": st.column_config.LinkColumn("Article"), "source": "Source"},
             height=380,
+            search_key="search_news",
         )

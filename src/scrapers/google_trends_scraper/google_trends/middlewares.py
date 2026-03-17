@@ -1,19 +1,25 @@
 import random
-import sqlite3
 import os
+import sys
 import datetime
 from scrapy.exceptions import IgnoreRequest
+from sqlalchemy import text
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from src.db.connection import get_engine
 
 class SkipRecentlyScrapedMiddleware:
-    def __init__(self, db_path, hours):
-        self.db_path = db_path
+    def __init__(self, hours):
+        self.engine = get_engine()
         self.hours = hours
 
     @classmethod
     def from_crawler(cls, crawler):
-        db_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'collector', 'trends.db'))
         hours = crawler.settings.getint('SCRAPE_FRESHNESS_HOURS', 24)
-        return cls(db_path, hours)
+        return cls(hours)
 
     def process_request(self, request, spider):
         # Identify the platform and identifier
@@ -46,13 +52,7 @@ class SkipRecentlyScrapedMiddleware:
             raise IgnoreRequest(f"Keyword recently scraped: {kw_id}")
 
     def _is_recently_scraped(self, platform, identifier):
-        if not os.path.exists(self.db_path):
-            return False
-        
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            clean_id = str(identifier).strip()
             since = (datetime.datetime.now() - datetime.timedelta(hours=self.hours)).isoformat()
             
             # Using platform names as they appear in the log (usually capitalized in pipelines)
@@ -63,19 +63,25 @@ class SkipRecentlyScrapedMiddleware:
             elif platform == 'reddit':
                 platform_variants.append('Reddit')
 
-            query = '''
-                SELECT 1 FROM scrape_log 
-                WHERE platform IN (?, ?, ?, ?) AND identifier = ? AND status IN (200, 301) AND extracted_at > ?
-            '''
-            params = platform_variants[:4] + [clean_id, since]
-            # Ensure we have 4 platform variants for the IN clause
-            while len(params) < 6:
-                params.insert(0, platform)
+            # Ensure we have exactly 4 variants
+            while len(platform_variants) < 4:
+                platform_variants.append(platform)
 
-            cursor.execute(query, params)
-            result = cursor.fetchone()
-            conn.close()
-            return result is not None
+            with self.engine.connect() as conn:
+                row = conn.execute(
+                    text(
+                        "SELECT 1 FROM scrape_log "
+                        "WHERE platform IN (:p0, :p1, :p2, :p3) "
+                        "AND identifier = :identifier "
+                        "AND status IN (200, 301) AND extracted_at > :since"
+                    ),
+                    {
+                        "p0": platform_variants[0], "p1": platform_variants[1],
+                        "p2": platform_variants[2], "p3": platform_variants[3],
+                        "identifier": str(identifier).strip(), "since": since,
+                    },
+                ).fetchone()
+            return row is not None
         except Exception:
             return False
 

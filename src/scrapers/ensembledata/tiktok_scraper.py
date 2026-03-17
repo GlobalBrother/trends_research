@@ -7,18 +7,26 @@ as well as the shared ``trends`` table for cross-platform dashboards.
 import json
 import logging
 import os
-import sqlite3
 import sys
 from datetime import datetime
 
 from dotenv import load_dotenv
 from ensembledata.api import EDClient
 from ensembledata.api.errors import EDError
+from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
 sys.path.insert(0, os.path.dirname(__file__))
-from db_helper import save_trend, save_error, save_token_usage, DB_PATH
+from db_helper import save_trend, save_error, save_token_usage
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+from src.db.connection import get_engine, is_sqlite
+from src.db.sql_compat import tbl
+
+_engine = get_engine()
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".env"))
 
@@ -57,9 +65,6 @@ CREATE TABLE IF NOT EXISTS tiktok_videos (
     download_count      INTEGER DEFAULT 0,
     forward_count       INTEGER DEFAULT 0,
     collect_count       INTEGER DEFAULT 0,
-    lose_count          INTEGER DEFAULT 0,
-    lose_comment_count  INTEGER DEFAULT 0,
-
     -- author
     author_uid          TEXT,
     author_unique_id    TEXT,
@@ -88,22 +93,13 @@ CREATE TABLE IF NOT EXISTS tiktok_videos (
     video_height        INTEGER,
     video_width         INTEGER,
     video_ratio         TEXT,
-    video_duration      INTEGER,
-    video_has_watermark INTEGER DEFAULT 0,
     video_cover_url     TEXT,
 
     -- hashtags & challenges (JSON arrays)
     hashtags            TEXT,
-    cha_list            TEXT,
-
-    -- text_extra (full JSON for stickers, mentions, hashtags)
-    text_extra          TEXT,
 
     -- engagement helpers (computed)
     engagement_total    INTEGER DEFAULT 0,
-
-    -- raw JSON blob for any fields not explicitly stored
-    raw_data            TEXT,
 
     -- metadata
     extracted_at        TEXT,
@@ -120,17 +116,8 @@ _CREATE_INDEXES = [
 
 
 def _ensure_table():
-    """Create the tiktok_videos table and indexes if they don't exist."""
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute(_CREATE_TIKTOK_VIDEOS)
-        for idx in _CREATE_INDEXES:
-            conn.execute(idx)
-        conn.commit()
-        logger.debug("tiktok_videos table ensured.")
-    finally:
-        conn.close()
+    """Tables are pre-created in Azure SQL via migration schema."""
+    pass
 
 
 def _save_tiktok_video(v: dict, keyword: str, geo: str):
@@ -151,18 +138,6 @@ def _save_tiktok_video(v: dict, keyword: str, geo: str):
     if not hashtags and isinstance(v.get("cha_list"), list):
         hashtags = [c.get("cha_name", "") for c in v["cha_list"] if c.get("cha_name")]
 
-    # cha_list summary
-    cha_list_data = []
-    if isinstance(v.get("cha_list"), list):
-        for c in v["cha_list"]:
-            cha_list_data.append({
-                "cha_id": c.get("cid") or c.get("cha_id"),
-                "cha_name": c.get("cha_name", ""),
-                "desc": c.get("desc", ""),
-                "user_count": c.get("user_count", 0),
-                "view_count": c.get("view_count") or c.get("views", 0),
-            })
-
     # cover url
     cover_url = ""
     cover = video.get("cover") or video.get("origin_cover") or {}
@@ -177,102 +152,138 @@ def _save_tiktok_video(v: dict, keyword: str, geo: str):
     downloads = stats.get("download_count", 0) or 0
     forwards = stats.get("forward_count", 0) or 0
     collect = v.get("collect_stat", 0) or 0
-    lose = stats.get("lose_count", 0) or 0
-    lose_comment = stats.get("lose_comment_count", 0) or 0
     engagement = digg + comments + shares
 
     now = datetime.now().isoformat()
 
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("""
-            INSERT INTO tiktok_videos (
-                aweme_id, search_keyword, geo,
-                description, desc_language, share_url, region, create_time,
-                aweme_type, duration, is_ads, is_top, content_type,
-                digg_count, comment_count, share_count, play_count,
-                download_count, forward_count, collect_count,
-                lose_count, lose_comment_count,
-                author_uid, author_unique_id, author_nickname, author_signature,
-                author_region, author_follower_count, author_following_count,
-                author_total_favorited, author_avatar_uri, author_sec_uid,
-                author_verified, author_ins_id,
-                music_id, music_title, music_author, music_album,
-                music_duration, music_is_original, music_is_commerce, music_user_count,
-                video_height, video_width, video_ratio, video_duration,
-                video_has_watermark, video_cover_url,
-                hashtags, cha_list, text_extra,
-                engagement_total, raw_data,
-                extracted_at, updated_at
-            ) VALUES (
-                ?,?,?,?,?,?,?,?,?,?,?,?,?,
-                ?,?,?,?,?,?,?,?,?,
-                ?,?,?,?,?,?,?,?,?,?,?,?,
-                ?,?,?,?,?,?,?,?,
-                ?,?,?,?,?,?,
-                ?,?,?,
-                ?,?,
-                ?,?
-            )
-            ON CONFLICT(aweme_id) DO UPDATE SET
-                digg_count=excluded.digg_count,
-                comment_count=excluded.comment_count,
-                share_count=excluded.share_count,
-                play_count=excluded.play_count,
-                download_count=excluded.download_count,
-                forward_count=excluded.forward_count,
-                collect_count=excluded.collect_count,
-                lose_count=excluded.lose_count,
-                lose_comment_count=excluded.lose_comment_count,
-                author_follower_count=excluded.author_follower_count,
-                author_following_count=excluded.author_following_count,
-                author_total_favorited=excluded.author_total_favorited,
-                engagement_total=excluded.engagement_total,
-                raw_data=excluded.raw_data,
-                updated_at=excluded.updated_at
-        """, (
-            aweme_id, keyword, geo,
-            v.get("desc", ""), v.get("desc_language", ""),
-            v.get("share_url") or (v.get("share_info", {}) or {}).get("share_url", ""),
-            v.get("region", ""), v.get("create_time", 0),
-            v.get("aweme_type", 0), v.get("duration", 0),
-            1 if v.get("is_ads") else 0,
-            v.get("is_top", 0),
-            v.get("content_type", ""),
-            digg, comments, shares, plays, downloads, forwards, collect,
-            lose, lose_comment,
-            str(author.get("uid", "")), author.get("unique_id", ""),
-            author.get("nickname", ""), author.get("signature", ""),
-            author.get("region", ""),
-            author.get("follower_count", 0) or 0,
-            author.get("following_count", 0) or 0,
-            author.get("total_favorited", 0) or 0,
-            author.get("avatar_uri", ""), author.get("sec_uid", ""),
-            author.get("verification_type", 0) or 0,
-            author.get("ins_id", ""),
-            str(music.get("id", "")), music.get("title", ""),
-            music.get("author", ""), music.get("album", ""),
-            music.get("duration", 0) or 0,
-            1 if music.get("is_original") else 0,
-            1 if music.get("is_commerce_music") else 0,
-            music.get("user_count", 0) or 0,
-            video.get("height", 0) or 0, video.get("width", 0) or 0,
-            video.get("ratio", ""), video.get("duration", 0) or 0,
-            1 if video.get("has_watermark") else 0,
-            cover_url,
-            json.dumps(hashtags), json.dumps(cha_list_data),
-            json.dumps(v.get("text_extra", []), default=str),
-            engagement, json.dumps(v, default=str),
-            now, now,
-        ))
-        conn.commit()
-        logger.debug("Saved tiktok_video aweme_id=%s", aweme_id)
-    except Exception:
-        logger.error("Failed to save tiktok_video aweme_id=%s", aweme_id, exc_info=True)
-        raise
-    finally:
-        conn.close()
+    params = {
+        "aweme_id": aweme_id, "keyword": keyword, "geo": geo,
+        "description": v.get("desc", ""), "desc_language": v.get("desc_language", ""),
+        "share_url": v.get("share_url") or (v.get("share_info", {}) or {}).get("share_url", ""),
+        "region": v.get("region", ""), "create_time": v.get("create_time", 0),
+        "aweme_type": v.get("aweme_type", 0), "duration": v.get("duration", 0),
+        "is_ads": 1 if v.get("is_ads") else 0,
+        "is_top": v.get("is_top", 0),
+        "content_type": v.get("content_type", ""),
+        "digg_count": digg, "comment_count": comments, "share_count": shares,
+        "play_count": plays, "download_count": downloads, "forward_count": forwards,
+        "collect_count": collect,
+        "author_uid": str(author.get("uid", "")), "author_unique_id": author.get("unique_id", ""),
+        "author_nickname": author.get("nickname", ""), "author_signature": author.get("signature", ""),
+        "author_region": author.get("region", ""),
+        "author_follower_count": author.get("follower_count", 0) or 0,
+        "author_following_count": author.get("following_count", 0) or 0,
+        "author_total_favorited": author.get("total_favorited", 0) or 0,
+        "author_sec_uid": author.get("sec_uid", ""),
+        "author_verified": author.get("verification_type", 0) or 0,
+        "music_id": str(music.get("id", "")), "music_title": music.get("title", ""),
+        "music_author": music.get("author", ""),
+        "music_duration": music.get("duration", 0) or 0,
+        "music_is_original": 1 if music.get("is_original") else 0,
+        "music_user_count": music.get("user_count", 0) or 0,
+        "video_height": video.get("height", 0) or 0,
+        "video_width": video.get("width", 0) or 0,
+        "video_ratio": video.get("ratio", ""),
+        "video_cover_url": cover_url,
+        "hashtags": json.dumps(hashtags),
+        "engagement_total": engagement,
+        "extracted_at": now, "updated_at": now,
+    }
+
+    with _engine.connect() as conn:
+        try:
+            if is_sqlite():
+                existing = conn.execute(text(f"SELECT 1 FROM {tbl('tiktok_videos')} WHERE aweme_id = :aweme_id"), {"aweme_id": aweme_id}).fetchone()
+                if existing:
+                    conn.execute(text(
+                        f"UPDATE {tbl('tiktok_videos')} SET "
+                        "digg_count = :digg_count, comment_count = :comment_count, "
+                        "share_count = :share_count, play_count = :play_count, "
+                        "download_count = :download_count, forward_count = :forward_count, "
+                        "collect_count = :collect_count, "
+                        "author_follower_count = :author_follower_count, "
+                        "author_following_count = :author_following_count, "
+                        "author_total_favorited = :author_total_favorited, "
+                        "engagement_total = :engagement_total, "
+                        "updated_at = :updated_at WHERE aweme_id = :aweme_id"
+                    ), params)
+                else:
+                    conn.execute(text(
+                        f"INSERT INTO {tbl('tiktok_videos')} ("
+                        "aweme_id, search_keyword, geo, "
+                        "description, desc_language, share_url, region, create_time, "
+                        "aweme_type, duration, is_ads, is_top, content_type, "
+                        "digg_count, comment_count, share_count, play_count, "
+                        "download_count, forward_count, collect_count, "
+                        "author_uid, author_unique_id, author_nickname, author_signature, "
+                        "author_region, author_follower_count, author_following_count, "
+                        "author_total_favorited, author_sec_uid, author_verified, "
+                        "music_id, music_title, music_author, "
+                        "music_duration, music_is_original, music_user_count, "
+                        "video_height, video_width, video_ratio, video_cover_url, "
+                        "hashtags, engagement_total, extracted_at, updated_at"
+                        ") VALUES ("
+                        ":aweme_id, :keyword, :geo, "
+                        ":description, :desc_language, :share_url, :region, :create_time, "
+                        ":aweme_type, :duration, :is_ads, :is_top, :content_type, "
+                        ":digg_count, :comment_count, :share_count, :play_count, "
+                        ":download_count, :forward_count, :collect_count, "
+                        ":author_uid, :author_unique_id, :author_nickname, :author_signature, "
+                        ":author_region, :author_follower_count, :author_following_count, "
+                        ":author_total_favorited, :author_sec_uid, :author_verified, "
+                        ":music_id, :music_title, :music_author, "
+                        ":music_duration, :music_is_original, :music_user_count, "
+                        ":video_height, :video_width, :video_ratio, :video_cover_url, "
+                        ":hashtags, :engagement_total, :extracted_at, :updated_at)"
+                    ), params)
+            else:
+                conn.execute(text(f"""
+                    MERGE {tbl('tiktok_videos')} AS target
+                    USING (SELECT :aweme_id AS aweme_id) AS source
+                    ON target.aweme_id = source.aweme_id
+                    WHEN MATCHED THEN UPDATE SET
+                        digg_count = :digg_count, comment_count = :comment_count,
+                        share_count = :share_count, play_count = :play_count,
+                        download_count = :download_count, forward_count = :forward_count,
+                        collect_count = :collect_count,
+                        author_follower_count = :author_follower_count,
+                        author_following_count = :author_following_count,
+                        author_total_favorited = :author_total_favorited,
+                        engagement_total = :engagement_total,
+                        updated_at = :updated_at
+                    WHEN NOT MATCHED THEN INSERT (
+                        aweme_id, search_keyword, geo,
+                        description, desc_language, share_url, region, create_time,
+                        aweme_type, duration, is_ads, is_top, content_type,
+                        digg_count, comment_count, share_count, play_count,
+                        download_count, forward_count, collect_count,
+                        author_uid, author_unique_id, author_nickname, author_signature,
+                        author_region, author_follower_count, author_following_count,
+                        author_total_favorited, author_sec_uid, author_verified,
+                        music_id, music_title, music_author,
+                        music_duration, music_is_original, music_user_count,
+                        video_height, video_width, video_ratio, video_cover_url,
+                        hashtags, engagement_total, extracted_at, updated_at
+                    ) VALUES (
+                        :aweme_id, :keyword, :geo,
+                        :description, :desc_language, :share_url, :region, :create_time,
+                        :aweme_type, :duration, :is_ads, :is_top, :content_type,
+                        :digg_count, :comment_count, :share_count, :play_count,
+                        :download_count, :forward_count, :collect_count,
+                        :author_uid, :author_unique_id, :author_nickname, :author_signature,
+                        :author_region, :author_follower_count, :author_following_count,
+                        :author_total_favorited, :author_sec_uid, :author_verified,
+                        :music_id, :music_title, :music_author,
+                        :music_duration, :music_is_original, :music_user_count,
+                        :video_height, :video_width, :video_ratio, :video_cover_url,
+                        :hashtags, :engagement_total, :extracted_at, :updated_at
+                    );
+                """), params)
+            conn.commit()
+            logger.debug("Saved tiktok_video aweme_id=%s", aweme_id)
+        except Exception:
+            logger.error("Failed to save tiktok_video aweme_id=%s", aweme_id, exc_info=True)
+            raise
 
 
 # ---------------------------------------------------------------------------

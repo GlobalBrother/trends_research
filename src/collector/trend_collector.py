@@ -17,31 +17,25 @@ try:
 except ImportError:
     HAS_ENSEMBLEDATA = False
 
+# Ensure project root is in sys.path
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from sqlalchemy import text
+from src.db.connection import get_engine
+from src.db.sql_compat import tbl
+
+
 class TrendCollector:
     def __init__(self):
-        # Define the path to SQLite database relative to project root
-        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-        self.db_path = os.path.join(base_dir, "src", "collector", "trends.db")
+        self.engine = get_engine()
         
     def get_db_trends(self, geo=None, include_trending_now=False, include_youtube=False, include_social=False, include_hackernews=False, include_reddit=False, include_news=False):
-        """Reads trends from SQLite database."""
-        import sqlite3
-        import json
-
-        if not os.path.exists(self.db_path):
-            print(f"Database not found at {self.db_path}. No trends available.")
-            return []
-
+        """Reads trends from the database."""
         try:
-            conn = sqlite3.connect(self.db_path)
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA cache_size=-8000")  # 8MB cache
-            conn.execute("PRAGMA mmap_size=67108864")  # 64MB memory-mapped I/O
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-
-            query = "SELECT platform, topic, growth, keyword, geo, url, extracted_at, extra_data FROM trends WHERE 1=1"
-            params = []
+            query = f"SELECT platform, topic, growth, keyword, geo, extracted_at, extra_data FROM {tbl('trends')} WHERE 1=1"
+            params = {}
 
             # Platform filtering - use IN for included platforms (faster with index)
             included_platforms = []
@@ -62,37 +56,39 @@ class TrendCollector:
             always_included = ['Google Interest', 'Google Regions', 'Google Related Queries', 'Google Related Topics']
             included_platforms.extend(always_included)
             
-            placeholders = ', '.join(['?'] * len(included_platforms))
-            query += f" AND platform IN ({placeholders})"
-            params.extend(included_platforms)
+            plat_placeholders = ', '.join([f':plat_{i}' for i in range(len(included_platforms))])
+            query += f" AND platform IN ({plat_placeholders})"
+            for i, p in enumerate(included_platforms):
+                params[f'plat_{i}'] = p
 
             # Geo filtering
             if geo is not None and geo != "Global":
-                query += " AND (UPPER(geo) = UPPER(?) OR geo = '' OR UPPER(geo) = 'GLOBAL' OR geo IS NULL)"
-                params.append(geo)
+                query += " AND (UPPER(geo) = UPPER(:geo) OR geo = '' OR UPPER(geo) = 'GLOBAL' OR geo IS NULL)"
+                params['geo'] = geo
             elif geo == "Global":
                 query += " AND (UPPER(geo) = 'GLOBAL' OR geo = '' OR geo IS NULL)"
 
             query += " ORDER BY extracted_at DESC"
             
-            cursor.execute(query, params)
-            rows = cursor.fetchall()
-            conn.close()
+            with self.engine.connect() as conn:
+                result = conn.execute(text(query), params)
+                rows = result.fetchall()
+                columns = result.keys()
 
             trends = []
             for row in rows:
+                row_dict = dict(zip(columns, row))
                 item = {
-                    "platform": row['platform'],
-                    "topic": row['topic'],
-                    "growth": row['growth'],
-                    "keyword": row['keyword'],
-                    "geo": row['geo'],
-                    "url": row['url'],
-                    "extracted_at": row['extracted_at']
+                    "platform": row_dict['platform'],
+                    "topic": row_dict['topic'],
+                    "growth": row_dict['growth'],
+                    "keyword": row_dict['keyword'],
+                    "geo": row_dict['geo'],
+                    "extracted_at": row_dict['extracted_at']
                 }
                 
                 # Expand extra_data
-                extra_data = row['extra_data']
+                extra_data = row_dict['extra_data']
                 if extra_data:
                     try:
                         extra = json.loads(extra_data)
@@ -236,23 +232,19 @@ class TrendCollector:
             return pd.DataFrame(columns=['platform', 'topic', 'growth', 'keyword', 'extracted_at'])
 
     def get_scrape_errors(self, platform=None):
-        """Reads scrape errors from SQLite database."""
-        import sqlite3
-        import pandas as pd
-        
+        """Reads scrape errors from the database."""
         try:
-            conn = sqlite3.connect(self.db_path)
-            query = "SELECT platform, keyword, url, status, reason, extracted_at FROM scrape_errors"
-            params = []
+            query = f"SELECT platform, keyword, url, status, reason, extracted_at FROM {tbl('scrape_errors')}"
+            params = {}
             
             if platform:
-                query += " WHERE platform = ?"
-                params.append(platform)
+                query += " WHERE platform = :platform"
+                params["platform"] = platform
             
             query += " ORDER BY extracted_at DESC"
             
-            df = pd.read_sql_query(query, conn, params=params)
-            conn.close()
+            with self.engine.connect() as conn:
+                df = pd.read_sql_query(text(query), conn, params=params)
             return df
         except Exception as e:
             print(f"Error reading scrape errors from DB: {e}")

@@ -7,18 +7,26 @@ as well as the shared ``trends`` table for cross-platform dashboards.
 import json
 import logging
 import os
-import sqlite3
 import sys
 from datetime import datetime
 
 from dotenv import load_dotenv
 from ensembledata.api import EDClient
 from ensembledata.api.errors import EDError
+from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
 sys.path.insert(0, os.path.dirname(__file__))
-from db_helper import save_trend, save_error, save_token_usage, DB_PATH
+from db_helper import save_trend, save_error, save_token_usage
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+from src.db.connection import get_engine, is_sqlite
+from src.db.sql_compat import tbl
+
+_engine = get_engine()
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".env"))
 
@@ -70,9 +78,6 @@ CREATE TABLE IF NOT EXISTS instagram_posts (
     -- hashtags (JSON array)
     hashtags            TEXT,
 
-    -- raw JSON blob
-    raw_data            TEXT,
-
     -- metadata
     extracted_at        TEXT,
     updated_at          TEXT
@@ -88,17 +93,8 @@ _CREATE_INDEXES = [
 
 
 def _ensure_table():
-    """Create the instagram_posts table and indexes if they don't exist."""
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute(_CREATE_INSTAGRAM_POSTS)
-        for idx in _CREATE_INDEXES:
-            conn.execute(idx)
-        conn.commit()
-        logger.debug("instagram_posts table ensured.")
-    finally:
-        conn.close()
+    """Tables are pre-created in Azure SQL via migration schema."""
+    pass
 
 
 def _save_instagram_post(item: dict, keyword: str, geo: str):
@@ -154,48 +150,84 @@ def _save_instagram_post(item: dict, keyword: str, geo: str):
 
     now = datetime.now().isoformat()
 
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("""
-            INSERT INTO instagram_posts (
-                post_pk, shortcode, search_keyword, geo,
-                caption, media_type, url, thumbnail_url, taken_at,
-                location_name, location_lat, location_lng,
-                username, user_pk, full_name, follower_count, is_verified, profile_pic_url,
-                like_count, comment_count, share_count, save_count,
-                video_view_count, video_play_count,
-                engagement_total, hashtags, raw_data,
-                extracted_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(post_pk) DO UPDATE SET
-                like_count=excluded.like_count,
-                comment_count=excluded.comment_count,
-                share_count=excluded.share_count,
-                save_count=excluded.save_count,
-                video_view_count=excluded.video_view_count,
-                video_play_count=excluded.video_play_count,
-                engagement_total=excluded.engagement_total,
-                follower_count=excluded.follower_count,
-                raw_data=excluded.raw_data,
-                updated_at=excluded.updated_at
-        """, (
-            post_pk, shortcode, keyword, geo,
-            caption, media_type, url, thumbnail, taken_at,
-            location_name, location_lat, location_lng,
-            username, user_pk, full_name, follower_count, is_verified, profile_pic,
-            likes, comments, shares, saves,
-            video_views, video_plays,
-            engagement, json.dumps(hashtags), json.dumps(item, default=str),
-            now, now,
-        ))
-        conn.commit()
-        logger.debug("Saved instagram_post pk=%s", post_pk)
-    except Exception:
-        logger.error("Failed to save instagram_post pk=%s", post_pk, exc_info=True)
-        raise
-    finally:
-        conn.close()
+    params = {
+        "post_pk": post_pk, "shortcode": shortcode, "keyword": keyword, "geo": geo,
+        "caption": caption, "media_type": media_type, "url": url, "thumbnail_url": thumbnail,
+        "taken_at": taken_at, "location_name": location_name,
+        "location_lat": location_lat, "location_lng": location_lng,
+        "username": username, "user_pk": user_pk, "full_name": full_name,
+        "follower_count": follower_count, "is_verified": is_verified, "profile_pic_url": profile_pic,
+        "like_count": likes, "comment_count": comments, "share_count": shares,
+        "save_count": saves, "video_view_count": video_views, "video_play_count": video_plays,
+        "engagement_total": engagement, "hashtags": json.dumps(hashtags),
+        "extracted_at": now, "updated_at": now,
+    }
+
+    with _engine.connect() as conn:
+        try:
+            if is_sqlite():
+                existing = conn.execute(text(f"SELECT 1 FROM {tbl('instagram_posts')} WHERE post_pk = :post_pk"), {"post_pk": post_pk}).fetchone()
+                if existing:
+                    conn.execute(text(
+                        f"UPDATE {tbl('instagram_posts')} SET like_count = :like_count, comment_count = :comment_count, "
+                        "share_count = :share_count, save_count = :save_count, "
+                        "video_view_count = :video_view_count, video_play_count = :video_play_count, "
+                        "engagement_total = :engagement_total, follower_count = :follower_count, "
+                        "updated_at = :updated_at WHERE post_pk = :post_pk"
+                    ), params)
+                else:
+                    conn.execute(text(
+                        f"INSERT INTO {tbl('instagram_posts')} ("
+                        "post_pk, shortcode, search_keyword, geo, "
+                        "caption, media_type, url, thumbnail_url, taken_at, "
+                        "location_name, location_lat, location_lng, "
+                        "username, user_pk, full_name, follower_count, is_verified, profile_pic_url, "
+                        "like_count, comment_count, share_count, save_count, "
+                        "video_view_count, video_play_count, "
+                        "engagement_total, hashtags, extracted_at, updated_at"
+                        ") VALUES ("
+                        ":post_pk, :shortcode, :keyword, :geo, "
+                        ":caption, :media_type, :url, :thumbnail_url, :taken_at, "
+                        ":location_name, :location_lat, :location_lng, "
+                        ":username, :user_pk, :full_name, :follower_count, :is_verified, :profile_pic_url, "
+                        ":like_count, :comment_count, :share_count, :save_count, "
+                        ":video_view_count, :video_play_count, "
+                        ":engagement_total, :hashtags, :extracted_at, :updated_at)"
+                    ), params)
+            else:
+                conn.execute(text(f"""
+                    MERGE {tbl('instagram_posts')} AS target
+                    USING (SELECT :post_pk AS post_pk) AS source
+                    ON target.post_pk = source.post_pk
+                    WHEN MATCHED THEN UPDATE SET
+                        like_count = :like_count, comment_count = :comment_count,
+                        share_count = :share_count, save_count = :save_count,
+                        video_view_count = :video_view_count, video_play_count = :video_play_count,
+                        engagement_total = :engagement_total, follower_count = :follower_count,
+                        updated_at = :updated_at
+                    WHEN NOT MATCHED THEN INSERT (
+                        post_pk, shortcode, search_keyword, geo,
+                        caption, media_type, url, thumbnail_url, taken_at,
+                        location_name, location_lat, location_lng,
+                        username, user_pk, full_name, follower_count, is_verified, profile_pic_url,
+                        like_count, comment_count, share_count, save_count,
+                        video_view_count, video_play_count,
+                        engagement_total, hashtags, extracted_at, updated_at
+                    ) VALUES (
+                        :post_pk, :shortcode, :keyword, :geo,
+                        :caption, :media_type, :url, :thumbnail_url, :taken_at,
+                        :location_name, :location_lat, :location_lng,
+                        :username, :user_pk, :full_name, :follower_count, :is_verified, :profile_pic_url,
+                        :like_count, :comment_count, :share_count, :save_count,
+                        :video_view_count, :video_play_count,
+                        :engagement_total, :hashtags, :extracted_at, :updated_at
+                    );
+                """), params)
+            conn.commit()
+            logger.debug("Saved instagram_post pk=%s", post_pk)
+        except Exception:
+            logger.error("Failed to save instagram_post pk=%s", post_pk, exc_info=True)
+            raise
 
 
 # ---------------------------------------------------------------------------

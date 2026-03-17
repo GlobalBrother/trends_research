@@ -23,6 +23,15 @@ class APIClient:
         self.base_url = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
         self.direct = False  # Always use API mode now
 
+    def _request(self, method: str, path: str, **kwargs):
+        """Generic HTTP request helper. Returns parsed JSON or None on error."""
+        try:
+            resp = requests.request(method, f"{self.base_url}{path}", timeout=30, **kwargs)
+            resp.raise_for_status()
+            return resp.json()
+        except Exception:
+            return None
+
     # ------------------------------------------------------------------
     # Auth helpers
     # ------------------------------------------------------------------
@@ -428,3 +437,81 @@ class APIClient:
         except Exception as e:
             print(f"Failed to clear scrape_errors: {e}")
             return False
+
+    # ------------------------------------------------------------------
+    # Niche & keyword management
+    # ------------------------------------------------------------------
+
+    def create_niche(self, niche_name, keywords=None):
+        """Create a new niche with optional keywords."""
+        try:
+            body = {"niche_name": niche_name}
+            if keywords:
+                body["keywords"] = keywords
+            resp = requests.post(f"{self.base_url}/niches", json=body, timeout=10)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.exceptions.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.response.json().get("detail", str(e))
+            except Exception:
+                detail = str(e)
+            return {"error": detail}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def add_keywords(self, niche_name, keywords):
+        """Add keywords to an existing niche."""
+        try:
+            resp = requests.post(
+                f"{self.base_url}/niches/{niche_name}/keywords",
+                json={"keywords": keywords},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except requests.exceptions.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.response.json().get("detail", str(e))
+            except Exception:
+                detail = str(e)
+            return {"error": detail}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def delete_niche(self, niche_name):
+        """Delete an entire niche and all its keywords."""
+        try:
+            resp = requests.delete(f"{self.base_url}/niches/{niche_name}", timeout=10)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.exceptions.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.response.json().get("detail", str(e))
+            except Exception:
+                detail = str(e)
+            return {"error": detail}
+        except Exception as e:
+            return {"error": str(e)}
+
+    def delete_keyword(self, niche_name, keyword):
+        """Remove a single keyword from a niche."""
+        try:
+            resp = requests.delete(
+                f"{self.base_url}/niches/{niche_name}/keywords/{keyword}",
+                timeout=10,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except requests.exceptions.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.response.json().get("detail", str(e))
+            except Exception:
+                detail = str(e)
+            return {"error": detail}
+        except Exception as e:
+            return {"error": str(e)}

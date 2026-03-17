@@ -96,13 +96,21 @@ def _clear_auth_cookies():
 
 def login_page(api):
     """Render the OTP login form. Returns True when authenticated."""
-    st.markdown("## 🔐 Login")
-    st.caption("Enter your whitelisted email to receive a one-time code.")
+    # Centered branded login card
+    st.markdown(
+        '<div class="login-container">'
+        '<div class="login-brand">'
+        '<div class="logo">🚀</div>'
+        '<div class="title">Trends Research</div>'
+        '<div class="subtitle">Sign in with your whitelisted email</div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
 
-    email = st.text_input("Email", key="login_email")
+    email = st.text_input("Email address", key="login_email", placeholder="you@company.com")
 
     if not st.session_state.otp_sent:
-        if st.button("Send OTP", disabled=not email):
+        if st.button("Send One-Time Code", disabled=not email, use_container_width=True, type="primary"):
             res = api.request_otp(email)
             if "error" in res:
                 st.error(res["error"])
@@ -111,11 +119,11 @@ def login_page(api):
                 st.session_state.user_email = email
                 st.rerun()
     else:
-        st.success(f"OTP sent to **{st.session_state.user_email}**")
-        code = st.text_input("Enter OTP code", key="login_code")
+        st.success(f"Code sent to **{st.session_state.user_email}**")
+        code = st.text_input("Enter verification code", key="login_code", placeholder="6-digit code")
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("Verify"):
+            if st.button("✓ Verify", use_container_width=True, type="primary"):
                 res = api.verify_otp(st.session_state.user_email, code)
                 if "error" in res:
                     st.error(res["error"])
@@ -126,10 +134,12 @@ def login_page(api):
                     _save_auth_cookies(res["token"])
                     st.rerun()
         with col2:
-            if st.button("Back"):
+            if st.button("← Back", use_container_width=True):
                 st.session_state.otp_sent = False
                 st.rerun()
 
+    st.markdown('</div>', unsafe_allow_html=True)  # close login-container
+    _render_footer()
     return False
 
 
@@ -144,19 +154,75 @@ def logout():
 # Sidebar
 # ---------------------------------------------------------------------------
 
+def _render_header():
+    """Render the branded app header bar."""
+    st.markdown(
+        '<div class="app-header">'
+        '<span class="app-logo">🚀</span>'
+        '<span class="app-title">Trends Research</span>'
+        '<span class="app-env-badge">Production</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_footer():
+    """Render a minimal footer."""
+    st.markdown(
+        '<div class="app-footer">'
+        '© 2026 Trends Research · Built with Streamlit'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def render_sidebar(api):
-    """Build sidebar controls (mode indicator only — filters moved to tabs)."""
+    """Build sidebar controls with user card and mode indicator."""
     with st.sidebar:
-        st.markdown("### ⚙️ Controls")
+        # Branding
+        st.markdown(
+            '<div style="text-align:center;padding:0.5rem 0 0.8rem 0;">'
+            '<span style="font-size:1.6rem;">🚀</span><br>'
+            '<span style="font-size:0.9rem;font-weight:700;'
+            'background:linear-gradient(135deg,#58a6ff,#a855f7);'
+            '-webkit-background-clip:text;-webkit-text-fill-color:transparent;">'
+            'Trends Research</span></div>',
+            unsafe_allow_html=True,
+        )
+
+        # User card
+        email = st.session_state.user_email
+        role = st.session_state.user_role
+        initial = email[0].upper() if email else "?"
+        st.markdown(
+            f'<div class="sidebar-user">'
+            f'<div class="user-avatar">{initial}</div>'
+            f'<div class="user-info">'
+            f'<div class="user-email">{email}</div>'
+            f'<div class="user-role">{role}</div>'
+            f'</div></div>',
+            unsafe_allow_html=True,
+        )
 
         if api.direct:
             st.markdown('<span class="status-badge status-ok">⚡ Direct mode</span>', unsafe_allow_html=True)
         else:
             st.markdown('<span class="status-badge status-warn">🌐 API mode</span>', unsafe_allow_html=True)
 
+        # App switcher for admin users
+        if role == "admin":
+            st.divider()
+            st.markdown(
+                '<div style="font-size:0.75rem;font-weight:600;color:#8b949e;'
+                'text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.4rem;">'
+                '🔀 Switch App</div>',
+                unsafe_allow_html=True,
+            )
+            st.page_link("pages/admin.py", label="🛠️ Admin Panel", use_container_width=True)
+            st.page_link("pages/ads_insight.py", label="📢 Ads Insight", use_container_width=True)
+
         st.divider()
-        st.caption(f"👤 {st.session_state.user_email}  •  **{st.session_state.user_role}**")
-        if st.button("🚪 Logout", key="logout_btn"):
+        if st.button("🚪 Logout", key="logout_btn", use_container_width=True):
             logout()
             st.rerun()
 
@@ -166,7 +232,12 @@ def render_sidebar(api):
 # ---------------------------------------------------------------------------
 
 def main():
-    st.set_page_config(page_title="Trends Research", layout="wide", page_icon="🚀")
+    st.set_page_config(
+        page_title="Trends Research",
+        layout="wide",
+        page_icon="🚀",
+        initial_sidebar_state="expanded",
+    )
     inject_custom_css()
     _init_session_state()
 
@@ -180,7 +251,7 @@ def main():
         login_page(api)
         return
 
-    st.markdown("## 🚀 Trends Research")
+    _render_header()
     render_sidebar(api)
 
     role = st.session_state.user_role
@@ -228,6 +299,10 @@ def main():
                     st.caption("No data to export.")
             except Exception:
                 st.caption("No data to export.")
+
+
+    # Footer
+    _render_footer()
 
 
 if __name__ == "__main__":

@@ -6,13 +6,14 @@ from datetime import datetime, timedelta
 import pandas as pd
 import os
 import sys
-import sqlite3
 import secrets
 
 import logging
 import traceback
 import resend
 from dotenv import load_dotenv
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 load_dotenv()
 
@@ -28,6 +29,8 @@ if project_root not in sys.path:
 from src.collector.trend_collector import TrendCollector
 from src.analytics.analytics_engine import AnalyticsEngine
 from src.niche.niche_discovery import NicheDiscovery
+from src.db.connection import get_engine, is_sqlite
+from src.db.sql_compat import otp_verify_sql, expires_check, insert_if_not_exists_niches, limit_clause, tbl
 
 # Try to import GetHookdAI ads scraper
 try:
@@ -43,11 +46,15 @@ try:
 except ImportError:
     HAS_GETHOOKEDAI = False
 
-DB_PATH = os.environ.get("DB_PATH", os.path.join(project_root, "src", "collector", "trends.db"))
+engine = get_engine()
 
 # Resend API config
 resend.api_key = os.getenv("RESEND_API_KEY", "")
 RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "noreply@yourdomain.com")
+
+# Test account that bypasses OTP (for development/testing)
+TEST_ACCOUNT_EMAIL = os.getenv("TEST_ACCOUNT_EMAIL", "").strip()
+TEST_ACCOUNT_OTP = os.getenv("TEST_ACCOUNT_OTP", "000000").strip()
 
 app = FastAPI(title="Trends Research API")
 
@@ -70,55 +77,54 @@ niche = NicheDiscovery()
 # ---------------------------------------------------------------------------
 
 def _init_auth_tables():
-    """Create auth tables if they don't exist."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            email TEXT PRIMARY KEY,
-            role TEXT NOT NULL DEFAULT 'trends',
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS otp_codes (
-            email TEXT NOT NULL,
-            code TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            used INTEGER NOT NULL DEFAULT 0
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS auth_tokens (
-            token TEXT PRIMARY KEY,
-            email TEXT NOT NULL,
-            role TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            expires_at TEXT NOT NULL
-        )
-    """)
-    conn.commit()
-    conn.close()
+    """Ensure auth tables exist.
+
+    SQLite  – run the full schema file (all CREATE IF NOT EXISTS).
+    Azure SQL – tables are pre-created via the migration schema.
+    """
+    if not is_sqlite():
+        return
+    schema_file = os.path.join(project_root, "src", "db", "sqlite_schema.sql")
+    if os.path.exists(schema_file):
+        with open(schema_file, "r", encoding="utf-8") as f:
+            schema_sql = f.read()
+        raw_url = str(engine.url)
+        # Extract path from sqlite:///path
+        db_path = raw_url.replace("sqlite:///", "")
+        import sqlite3
+        _conn = sqlite3.connect(db_path)
+        _conn.executescript(schema_sql)
+        _conn.close()
+        logger.info("SQLite schema applied from %s", schema_file)
 
 _init_auth_tables()
 
 
 def _init_token_usage_table():
-    """Create token_usage table if it doesn't exist."""
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS token_usage (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            platform TEXT NOT NULL,
-            keyword TEXT,
-            units_charged REAL NOT NULL DEFAULT 0,
-            geo TEXT,
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )
-    """)
-    conn.commit()
-    conn.close()
+    """Ensure token_usage table exists (Azure SQL – tables created via migration schema)."""
+    pass
 
 _init_token_usage_table()
+
+
+def _init_niches_table():
+    """Seed niches table with defaults if empty."""
+    try:
+        with engine.connect() as conn:
+            count = conn.execute(text(f"SELECT COUNT(*) FROM {tbl('niches')}")).scalar()
+            if count == 0:
+                _nd = NicheDiscovery()
+                for niche_name, keywords in _nd.niche_map.items():
+                    for kw in keywords:
+                        conn.execute(
+                            text(insert_if_not_exists_niches()),
+                            {"niche_name": niche_name, "kw": kw},
+                        )
+                conn.commit()
+    except Exception as e:
+        logger.warning(f"Could not seed niches table: {e}")
+
+_init_niches_table()
 
 
 class ScrapeRequest(BaseModel):
@@ -148,16 +154,24 @@ class UserCreate(BaseModel):
 @app.post("/auth/request_otp")
 def request_otp(email: str = Query(...)):
     """Send an OTP code to a whitelisted email via Resend."""
-    conn = sqlite3.connect(DB_PATH)
-    row = conn.execute("SELECT email, role FROM users WHERE email = ?", (email,)).fetchone()
-    if not row:
-        conn.close()
-        raise HTTPException(status_code=403, detail="Email not whitelisted")
+    # Test account bypass: auto-create user and skip email
+    if TEST_ACCOUNT_EMAIL and email == TEST_ACCOUNT_EMAIL:
+        with engine.connect() as conn:
+            row = conn.execute(text(f"SELECT email FROM {tbl('users')} WHERE email = :email"), {"email": email}).fetchone()
+            if not row:
+                conn.execute(text(f"INSERT INTO {tbl('users')} (email, role) VALUES (:email, :role)"), {"email": email, "role": "admin"})
+            conn.execute(text(f"INSERT INTO {tbl('otp_codes')} (email, code) VALUES (:email, :code)"), {"email": email, "code": TEST_ACCOUNT_OTP})
+            conn.commit()
+        return {"message": "OTP sent", "email": email}
 
-    code = secrets.token_hex(3).upper()  # 6-char hex code
-    conn.execute("INSERT INTO otp_codes (email, code) VALUES (?, ?)", (email, code))
-    conn.commit()
-    conn.close()
+    with engine.connect() as conn:
+        row = conn.execute(text(f"SELECT email, role FROM {tbl('users')} WHERE email = :email"), {"email": email}).fetchone()
+        if not row:
+            raise HTTPException(status_code=403, detail="Email not whitelisted")
+
+        code = secrets.token_hex(3).upper()  # 6-char hex code
+        conn.execute(text(f"INSERT INTO {tbl('otp_codes')} (email, code) VALUES (:email, :code)"), {"email": email, "code": code})
+        conn.commit()
 
     try:
         resend.Emails.send({
@@ -177,32 +191,27 @@ def request_otp(email: str = Query(...)):
 @app.post("/auth/verify_otp")
 def verify_otp(email: str = Query(...), code: str = Query(...)):
     """Verify an OTP code and return the user's role."""
-    conn = sqlite3.connect(DB_PATH)
-    row = conn.execute(
-        "SELECT rowid, code FROM otp_codes WHERE email = ? AND code = ? AND used = 0 "
-        "AND datetime(created_at, '+10 minutes') > datetime('now') "
-        "ORDER BY created_at DESC LIMIT 1",
-        (email, code.upper()),
-    ).fetchone()
-    if not row:
-        conn.close()
-        raise HTTPException(status_code=401, detail="Invalid or expired OTP")
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(otp_verify_sql()),
+            {"email": email, "code": code.upper()},
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=401, detail="Invalid or expired OTP")
 
-    conn.execute("UPDATE otp_codes SET used = 1 WHERE rowid = ?", (row[0],))
-    user = conn.execute("SELECT role FROM users WHERE email = ?", (email,)).fetchone()
-    conn.commit()
-    conn.close()
+        conn.execute(text(f"UPDATE {tbl('otp_codes')} SET used = 1 WHERE id = :id"), {"id": row[0]})
+        user = conn.execute(text(f"SELECT role FROM {tbl('users')} WHERE email = :email"), {"email": email}).fetchone()
+        conn.commit()
 
     # Generate auth token valid for 12 hours
     token = secrets.token_hex(32)
     expires_at = (datetime.utcnow() + timedelta(hours=12)).strftime("%Y-%m-%d %H:%M:%S")
-    conn2 = sqlite3.connect(DB_PATH)
-    conn2.execute(
-        "INSERT INTO auth_tokens (token, email, role, expires_at) VALUES (?, ?, ?, ?)",
-        (token, email, user[0], expires_at),
-    )
-    conn2.commit()
-    conn2.close()
+    with engine.connect() as conn:
+        conn.execute(
+            text(f"INSERT INTO {tbl('auth_tokens')} (token, email, role, expires_at) VALUES (:token, :email, :role, :expires_at)"),
+            {"token": token, "email": email, "role": user[0], "expires_at": expires_at},
+        )
+        conn.commit()
 
     return {"message": "Authenticated", "email": email, "role": user[0], "token": token}
 
@@ -210,13 +219,11 @@ def verify_otp(email: str = Query(...), code: str = Query(...)):
 @app.get("/auth/validate_token")
 def validate_token(token: str = Query(...)):
     """Validate an auth token and return user info if still valid."""
-    conn = sqlite3.connect(DB_PATH)
-    row = conn.execute(
-        "SELECT email, role FROM auth_tokens "
-        "WHERE token = ? AND datetime(expires_at) > datetime('now')",
-        (token,),
-    ).fetchone()
-    conn.close()
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(f"SELECT email, role FROM {tbl('auth_tokens')} WHERE token = :token AND {expires_check('expires_at')}"),
+            {"token": token},
+        ).fetchone()
     if not row:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     return {"email": row[0], "role": row[1]}
@@ -225,9 +232,8 @@ def validate_token(token: str = Query(...)):
 @app.get("/auth/users")
 def list_users():
     """List all whitelisted users."""
-    conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute("SELECT email, role, created_at FROM users ORDER BY created_at").fetchall()
-    conn.close()
+    with engine.connect() as conn:
+        rows = conn.execute(text(f"SELECT email, role, created_at FROM {tbl('users')} ORDER BY created_at")).fetchall()
     return [{"email": r[0], "role": r[1], "created_at": r[2]} for r in rows]
 
 
@@ -236,14 +242,12 @@ def add_user(user: UserCreate):
     """Add a whitelisted user."""
     if user.role not in ("admin", "trends"):
         raise HTTPException(status_code=400, detail="Role must be 'admin' or 'trends'")
-    conn = sqlite3.connect(DB_PATH)
     try:
-        conn.execute("INSERT INTO users (email, role) VALUES (?, ?)", (user.email, user.role))
-        conn.commit()
-    except sqlite3.IntegrityError:
-        conn.close()
+        with engine.connect() as conn:
+            conn.execute(text(f"INSERT INTO {tbl('users')} (email, role) VALUES (:email, :role)"), {"email": user.email, "role": user.role})
+            conn.commit()
+    except IntegrityError:
         raise HTTPException(status_code=409, detail="User already exists")
-    conn.close()
     return {"message": "User added", "email": user.email, "role": user.role}
 
 
@@ -252,26 +256,22 @@ def update_user_role(email: str = Query(...), role: str = Query(...)):
     """Update a user's role."""
     if role not in ("admin", "trends"):
         raise HTTPException(status_code=400, detail="Role must be 'admin' or 'trends'")
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.execute("UPDATE users SET role = ? WHERE email = ?", (role, email))
-    conn.commit()
-    if cur.rowcount == 0:
-        conn.close()
-        raise HTTPException(status_code=404, detail="User not found")
-    conn.close()
+    with engine.connect() as conn:
+        cur = conn.execute(text(f"UPDATE {tbl('users')} SET role = :role WHERE email = :email"), {"role": role, "email": email})
+        conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="User not found")
     return {"message": "Role updated", "email": email, "role": role}
 
 
 @app.delete("/auth/users")
 def delete_user(email: str = Query(...)):
     """Remove a whitelisted user."""
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.execute("DELETE FROM users WHERE email = ?", (email,))
-    conn.commit()
-    if cur.rowcount == 0:
-        conn.close()
-        raise HTTPException(status_code=404, detail="User not found")
-    conn.close()
+    with engine.connect() as conn:
+        cur = conn.execute(text(f"DELETE FROM {tbl('users')} WHERE email = :email"), {"email": email})
+        conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="User not found")
     return {"message": "User removed", "email": email}
 
 
@@ -281,21 +281,160 @@ def read_root():
 
 @app.get("/niches", response_model=List[str])
 def get_niches():
-    return niche.get_available_niches()
+    """Return distinct niche names from the DB."""
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text(f"SELECT DISTINCT niche_name FROM {tbl('niches')} ORDER BY niche_name")).fetchall()
+        return [r[0] for r in rows]
+    except Exception:
+        return niche.get_available_niches()
 
 @app.get("/niche_keywords/{niche_name}")
 def get_niche_keywords(niche_name: str):
-    keywords = niche.get_niche_keywords(niche_name)
-    return {"niche": niche_name, "keywords": keywords}
+    """Return keywords for a niche from the DB."""
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(f"SELECT keyword FROM {tbl('niches')} WHERE niche_name = :niche_name ORDER BY keyword"),
+                {"niche_name": niche_name},
+            ).fetchall()
+        keywords = [r[0] for r in rows]
+        return {"niche": niche_name, "keywords": keywords if keywords else [niche_name]}
+    except Exception:
+        keywords = niche.get_niche_keywords(niche_name)
+        return {"niche": niche_name, "keywords": keywords}
+
+
+class NicheCreate(BaseModel):
+    niche_name: str
+    keywords: List[str] = []
+
+
+class KeywordAdd(BaseModel):
+    keywords: List[str]
+
+
+@app.post("/niches")
+def create_niche(body: NicheCreate):
+    """Create a new niche with optional keywords."""
+    if not body.niche_name.strip():
+        raise HTTPException(status_code=400, detail="Niche name cannot be empty")
+    keywords = body.keywords if body.keywords else [body.niche_name.strip()]
+    added = 0
+    with engine.connect() as conn:
+        for kw in keywords:
+            kw = kw.strip()
+            if not kw:
+                continue
+            try:
+                conn.execute(
+                    text(f"INSERT INTO {tbl('niches')} (niche_name, keyword) VALUES (:niche_name, :kw)"),
+                    {"niche_name": body.niche_name.strip(), "kw": kw},
+                )
+                added += 1
+            except IntegrityError:
+                pass
+        conn.commit()
+    return {"message": f"Niche '{body.niche_name}' created with {added} keyword(s)"}
+
+
+@app.post("/niches/{niche_name}/keywords")
+def add_keywords(niche_name: str, body: KeywordAdd):
+    """Add keywords to an existing niche."""
+    added = 0
+    with engine.connect() as conn:
+        for kw in body.keywords:
+            kw = kw.strip()
+            if not kw:
+                continue
+            try:
+                conn.execute(
+                    text(f"INSERT INTO {tbl('niches')} (niche_name, keyword) VALUES (:niche_name, :kw)"),
+                    {"niche_name": niche_name, "kw": kw},
+                )
+                added += 1
+            except IntegrityError:
+                pass
+        conn.commit()
+    return {"message": f"Added {added} keyword(s) to '{niche_name}'"}
+
+
+@app.delete("/niches/{niche_name}")
+def delete_niche(niche_name: str):
+    """Delete an entire niche and all its keywords."""
+    with engine.connect() as conn:
+        cur = conn.execute(text(f"DELETE FROM {tbl('niches')} WHERE niche_name = :niche_name"), {"niche_name": niche_name})
+        conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Niche not found")
+    return {"message": f"Niche '{niche_name}' deleted"}
+
+
+@app.delete("/niches/{niche_name}/keywords/{keyword}")
+def delete_keyword(niche_name: str, keyword: str):
+    """Remove a single keyword from a niche."""
+    with engine.connect() as conn:
+        cur = conn.execute(
+            text(f"DELETE FROM {tbl('niches')} WHERE niche_name = :niche_name AND keyword = :keyword"),
+            {"niche_name": niche_name, "keyword": keyword},
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Keyword not found")
+    return {"message": f"Keyword '{keyword}' removed from '{niche_name}'"}
+
+def _log_token_usage(platform: str, keyword: str = None, units: float = 1.0, geo: str = None):
+    """Record an API / scrape usage entry."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(f"INSERT INTO {tbl('token_usage')} (platform, keyword, units_charged, geo) VALUES (:platform, :keyword, :units, :geo)"),
+                {"platform": platform, "keyword": keyword, "units": units, "geo": geo},
+            )
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Failed to log token usage: {e}")
+
+
+def _run_and_log(func, log_platform, log_keywords, log_geo, **kwargs):
+    """Wrapper: runs a scraper function then logs one usage row per keyword."""
+    try:
+        result = func(**kwargs)
+    except Exception as e:
+        logger.error(f"Scraper {log_platform} failed: {e}")
+        result = None
+    if isinstance(log_keywords, list):
+        for kw in log_keywords:
+            _log_token_usage(log_platform, keyword=kw, units=1.0, geo=log_geo)
+    else:
+        _log_token_usage(log_platform, keyword=log_keywords, units=1.0, geo=log_geo)
+    return result
+
+
+def _get_niche_keywords_from_db(niche_name: str) -> list:
+    """Fetch keywords for a niche from the DB, falling back to NicheDiscovery."""
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(f"SELECT keyword FROM {tbl('niches')} WHERE niche_name = :niche_name"), {"niche_name": niche_name}
+            ).fetchall()
+        keywords = [r[0] for r in rows]
+        if keywords:
+            return keywords
+    except Exception:
+        pass
+    return niche.get_niche_keywords(niche_name)
+
 
 @app.post("/scrape")
 def scrape_niche(request: ScrapeRequest, background_tasks: BackgroundTasks):
-    niche_keywords = niche.get_niche_keywords(request.niche)
+    niche_keywords = _get_niche_keywords_from_db(request.niche)
     scraper = request.scraper_type
 
     if scraper == "all":
         background_tasks.add_task(
-            collector.run_niche_comprehensive_scrape,
+            _run_and_log, collector.run_niche_comprehensive_scrape,
+            "all", niche_keywords, request.geo,
             niche_name=request.niche,
             keywords=niche_keywords,
             geo=request.geo,
@@ -304,43 +443,51 @@ def scrape_niche(request: ScrapeRequest, background_tasks: BackgroundTasks):
         )
     elif scraper == "google_trends":
         background_tasks.add_task(
-            collector.run_google_trends_scraper,
-            niche_keywords, geo=request.geo,
+            _run_and_log, collector.run_google_trends_scraper,
+            "google_trends", niche_keywords, request.geo,
+            keywords=niche_keywords, geo=request.geo,
             timeframe=request.timeframe, category=request.category
         )
     elif scraper == "daily":
         background_tasks.add_task(
-            collector.run_trending_now_scraper,
+            _run_and_log, collector.run_trending_now_scraper,
+            "daily", request.niche, request.geo,
             geo=request.geo
         )
     elif scraper == "youtube":
         background_tasks.add_task(
-            collector.run_youtube_trends_scraper,
-            niche_keywords, geo=request.geo
+            _run_and_log, collector.run_youtube_trends_scraper,
+            "youtube", niche_keywords, request.geo,
+            keywords=niche_keywords, geo=request.geo
         )
     elif scraper in ("Threads", "Instagram", "TikTok"):
         background_tasks.add_task(
-            collector.run_social_trends_scraper,
-            scraper, niche_keywords, geo=request.geo
+            _run_and_log, collector.run_social_trends_scraper,
+            scraper, niche_keywords, request.geo,
+            platform=scraper, keywords=niche_keywords, geo=request.geo
         )
     elif scraper == "hackernews":
         background_tasks.add_task(
-            collector.run_hackernews_scraper,
+            _run_and_log, collector.run_hackernews_scraper,
+            "hackernews", niche_keywords, request.geo,
             keywords=niche_keywords, geo=request.geo
         )
     elif scraper == "reddit":
         background_tasks.add_task(
-            collector.run_reddit_scraper,
+            _run_and_log, collector.run_reddit_scraper,
+            "reddit", niche_keywords, request.geo,
             keywords=niche_keywords, geo=request.geo
         )
     elif scraper == "news":
         background_tasks.add_task(
-            collector.run_news_scraper,
+            _run_and_log, collector.run_news_scraper,
+            "news", request.niche, request.geo,
             query=request.niche, geo=request.geo
         )
     else:
         background_tasks.add_task(
-            collector.run_niche_comprehensive_scrape,
+            _run_and_log, collector.run_niche_comprehensive_scrape,
+            "all", niche_keywords, request.geo,
             niche_name=request.niche,
             keywords=niche_keywords,
             geo=request.geo,
@@ -392,7 +539,8 @@ async def import_tokens(
         widgets_json = json.dumps(widgets)
 
         background_tasks.add_task(
-            collector.run_token_import,
+            _run_and_log, collector.run_token_import,
+            "import_tokens", keyword, geo,
             widgets_json=widgets_json,
             geo=geo,
             keyword=keyword,
@@ -562,7 +710,7 @@ def get_youtube_trends(niche_name: str = Query(...), geo: Optional[str] = Query(
         yt_data = raw_data[raw_data['platform'] == "YouTube"]
         if not yt_data.empty:
             # Check if we have data for this niche (based on keywords)
-            niche_keywords = niche.get_niche_keywords(niche_name)
+            niche_keywords = _get_niche_keywords_from_db(niche_name)
             # Find if any keyword from this niche was recently scraped for YouTube
             # This is a bit loose but works for our purposes
             niche_yt_data = yt_data[yt_data['keyword'].isin(niche_keywords)]
@@ -573,7 +721,7 @@ def get_youtube_trends(niche_name: str = Query(...), geo: Optional[str] = Query(
                     needs_scrape = False
     
     if needs_scrape:
-        niche_keywords = niche.get_niche_keywords(niche_name)
+        niche_keywords = _get_niche_keywords_from_db(niche_name)
         # Use top 5 keywords to avoid too many requests
         success = collector.run_youtube_trends_scraper(keywords=niche_keywords[:5])
         if success:
@@ -601,7 +749,7 @@ def get_hackernews_trends(niche_name: Optional[str] = Query(None), geo: Optional
         hn_data = raw_data[raw_data['platform'] == "HackerNews"]
         if not hn_data.empty:
             if niche_name:
-                niche_keywords = niche.get_niche_keywords(niche_name)
+                niche_keywords = _get_niche_keywords_from_db(niche_name)
                 niche_hn_data = hn_data[hn_data['keyword'].isin(niche_keywords)]
                 if not niche_hn_data.empty:
                     last_extracted = pd.to_datetime(niche_hn_data['extracted_at']).max()
@@ -613,7 +761,7 @@ def get_hackernews_trends(niche_name: Optional[str] = Query(None), geo: Optional
                     needs_scrape = False
     
     if needs_scrape:
-        keywords = niche.get_niche_keywords(niche_name) if niche_name else None
+        keywords = _get_niche_keywords_from_db(niche_name) if niche_name else None
         success = collector.run_hackernews_scraper(keywords=keywords)
         if success:
             raw_data = collector.collect_all(include_hackernews=True)
@@ -639,7 +787,7 @@ def get_reddit_trends(subreddit: str = Query("all"), trend_type: str = Query("ho
         reddit_data = raw_data[raw_data['platform'] == "Reddit"]
         if not reddit_data.empty:
             if niche_name:
-                niche_keywords = niche.get_niche_keywords(niche_name)
+                niche_keywords = _get_niche_keywords_from_db(niche_name)
                 niche_reddit_data = reddit_data[reddit_data['keyword'].isin(niche_keywords)]
                 if not niche_reddit_data.empty:
                     last_extracted = pd.to_datetime(niche_reddit_data['extracted_at']).max()
@@ -651,7 +799,7 @@ def get_reddit_trends(subreddit: str = Query("all"), trend_type: str = Query("ho
                     needs_scrape = False
     
     if needs_scrape:
-        keywords = niche.get_niche_keywords(niche_name) if niche_name else None
+        keywords = _get_niche_keywords_from_db(niche_name) if niche_name else None
         success = collector.run_reddit_scraper(subreddit=subreddit, trend_type=trend_type, keywords=keywords)
         if success:
             raw_data = collector.collect_all(include_reddit=True)
@@ -725,14 +873,11 @@ def get_scrape_errors(platform: Optional[str] = Query(None)):
 # Helper: run a query against a dedicated platform table
 # ---------------------------------------------------------------------------
 
-def _query_platform_table(query: str, params: list):
+def _query_platform_table(query: str, params: dict):
     """Execute a SELECT query against the DB and return JSON-safe records."""
-    if not os.path.exists(DB_PATH):
-        return []
     try:
-        conn = sqlite3.connect(DB_PATH)
-        df = pd.read_sql_query(query, conn, params=params)
-        conn.close()
+        with engine.connect() as conn:
+            df = pd.read_sql_query(text(query), conn, params=params)
         return _sanitize_and_serialize(df) if not df.empty else []
     except Exception as e:
         logger.error(f"DB query error: {e}")
@@ -740,14 +885,15 @@ def _query_platform_table(query: str, params: list):
 
 
 def _geo_clause(col: str = "geo"):
-    return f" AND (UPPER({col}) = UPPER(?) OR {col} = '' OR UPPER({col}) = 'GLOBAL' OR {col} IS NULL)"
+    return f" AND (UPPER({col}) = UPPER(:geo_param) OR {col} = '' OR UPPER({col}) = 'GLOBAL' OR {col} IS NULL)"
 
 
 def _keyword_clause(keywords: list, col: str = "search_keyword"):
     if not keywords:
-        return "", []
-    placeholders = ", ".join(["?"] * len(keywords))
-    return f" AND {col} IN ({placeholders})", list(keywords)
+        return "", {}
+    placeholders = ", ".join([f":kw_{i}" for i in range(len(keywords))])
+    kw_params = {f"kw_{i}": kw for i, kw in enumerate(keywords)}
+    return f" AND {col} IN ({placeholders})", kw_params
 
 
 # ---------------------------------------------------------------------------
@@ -762,27 +908,23 @@ def get_table_filters(
 ):
     """Return distinct geo and keyword values from a given DB table."""
     geos, keywords = ["Global"], ["All"]
-    if not os.path.exists(DB_PATH):
-        return {"geos": geos, "keywords": keywords}
     try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
         # Sanitise column/table names (allow only alphanumeric + underscore)
         import re
         _safe = re.compile(r"^\w+$")
         if not _safe.match(table_name) or not _safe.match(geo_col) or not _safe.match(keyword_col):
             raise HTTPException(status_code=400, detail="Invalid table/column name")
 
-        cursor.execute(f"SELECT DISTINCT {geo_col} FROM {table_name} WHERE {geo_col} IS NOT NULL AND {geo_col} != ''")
-        geos_raw = sorted(set(r[0] for r in cursor.fetchall() if r[0]))
-        if geos_raw:
-            geos = ["All"] + geos_raw
+        with engine.connect() as conn:
+            rows = conn.execute(text(f"SELECT DISTINCT {geo_col} FROM {tbl(table_name)} WHERE {geo_col} IS NOT NULL AND {geo_col} != ''")).fetchall()
+            geos_raw = sorted(set(r[0] for r in rows if r[0]))
+            if geos_raw:
+                geos = ["All"] + geos_raw
 
-        cursor.execute(f"SELECT DISTINCT {keyword_col} FROM {table_name} WHERE {keyword_col} IS NOT NULL AND {keyword_col} != ''")
-        kw_raw = sorted(set(r[0] for r in cursor.fetchall() if r[0]))
-        if kw_raw:
-            keywords = ["All"] + kw_raw
-        conn.close()
+            rows = conn.execute(text(f"SELECT DISTINCT {keyword_col} FROM {tbl(table_name)} WHERE {keyword_col} IS NOT NULL AND {keyword_col} != ''")).fetchall()
+            kw_raw = sorted(set(r[0] for r in rows if r[0]))
+            if kw_raw:
+                keywords = ["All"] + kw_raw
     except HTTPException:
         raise
     except Exception:
@@ -800,25 +942,25 @@ def get_youtube_videos(
     geo: Optional[str] = Query(None),
     limit: int = Query(500),
 ):
-    query = """
+    query = f"""
         SELECT video_id, title, description, search_keyword, geo,
                channel_title, channel_id, published, duration, url,
                thumbnail_url, tags, language,
-               view_count, like_count, dislike_count, comment_count,
-               favorite_count, engagement_total,
+               view_count, like_count, comment_count,
+               engagement_total,
                extracted_at
-        FROM youtube_videos WHERE 1=1
+        FROM {tbl('youtube_videos')} WHERE 1=1
     """
-    params = []
+    params = {}
     if geo and geo != "Global":
         query += _geo_clause()
-        params.append(geo)
+        params["geo_param"] = geo
     if niche_name:
-        kws = niche.get_niche_keywords(niche_name)
+        kws = _get_niche_keywords_from_db(niche_name)
         clause, kw_params = _keyword_clause(kws)
         query += clause
-        params.extend(kw_params)
-    query += f" ORDER BY view_count DESC LIMIT {limit}"
+        params.update(kw_params)
+    query += limit_clause("view_count DESC", limit)
     data = _query_platform_table(query, params)
     # Post-process tags
     for row in data:
@@ -841,7 +983,7 @@ def get_tiktok_videos(
     geo: Optional[str] = Query(None),
     limit: int = Query(500),
 ):
-    query = """
+    query = f"""
         SELECT aweme_id, description, search_keyword, geo, region,
                create_time, duration, share_url,
                digg_count, comment_count, share_count, play_count,
@@ -851,18 +993,18 @@ def get_tiktok_videos(
                music_title, music_author,
                hashtags, video_ratio,
                extracted_at
-        FROM tiktok_videos WHERE 1=1
+        FROM {tbl('tiktok_videos')} WHERE 1=1
     """
-    params = []
+    params = {}
     if geo and geo != "Global":
         query += _geo_clause()
-        params.append(geo)
+        params["geo_param"] = geo
     if niche_name:
-        kws = niche.get_niche_keywords(niche_name)
+        kws = _get_niche_keywords_from_db(niche_name)
         clause, kw_params = _keyword_clause(kws)
         query += clause
-        params.extend(kw_params)
-    query += f" ORDER BY play_count DESC LIMIT {limit}"
+        params.update(kw_params)
+    query += limit_clause("play_count DESC", limit)
     data = _query_platform_table(query, params)
     for row in data:
         ht = row.get("hashtags")
@@ -890,7 +1032,7 @@ def get_instagram_posts(
     geo: Optional[str] = Query(None),
     limit: int = Query(500),
 ):
-    query = """
+    query = f"""
         SELECT post_pk, shortcode, search_keyword, geo,
                caption, media_type, url, thumbnail_url, taken_at,
                location_name,
@@ -899,18 +1041,18 @@ def get_instagram_posts(
                video_view_count, video_play_count,
                engagement_total, hashtags,
                extracted_at
-        FROM instagram_posts WHERE 1=1
+        FROM {tbl('instagram_posts')} WHERE 1=1
     """
-    params = []
+    params = {}
     if geo and geo != "Global":
         query += _geo_clause()
-        params.append(geo)
+        params["geo_param"] = geo
     if niche_name:
-        kws = niche.get_niche_keywords(niche_name)
+        kws = _get_niche_keywords_from_db(niche_name)
         clause, kw_params = _keyword_clause(kws)
         query += clause
-        params.extend(kw_params)
-    query += f" ORDER BY like_count DESC LIMIT {limit}"
+        params.update(kw_params)
+    query += limit_clause("like_count DESC", limit)
     data = _query_platform_table(query, params)
     for row in data:
         ta = row.get("taken_at")
@@ -938,25 +1080,25 @@ def get_reddit_posts(
     geo: Optional[str] = Query(None),
     limit: int = Query(500),
 ):
-    query = """
+    query = f"""
         SELECT post_id, title, selftext, search_keyword, geo,
                url, permalink, domain,
                subreddit, author,
-               score, upvote_ratio, num_comments, num_crossposts, total_awards,
+               score, upvote_ratio, num_comments, total_awards,
                engagement_total, link_flair_text,
                created_utc, extracted_at
-        FROM reddit_posts WHERE 1=1
+        FROM {tbl('reddit_posts')} WHERE 1=1
     """
-    params = []
+    params = {}
     if geo and geo != "Global":
         query += _geo_clause()
-        params.append(geo)
+        params["geo_param"] = geo
     if niche_name:
-        kws = niche.get_niche_keywords(niche_name)
+        kws = _get_niche_keywords_from_db(niche_name)
         clause, kw_params = _keyword_clause(kws)
         query += clause
-        params.extend(kw_params)
-    query += f" ORDER BY score DESC LIMIT {limit}"
+        params.update(kw_params)
+    query += limit_clause("score DESC", limit)
     data = _query_platform_table(query, params)
     for row in data:
         cu = row.get("created_utc")
@@ -978,25 +1120,25 @@ def get_threads_posts(
     geo: Optional[str] = Query(None),
     limit: int = Query(500),
 ):
-    query = """
+    query = f"""
         SELECT post_code, search_keyword, geo,
                caption, url, taken_at, media_type,
                username, full_name, follower_count, is_verified,
                like_count, reply_count, repost_count, quote_count, share_count,
                engagement_total,
                extracted_at
-        FROM threads_posts WHERE 1=1
+        FROM {tbl('threads_posts')} WHERE 1=1
     """
-    params = []
+    params = {}
     if geo and geo != "Global":
         query += _geo_clause()
-        params.append(geo)
+        params["geo_param"] = geo
     if niche_name:
-        kws = niche.get_niche_keywords(niche_name)
+        kws = _get_niche_keywords_from_db(niche_name)
         clause, kw_params = _keyword_clause(kws)
         query += clause
-        params.extend(kw_params)
-    query += f" ORDER BY like_count DESC LIMIT {limit}"
+        params.update(kw_params)
+    query += limit_clause("like_count DESC", limit)
     data = _query_platform_table(query, params)
     for row in data:
         ta = row.get("taken_at")
@@ -1018,27 +1160,25 @@ def get_ads_insight(
     geo: Optional[str] = Query(None),
     limit: int = Query(500),
 ):
-    query = """
+    query = f"""
         SELECT hookd_id, external_id, search_keyword,
                platform, display_format, title, body,
-               landing_page, link_description, cta_type, cta_text,
+               landing_page, cta_type, cta_text,
                start_date, end_date, days_active, active_in_library,
                performance_score, performance_score_title, used_count,
                age_audience_min, age_audience_max, gender_audience, eu_total_reach,
-               ad_spend_range_score, ad_spend_range_score_title,
                brand_name, brand_logo_url, brand_active_ads,
-               media, ad_cards, share_url,
+               media, share_url,
                extracted_at
-        FROM ads_insight WHERE 1=1
+        FROM {tbl('ads_insight')} WHERE 1=1
     """
-    params = []
+    params = {}
     if niche_name:
-        kws = niche.get_niche_keywords(niche_name)
+        kws = _get_niche_keywords_from_db(niche_name)
         clause, kw_params = _keyword_clause(kws)
         query += clause
-        params.extend(kw_params)
-    query += " ORDER BY extracted_at DESC LIMIT ?"
-    params.append(limit)
+        params.update(kw_params)
+    query += limit_clause("extracted_at DESC", limit)
     return {"data": _query_platform_table(query, params)}
 
 
@@ -1057,7 +1197,11 @@ def scrape_ads_endpoint(
     kws = [k.strip() for k in keywords.split(",") if k.strip()]
     if not kws:
         raise HTTPException(status_code=400, detail="No keywords provided")
-    background_tasks.add_task(gethookd_scrape_ads, kws, max_pages=max_pages)
+    background_tasks.add_task(
+        _run_and_log, gethookd_scrape_ads,
+        "ads_insight", kws, None,
+        keywords=kws, max_pages=max_pages,
+    )
     return {"message": f"Ads scrape started for: {', '.join(kws)}"}
 
 
@@ -1080,7 +1224,11 @@ def scrape_brand_ads_endpoint(
 ):
     if not HAS_GETHOOKEDAI:
         raise HTTPException(status_code=501, detail="GetHookdAI scraper not available")
-    background_tasks.add_task(gethookd_scrape_brand_ads, brand_id)
+    background_tasks.add_task(
+        _run_and_log, gethookd_scrape_brand_ads,
+        "ads_brand_spy", str(brand_id), None,
+        brand_id=brand_id,
+    )
     return {"message": f"Brand spy started for brand {brand_id}"}
 
 
@@ -1090,13 +1238,10 @@ def scrape_brand_ads_endpoint(
 
 @app.delete("/scrape_errors")
 def clear_scrape_errors():
-    if not os.path.exists(DB_PATH):
-        return {"ok": True}
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute("DELETE FROM scrape_errors")
-        conn.commit()
-        conn.close()
+        with engine.connect() as conn:
+            conn.execute(text(f"DELETE FROM {tbl('scrape_errors')}"))
+            conn.commit()
         return {"ok": True}
     except Exception as e:
         logger.error(f"Failed to clear scrape_errors: {e}")
@@ -1107,34 +1252,209 @@ def clear_scrape_errors():
 # Token usage (EnsembleData units consumed)
 # ---------------------------------------------------------------------------
 
+_ENSEMBLEDATA_PLATFORMS = {"Instagram", "TikTok", "Threads", "YouTube", "Reddit",
+                           "instagram", "tiktok", "threads", "youtube", "reddit"}
+_GETHOOKEDAI_PLATFORMS = {"ads_insight", "ads_brand_spy"}
+_TRACKED_PLATFORMS = _ENSEMBLEDATA_PLATFORMS | _GETHOOKEDAI_PLATFORMS
+
+
+def _provider_label(platform: str) -> str:
+    if platform in _ENSEMBLEDATA_PLATFORMS or platform.lower() in {p.lower() for p in _ENSEMBLEDATA_PLATFORMS}:
+        return "ensembledata"
+    if platform in _GETHOOKEDAI_PLATFORMS:
+        return "gethookedai"
+    return "other"
+
+
 @app.get("/admin/token_usage")
 def get_token_usage():
-    """Return token/units consumption grouped by platform."""
-    if not os.path.exists(DB_PATH):
-        return {"data": [], "summary": []}
+    """Return token/units consumption for ensembledata and gethookedai only."""
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
+        # Build named params for IN clause
+        plat_params = {f"p_{i}": p for i, p in enumerate(_TRACKED_PLATFORMS)}
+        placeholders = ", ".join([f":p_{i}" for i in range(len(_TRACKED_PLATFORMS))])
 
-        # Detailed rows
-        rows = conn.execute(
-            "SELECT platform, keyword, units_charged, geo, created_at "
-            "FROM token_usage ORDER BY created_at DESC LIMIT 1000"
-        ).fetchall()
-        data = [dict(r) for r in rows]
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    f"SELECT TOP 1000 platform, keyword, units_charged, geo, created_at "
+                    f"FROM {tbl('token_usage')} WHERE platform IN ({placeholders}) "
+                    f"ORDER BY created_at DESC"
+                ),
+                plat_params,
+            ).fetchall()
+            data = []
+            for r in rows:
+                d = dict(r._mapping)
+                d["provider"] = _provider_label(d["platform"])
+                data.append(d)
 
-        # Summary per platform
-        summary = conn.execute(
-            "SELECT platform, SUM(units_charged) as total_units, COUNT(*) as request_count "
-            "FROM token_usage GROUP BY platform ORDER BY total_units DESC"
-        ).fetchall()
-        summary_data = [dict(r) for r in summary]
+            summary = conn.execute(
+                text(
+                    f"SELECT platform, SUM(units_charged) as total_units, COUNT(*) as request_count "
+                    f"FROM {tbl('token_usage')} WHERE platform IN ({placeholders}) "
+                    f"GROUP BY platform ORDER BY total_units DESC"
+                ),
+                plat_params,
+            ).fetchall()
+            summary_data = []
+            for r in summary:
+                d = dict(r._mapping)
+                d["provider"] = _provider_label(d["platform"])
+                summary_data.append(d)
 
-        conn.close()
-        return {"data": data, "summary": summary_data}
+            provider_rows = conn.execute(
+                text(
+                    f"SELECT CASE "
+                    f"  WHEN platform IN ('ads_insight','ads_brand_spy') THEN 'gethookedai' "
+                    f"  ELSE 'ensembledata' END as provider, "
+                    f"  SUM(units_charged) as total_units, COUNT(*) as request_count "
+                    f"FROM {tbl('token_usage')} WHERE platform IN ({placeholders}) "
+                    f"GROUP BY CASE "
+                    f"  WHEN platform IN ('ads_insight','ads_brand_spy') THEN 'gethookedai' "
+                    f"  ELSE 'ensembledata' END "
+                    f"ORDER BY total_units DESC"
+                ),
+                plat_params,
+            ).fetchall()
+            provider_data = [dict(r._mapping) for r in provider_rows]
+
+        return {"data": data, "summary": summary_data, "provider_summary": provider_data}
     except Exception as e:
         logger.error(f"Failed to fetch token usage: {e}")
-        return {"data": [], "summary": []}
+        return {"data": [], "summary": [], "provider_summary": []}
+
+
+# ---------------------------------------------------------------------------
+# Azure DB: schema setup & data population
+# ---------------------------------------------------------------------------
+
+_SQLITE_TO_AZURE_TABLES = [
+    "trends", "scrape_errors", "scrape_log", "users", "otp_codes",
+    "auth_tokens", "token_usage", "niches", "raw_data_archive",
+    "tiktok_videos", "instagram_posts", "youtube_videos",
+    "reddit_posts", "threads_posts", "ads_insight",
+]
+
+
+@app.post("/admin/azure/setup_schema")
+def setup_azure_schema(background_tasks: BackgroundTasks):
+    """Run the Azure SQL schema setup (create tables & indexes)."""
+    try:
+        from src.db.setup_azure import run_schema
+        background_tasks.add_task(run_schema)
+        return {"message": "Azure schema setup started in background"}
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"setup_azure module not found: {e}")
+
+
+@app.post("/admin/azure/populate")
+def populate_azure_db(background_tasks: BackgroundTasks):
+    """Copy all data from local SQLite to Azure SQL Server."""
+    background_tasks.add_task(_populate_azure_task)
+    return {"message": "Azure DB population started in background"}
+
+
+@app.get("/admin/azure/status")
+def azure_status():
+    """Check Azure SQL connectivity and return table row counts."""
+    import importlib
+    try:
+        # Build a temporary mssql engine
+        azure_engine = _get_azure_engine()
+        with azure_engine.connect() as conn:
+            conn.execute(text("SELECT 1")).scalar()
+        # Get row counts
+        counts = {}
+        with azure_engine.connect() as conn:
+            for t in _SQLITE_TO_AZURE_TABLES:
+                try:
+                    n = conn.execute(text(f"SELECT COUNT(*) FROM dbo.{t}")).scalar()
+                    counts[t] = n
+                except Exception:
+                    counts[t] = "N/A"
+        return {"connected": True, "tables": counts}
+    except Exception as e:
+        return {"connected": False, "error": str(e)}
+
+
+def _get_azure_engine():
+    """Create a separate mssql engine for Azure (regardless of current DB_BACKEND)."""
+    from urllib.parse import quote_plus as _qp
+    conn_str = os.getenv("AZURE_SQL_CONNECTIONSTRING")
+    if not conn_str:
+        server = os.getenv("AZURE_SQL_SERVER")
+        db = os.getenv("AZURE_SQL_DB", os.getenv("AZURE_SQL_DATABASE"))
+        user = os.getenv("AZURE_SQL_USER")
+        pwd = os.getenv("AZURE_SQL_PASS")
+        driver = os.getenv("AZURE_SQL_DRIVER", "ODBC Driver 18 for SQL Server")
+        conn_str = (
+            f"DRIVER={{{driver}}};SERVER={server};DATABASE={db};"
+            f"UID={user};PWD={pwd};Encrypt=yes;TrustServerCertificate=no;"
+        )
+    from sqlalchemy import create_engine as _ce
+    return _ce(f"mssql+pyodbc:///?odbc_connect={_qp(conn_str)}", pool_pre_ping=True)
+
+
+def _populate_azure_task():
+    """Background task: read each table from SQLite and bulk-insert into Azure."""
+    import sqlite3
+    sqlite_path = os.getenv("DB_PATH", os.path.join(project_root, "src", "collector", "trends.db"))
+    try:
+        azure_engine = _get_azure_engine()
+    except Exception as e:
+        logger.error("Cannot create Azure engine: %s", e)
+        return
+
+    sqlite_conn = sqlite3.connect(sqlite_path)
+    sqlite_conn.row_factory = sqlite3.Row
+
+    for table in _SQLITE_TO_AZURE_TABLES:
+        try:
+            rows = sqlite_conn.execute(f"SELECT * FROM {table}").fetchall()
+            if not rows:
+                logger.info("Table %s is empty in SQLite — skipping.", table)
+                continue
+
+            cols = rows[0].keys()
+            # Skip auto-increment 'id' column for tables that have it
+            insert_cols = [c for c in cols if c != "id"]
+            col_list = ", ".join(insert_cols)
+            val_list = ", ".join(f":{c}" for c in insert_cols)
+
+            with azure_engine.connect() as az_conn:
+                batch_size = 500
+                inserted = 0
+                for i in range(0, len(rows), batch_size):
+                    batch = rows[i:i + batch_size]
+                    params_list = [{c: row[c] for c in insert_cols} for row in batch]
+                    try:
+                        az_conn.execute(
+                            text(f"INSERT INTO dbo.{table} ({col_list}) VALUES ({val_list})"),
+                            params_list,
+                        )
+                        az_conn.commit()
+                        inserted += len(batch)
+                    except Exception as e:
+                        logger.warning("Batch insert into %s failed (batch %d): %s", table, i // batch_size, e)
+                        az_conn.rollback()
+                        # Try row-by-row for this batch
+                        for params in params_list:
+                            try:
+                                az_conn.execute(
+                                    text(f"INSERT INTO dbo.{table} ({col_list}) VALUES ({val_list})"),
+                                    params,
+                                )
+                                az_conn.commit()
+                                inserted += 1
+                            except Exception:
+                                az_conn.rollback()
+                logger.info("Populated dbo.%s: %d rows inserted.", table, inserted)
+        except Exception as e:
+            logger.error("Failed to populate table %s: %s", table, e)
+
+    sqlite_conn.close()
+    logger.info("Azure DB population complete.")
 
 
 if __name__ == "__main__":

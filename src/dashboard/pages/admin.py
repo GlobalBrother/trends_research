@@ -12,6 +12,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from src.dashboard.utils.api_client import APIClient
+from src.dashboard.tabs import _apply_modern_layout, GRADIENT_BLUE, GRADIENT_TEAL
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -70,6 +71,17 @@ SCRAPERS = [
 def render_admin_sidebar(api):
     with st.sidebar:
         st.subheader("🛠️ Admin Controls")
+
+        # App switcher
+        st.markdown(
+            '<div style="font-size:0.75rem;font-weight:600;color:#8b949e;'
+            'text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.4rem;">'
+            '🔀 Switch App</div>',
+            unsafe_allow_html=True,
+        )
+        st.page_link("app.py", label="🚀 Trends Research", use_container_width=True)
+        st.page_link("pages/ads_insight.py", label="📢 Ads Insight", use_container_width=True)
+        st.divider()
 
         if api.direct:
             st.success("⚡ Direct mode", icon="⚡")
@@ -196,8 +208,9 @@ def admin_main():
         st.metric("📊 Session Scrapes", str(len(st.session_state.scrape_history)))
 
     # --- Tabs ---
-    tab_scrape, tab_batch, tab_ads, tab_history, tab_errors, tab_tokens, tab_users = st.tabs([
-        "🚀 Scrape by Platform", "⚡ Batch Scrape", "📢 Ads Scraper", "📋 History", "⚠️ Errors", "🪙 Token Usage", "👥 Users"
+    tab_scrape, tab_batch, tab_ads, tab_niches, tab_history, tab_errors, tab_tokens, tab_users, tab_azure = st.tabs([
+        "🚀 Scrape by Platform", "⚡ Batch Scrape", "📢 Ads Scraper", "🎯 Niches & Keywords",
+        "📋 History", "⚠️ Errors", "🪙 Token Usage", "👥 Users", "☁️ Azure DB"
     ])
 
     # ---- Tab 1: Per-platform scraping ----
@@ -307,15 +320,128 @@ def admin_main():
             display_cols = [c for c in ["brand_name", "title", "platform", "display_format",
                                          "performance_score", "days_active", "cta_type", "share_url",
                                          "search_keyword"] if c in ads_df.columns]
+            search_ads = st.text_input("🔍 Search ads…", key="search_admin_ads",
+                                        placeholder="Type to filter…", label_visibility="collapsed")
+            show_df = ads_df[display_cols] if display_cols else ads_df
+            if search_ads:
+                mask = show_df.apply(
+                    lambda row: row.astype(str).str.contains(search_ads, case=False, na=False).any(), axis=1)
+                show_df = show_df[mask]
             st.dataframe(
-                ads_df[display_cols] if display_cols else ads_df,
-                hide_index=True, width="stretch", height=350,
+                show_df,
+                hide_index=True, use_container_width=True, height=350,
                 column_config={
                     "share_url": st.column_config.LinkColumn("Ad Link"),
                     "performance_score": "Score",
                     "days_active": "Days Active",
                 },
             )
+
+    # ---- Tab: Niches & Keywords ----
+    with tab_niches:
+        st.subheader("🎯 Manage Niches & Keywords")
+        st.caption("Add, remove, and edit niches and their associated keywords dynamically.")
+
+        niches_list = api.get_niches()
+
+        # --- Add new niche ---
+        with st.container(border=True):
+            st.markdown("**➕ Add New Niche**")
+            n_col1, n_col2 = st.columns([2, 3])
+            with n_col1:
+                new_niche_name = st.text_input("Niche Name", placeholder="e.g. Fitness", key="admin_new_niche_name")
+            with n_col2:
+                new_niche_kws = st.text_input(
+                    "Keywords (comma-separated)",
+                    placeholder="e.g. workout, gym, exercise, bodybuilding",
+                    key="admin_new_niche_kws",
+                )
+            if st.button("➕ Create Niche", key="admin_create_niche", type="primary"):
+                if not new_niche_name.strip():
+                    st.warning("Enter a niche name.")
+                else:
+                    kws = [k.strip() for k in new_niche_kws.split(",") if k.strip()] if new_niche_kws.strip() else []
+                    res = api.create_niche(new_niche_name.strip(), kws if kws else None)
+                    if "error" in res:
+                        st.error(res["error"])
+                    else:
+                        st.toast(res.get("message", "Niche created!"), icon="✅")
+                        st.rerun()
+
+        st.divider()
+
+        # --- Browse / edit existing niches ---
+        if not niches_list:
+            st.info("No niches defined yet. Create one above.")
+        else:
+            selected_niche = st.selectbox(
+                "Select a niche to manage",
+                niches_list,
+                key="admin_manage_niche_select",
+            )
+
+            if selected_niche:
+                kws = api.get_niche_keywords(selected_niche)
+
+                st.markdown(f"**Keywords for _{selected_niche}_** ({len(kws)})")
+
+                # Display keywords as removable chips
+                if kws:
+                    cols_per_row = 4
+                    for row_start in range(0, len(kws), cols_per_row):
+                        row_kws = kws[row_start:row_start + cols_per_row]
+                        cols = st.columns(cols_per_row)
+                        for ci, kw in enumerate(row_kws):
+                            with cols[ci]:
+                                with st.container(border=True):
+                                    kw_col, btn_col = st.columns([3, 1])
+                                    with kw_col:
+                                        st.markdown(f"`{kw}`")
+                                    with btn_col:
+                                        if st.button("🗑️", key=f"del_kw_{selected_niche}_{kw}",
+                                                     help=f"Remove '{kw}'"):
+                                            res = api.delete_keyword(selected_niche, kw)
+                                            if "error" in res:
+                                                st.error(res["error"])
+                                            else:
+                                                st.toast(f"Keyword '{kw}' removed", icon="🗑️")
+                                                st.rerun()
+                else:
+                    st.info("No keywords for this niche.")
+
+                # Add keywords to existing niche
+                st.markdown("**Add Keywords**")
+                add_kw_col1, add_kw_col2 = st.columns([4, 1])
+                with add_kw_col1:
+                    add_kws_input = st.text_input(
+                        "New keywords (comma-separated)",
+                        placeholder="e.g. cardio, HIIT, strength training",
+                        key=f"admin_add_kws_{selected_niche}",
+                    )
+                with add_kw_col2:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.button("➕ Add", key=f"admin_add_kws_btn_{selected_niche}"):
+                        new_kws = [k.strip() for k in add_kws_input.split(",") if k.strip()]
+                        if not new_kws:
+                            st.warning("Enter at least one keyword.")
+                        else:
+                            res = api.add_keywords(selected_niche, new_kws)
+                            if "error" in res:
+                                st.error(res["error"])
+                            else:
+                                st.toast(res.get("message", "Keywords added!"), icon="✅")
+                                st.rerun()
+
+                # Delete entire niche
+                st.divider()
+                if st.button(f"🗑️ Delete Entire Niche '{selected_niche}'",
+                             key=f"admin_del_niche_{selected_niche}", type="primary"):
+                    res = api.delete_niche(selected_niche)
+                    if "error" in res:
+                        st.error(res["error"])
+                    else:
+                        st.toast(f"Niche '{selected_niche}' deleted!", icon="🗑️")
+                        st.rerun()
 
     # ---- Tab 2: Batch scrape ----
     with tab_batch:
@@ -388,7 +514,7 @@ def admin_main():
             hist_df = pd.DataFrame(st.session_state.scrape_history)
             st.dataframe(
                 hist_df[["time", "scraper", "niche", "geo", "status"]],
-                hide_index=True, width='stretch', height=400,
+                hide_index=True, use_container_width=True, height=400,
                 column_config={
                     "time": "Time", "scraper": "Scraper",
                     "niche": "Niche", "geo": "Region", "status": "Status",
@@ -430,7 +556,7 @@ def admin_main():
                     "url": st.column_config.LinkColumn("Failed URL"),
                     "status": "HTTP Status", "extracted_at": "Timestamp"
                 },
-                width='stretch', hide_index=True, height=400,
+                use_container_width=True, hide_index=True, height=400,
             )
 
 
@@ -445,46 +571,74 @@ def admin_main():
         usage = api.get_token_usage()
         summary = usage.get("summary", [])
         detail = usage.get("data", [])
+        provider_summary = usage.get("provider_summary", [])
 
+        # --- Provider-level KPIs (ensembledata & gethookedai) ---
+        if provider_summary:
+            st.markdown("**Usage by Provider**")
+            prov_df = pd.DataFrame(provider_summary)
+            prov_df.columns = ["Provider", "Total Units", "Requests"]
+            prov_df["Total Units"] = prov_df["Total Units"].round(2)
+
+            cols = st.columns(len(prov_df) + 1)
+            total_units = prov_df["Total Units"].sum()
+            total_reqs = prov_df["Requests"].sum()
+            with cols[0]:
+                st.metric("🪙 Total Units", f"{total_units:,.1f}")
+            for i, row in prov_df.iterrows():
+                with cols[i + 1]:
+                    icon = "🔗" if row["Provider"] == "ensembledata" else "📢"
+                    st.metric(f"{icon} {row['Provider']}", f"{row['Total Units']:,.1f} units")
+
+            st.dataframe(prov_df, hide_index=True, use_container_width=True)
+
+            # Provider bar chart
+            if len(prov_df) > 1:
+                fig_prov = px.bar(prov_df, x="Provider", y="Total Units", color="Provider",
+                                  title="Units Consumed by Provider")
+                _apply_modern_layout(fig_prov, showlegend=False)
+                st.plotly_chart(fig_prov, use_container_width=True)
+
+        # --- Platform breakdown ---
         if summary:
-            st.markdown("**Summary by Platform**")
+            st.divider()
+            st.markdown("**Breakdown by Platform**")
             sum_df = pd.DataFrame(summary)
-            sum_df.columns = ["Platform", "Total Units", "Requests"]
+            if "provider" in sum_df.columns:
+                sum_df.columns = ["Platform", "Total Units", "Requests", "Provider"]
+            else:
+                sum_df.columns = ["Platform", "Total Units", "Requests"]
             sum_df["Total Units"] = sum_df["Total Units"].round(2)
 
-            # KPI row
-            total_units = sum_df["Total Units"].sum()
-            total_reqs = sum_df["Requests"].sum()
-            k1, k2, k3 = st.columns(3)
-            with k1:
-                st.metric("🪙 Total Units", f"{total_units:,.1f}")
-            with k2:
-                st.metric("📡 Total Requests", f"{int(total_reqs):,}")
-            with k3:
-                st.metric("📊 Platforms", str(len(sum_df)))
-
-            st.dataframe(sum_df, hide_index=True, width="stretch")
+            st.dataframe(sum_df, hide_index=True, use_container_width=True)
 
             # Bar chart
             if len(sum_df) > 1:
                 fig = px.bar(sum_df, x="Platform", y="Total Units", color="Platform",
                              title="Units Consumed by Platform")
-                fig.update_layout(showlegend=False, margin=dict(t=40, b=10, l=10, r=10))
+                _apply_modern_layout(fig, showlegend=False)
                 st.plotly_chart(fig, use_container_width=True)
-        else:
+        elif not provider_summary:
             st.info("No token usage recorded yet. Run some scrapes first.")
 
         if detail:
             st.divider()
             st.markdown("**Recent Requests (last 1000)**")
             det_df = pd.DataFrame(detail)
+            search_tokens = st.text_input("🔍 Search requests…", key="search_admin_tokens",
+                                           placeholder="Type to filter…", label_visibility="collapsed")
+            show_det = det_df
+            if search_tokens:
+                mask = det_df.apply(
+                    lambda row: row.astype(str).str.contains(search_tokens, case=False, na=False).any(), axis=1)
+                show_det = det_df[mask]
             st.dataframe(
-                det_df,
-                hide_index=True, width="stretch", height=400,
+                show_det,
+                hide_index=True, use_container_width=True, height=400,
                 column_config={
-                    "platform": "Platform", "keyword": "Keyword",
-                    "units_charged": "Units", "geo": "Region",
-                    "created_at": "Timestamp",
+                    "provider": "Provider", "platform": "Platform",
+                    "keyword": "Keyword", "units_charged": "Units",
+                    "geo": "Region", "created_at": "Timestamp",
                 },
             )
 
@@ -496,7 +650,7 @@ def admin_main():
         if users:
             st.dataframe(
                 pd.DataFrame(users),
-                hide_index=True, width="stretch", height=300,
+                hide_index=True, use_container_width=True, height=300,
                 column_config={"email": "Email", "role": "Role", "created_at": "Added"},
             )
         else:
@@ -535,6 +689,58 @@ def admin_main():
                     else:
                         st.toast(f"User {del_email} removed!", icon="🗑️")
                         st.rerun()
+
+
+    # ---- Tab: Azure DB ----
+    with tab_azure:
+        st.subheader("☁️ Azure SQL Server")
+        st.caption("Manage the Azure SQL database: create schema, populate data, and check status.")
+
+        az_col1, az_col2, az_col3 = st.columns(3)
+
+        with az_col1:
+            with st.container(border=True):
+                st.markdown("**🔍 Connection Status**")
+                if st.button("Check Connection", key="admin_azure_status", width="stretch"):
+                    with st.spinner("Checking Azure SQL connection…"):
+                        result = api._request("GET", "/admin/azure/status")
+                    if result and result.get("connected"):
+                        st.success("✅ Connected to Azure SQL")
+                        tables = result.get("tables", {})
+                        if tables:
+                            rows_data = [{"Table": t, "Rows": str(c)} for t, c in tables.items()]
+                            st.dataframe(pd.DataFrame(rows_data), hide_index=True, use_container_width=True)
+                    elif result:
+                        st.error(f"❌ Connection failed: {result.get('error', 'Unknown error')}")
+                    else:
+                        st.error("❌ Could not reach API")
+
+        with az_col2:
+            with st.container(border=True):
+                st.markdown("**🏗️ Setup Schema**")
+                st.caption("Create all tables and indexes in Azure SQL (idempotent).")
+                if st.button("🏗️ Run Schema Setup", key="admin_azure_schema", width="stretch", type="primary"):
+                    with st.spinner("Running schema setup…"):
+                        result = api._request("POST", "/admin/azure/setup_schema")
+                    if result and "message" in result:
+                        st.toast("✅ Schema setup started!", icon="🏗️")
+                        st.info(result["message"])
+                    else:
+                        st.error("❌ Schema setup failed")
+
+        with az_col3:
+            with st.container(border=True):
+                st.markdown("**📤 Populate Data**")
+                st.caption("Copy all data from local SQLite to Azure SQL.")
+                st.warning("⚠️ This may take a while for large datasets.")
+                if st.button("📤 Populate Azure DB", key="admin_azure_populate", width="stretch", type="primary"):
+                    with st.spinner("Starting data population…"):
+                        result = api._request("POST", "/admin/azure/populate")
+                    if result and "message" in result:
+                        st.toast("✅ Population started!", icon="📤")
+                        st.info(result["message"])
+                    else:
+                        st.error("❌ Population failed")
 
 
 admin_main()

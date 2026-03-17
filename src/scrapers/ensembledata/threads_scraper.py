@@ -7,18 +7,26 @@ as well as the shared ``trends`` table for cross-platform dashboards.
 import json
 import logging
 import os
-import sqlite3
 import sys
 from datetime import datetime
 
 from dotenv import load_dotenv
 from ensembledata.api import EDClient
 from ensembledata.api.errors import EDError
+from sqlalchemy import text as sa_text
 
 logger = logging.getLogger(__name__)
 
 sys.path.insert(0, os.path.dirname(__file__))
-from db_helper import save_trend, save_error, save_token_usage, DB_PATH
+from db_helper import save_trend, save_error, save_token_usage
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+from src.db.connection import get_engine, is_sqlite
+from src.db.sql_compat import tbl
+
+_engine = get_engine()
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".env"))
 
@@ -62,9 +70,6 @@ CREATE TABLE IF NOT EXISTS threads_posts (
     -- engagement helpers (computed)
     engagement_total    INTEGER DEFAULT 0,
 
-    -- raw JSON blob
-    raw_data            TEXT,
-
     -- metadata
     extracted_at        TEXT,
     updated_at          TEXT
@@ -80,17 +85,8 @@ _CREATE_INDEXES = [
 
 
 def _ensure_table():
-    """Create the threads_posts table and indexes if they don't exist."""
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute(_CREATE_THREADS_POSTS)
-        for idx in _CREATE_INDEXES:
-            conn.execute(idx)
-        conn.commit()
-        logger.debug("threads_posts table ensured.")
-    finally:
-        conn.close()
+    """Tables are pre-created in Azure SQL via migration schema."""
+    pass
 
 
 def _save_threads_post(inner: dict, keyword: str, geo: str):
@@ -148,43 +144,74 @@ def _save_threads_post(inner: dict, keyword: str, geo: str):
 
     now = datetime.now().isoformat()
 
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("""
-            INSERT INTO threads_posts (
-                post_code, post_pk, search_keyword, geo,
-                caption, url, taken_at, media_type,
-                username, user_pk, full_name, follower_count, is_verified, profile_pic_url,
-                like_count, reply_count, repost_count, quote_count, share_count,
-                engagement_total, raw_data,
-                extracted_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(post_code) DO UPDATE SET
-                like_count=excluded.like_count,
-                reply_count=excluded.reply_count,
-                repost_count=excluded.repost_count,
-                quote_count=excluded.quote_count,
-                share_count=excluded.share_count,
-                engagement_total=excluded.engagement_total,
-                follower_count=excluded.follower_count,
-                raw_data=excluded.raw_data,
-                updated_at=excluded.updated_at
-        """, (
-            code, post_pk, keyword, geo,
-            caption, url, taken_at, media_type,
-            username, user_pk, full_name, follower_count, is_verified, profile_pic,
-            likes, replies, repost_count, quote_count, share_count,
-            engagement, json.dumps(inner, default=str),
-            now, now,
-        ))
-        conn.commit()
-        logger.debug("Saved threads_post code=%s", code)
-    except Exception:
-        logger.error("Failed to save threads_post code=%s", code, exc_info=True)
-        raise
-    finally:
-        conn.close()
+    params = {
+        "post_code": code, "post_pk": post_pk, "keyword": keyword, "geo": geo,
+        "caption": caption, "url": url, "taken_at": taken_at, "media_type": media_type,
+        "username": username, "user_pk": user_pk, "full_name": full_name,
+        "follower_count": follower_count, "is_verified": is_verified, "profile_pic_url": profile_pic,
+        "like_count": likes, "reply_count": replies, "repost_count": repost_count,
+        "quote_count": quote_count, "share_count": share_count,
+        "engagement_total": engagement,
+        "extracted_at": now, "updated_at": now,
+    }
+
+    with _engine.connect() as conn:
+        try:
+            if is_sqlite():
+                existing = conn.execute(sa_text(f"SELECT 1 FROM {tbl('threads_posts')} WHERE post_code = :post_code"), {"post_code": code}).fetchone()
+                if existing:
+                    conn.execute(sa_text(
+                        f"UPDATE {tbl('threads_posts')} SET "
+                        "like_count = :like_count, reply_count = :reply_count, "
+                        "repost_count = :repost_count, quote_count = :quote_count, "
+                        "share_count = :share_count, engagement_total = :engagement_total, "
+                        "follower_count = :follower_count, updated_at = :updated_at "
+                        "WHERE post_code = :post_code"
+                    ), params)
+                else:
+                    conn.execute(sa_text(
+                        f"INSERT INTO {tbl('threads_posts')} ("
+                        "post_code, post_pk, search_keyword, geo, "
+                        "caption, url, taken_at, media_type, "
+                        "username, user_pk, full_name, follower_count, is_verified, profile_pic_url, "
+                        "like_count, reply_count, repost_count, quote_count, share_count, "
+                        "engagement_total, extracted_at, updated_at"
+                        ") VALUES ("
+                        ":post_code, :post_pk, :keyword, :geo, "
+                        ":caption, :url, :taken_at, :media_type, "
+                        ":username, :user_pk, :full_name, :follower_count, :is_verified, :profile_pic_url, "
+                        ":like_count, :reply_count, :repost_count, :quote_count, :share_count, "
+                        ":engagement_total, :extracted_at, :updated_at)"
+                    ), params)
+            else:
+                conn.execute(sa_text(f"""
+                    MERGE {tbl('threads_posts')} AS target
+                    USING (SELECT :post_code AS post_code) AS source
+                    ON target.post_code = source.post_code
+                    WHEN MATCHED THEN UPDATE SET
+                        like_count = :like_count, reply_count = :reply_count,
+                        repost_count = :repost_count, quote_count = :quote_count,
+                        share_count = :share_count, engagement_total = :engagement_total,
+                        follower_count = :follower_count, updated_at = :updated_at
+                    WHEN NOT MATCHED THEN INSERT (
+                        post_code, post_pk, search_keyword, geo,
+                        caption, url, taken_at, media_type,
+                        username, user_pk, full_name, follower_count, is_verified, profile_pic_url,
+                        like_count, reply_count, repost_count, quote_count, share_count,
+                        engagement_total, extracted_at, updated_at
+                    ) VALUES (
+                        :post_code, :post_pk, :keyword, :geo,
+                        :caption, :url, :taken_at, :media_type,
+                        :username, :user_pk, :full_name, :follower_count, :is_verified, :profile_pic_url,
+                        :like_count, :reply_count, :repost_count, :quote_count, :share_count,
+                        :engagement_total, :extracted_at, :updated_at
+                    );
+                """), params)
+            conn.commit()
+            logger.debug("Saved threads_post code=%s", code)
+        except Exception:
+            logger.error("Failed to save threads_post code=%s", code, exc_info=True)
+            raise
 
 
 # ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from src.dashboard.utils.api_client import APIClient
+from src.dashboard.tabs import _apply_modern_layout, GRADIENT_BLUE, GRADIENT_TEAL, GRADIENT_PURPLE, GRADIENT_SUNSET
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -42,6 +43,18 @@ def format_number(val):
 def render_sidebar(api):
     with st.sidebar:
         st.subheader("📢 Ads Insight")
+
+        # App switcher for admin users
+        if st.session_state.get("user_role") == "admin":
+            st.markdown(
+                '<div style="font-size:0.75rem;font-weight:600;color:#8b949e;'
+                'text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.4rem;">'
+                '🔀 Switch App</div>',
+                unsafe_allow_html=True,
+            )
+            st.page_link("app.py", label="🚀 Trends Research", use_container_width=True)
+            st.page_link("pages/admin.py", label="🛠️ Admin Panel", use_container_width=True)
+            st.divider()
 
         limit = st.slider("Max ads to display", 50, 2000, 500, step=50, key="ads_limit")
 
@@ -152,9 +165,16 @@ def ads_main():
             "start_date", "search_keyword",
         ] if c in filtered.columns]
 
+        search_ads_table = st.text_input("🔍 Search ads…", key="search_ads_table",
+                                           placeholder="Type to filter rows…", label_visibility="collapsed")
+        show_filtered = filtered[display_cols] if display_cols else filtered
+        if search_ads_table:
+            mask = show_filtered.apply(
+                lambda row: row.astype(str).str.contains(search_ads_table, case=False, na=False).any(), axis=1)
+            show_filtered = show_filtered[mask]
         st.dataframe(
-            filtered[display_cols] if display_cols else filtered,
-            hide_index=True, width="stretch", height=500,
+            show_filtered,
+            hide_index=True, use_container_width=True, height=500,
             column_config={
                 "share_url": st.column_config.LinkColumn("Ad Link"),
                 "landing_page": st.column_config.LinkColumn("Landing Page"),
@@ -182,10 +202,11 @@ def ads_main():
                 st.markdown("**Ads by Platform**")
                 plat_counts = filtered["platform"].value_counts().reset_index()
                 plat_counts.columns = ["Platform", "Count"]
-                fig = px.pie(plat_counts, names="Platform", values="Count", hole=0.4)
-                fig.update_layout(margin=dict(t=20, b=10, l=10, r=10),
-                                  paper_bgcolor="rgba(0,0,0,0)")
-                st.plotly_chart(fig, width="stretch")
+                fig = px.pie(plat_counts, names="Platform", values="Count", hole=0.45)
+                _apply_modern_layout(fig)
+                fig.update_traces(textinfo="percent+label", textfont_size=11,
+                                  marker=dict(line=dict(color="#0e1117", width=1.5)))
+                st.plotly_chart(fig, use_container_width=True)
 
         with chart_cols[1]:
             if "display_format" in filtered.columns:
@@ -193,10 +214,8 @@ def ads_main():
                 fmt_counts = filtered["display_format"].value_counts().reset_index()
                 fmt_counts.columns = ["Format", "Count"]
                 fig = px.bar(fmt_counts, x="Format", y="Count", color="Format")
-                fig.update_layout(margin=dict(t=20, b=10, l=10, r=10),
-                                  paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                                  showlegend=False)
-                st.plotly_chart(fig, width="stretch")
+                _apply_modern_layout(fig, showlegend=False, bargap=0.15)
+                st.plotly_chart(fig, use_container_width=True)
 
         chart_cols2 = st.columns(2)
 
@@ -204,11 +223,9 @@ def ads_main():
             if "performance_score" in filtered.columns and filtered["performance_score"].notna().any():
                 st.markdown("**Performance Score Distribution**")
                 fig = px.histogram(filtered, x="performance_score", nbins=20,
-                                   color_discrete_sequence=["#636EFA"])
-                fig.update_layout(margin=dict(t=20, b=10, l=10, r=10),
-                                  paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                                  xaxis_title="Score", yaxis_title="Count")
-                st.plotly_chart(fig, width="stretch")
+                                   color_discrete_sequence=["#58a6ff"])
+                _apply_modern_layout(fig, xaxis_title="Score", yaxis_title="Count")
+                st.plotly_chart(fig, use_container_width=True)
 
         with chart_cols2[1]:
             if "days_active" in filtered.columns and "performance_score" in filtered.columns:
@@ -216,21 +233,18 @@ def ads_main():
                 fig = px.scatter(filtered, x="days_active", y="performance_score",
                                  color="platform" if "platform" in filtered.columns else None,
                                  hover_name="brand_name" if "brand_name" in filtered.columns else None,
-                                 opacity=0.6)
-                fig.update_layout(margin=dict(t=20, b=10, l=10, r=10),
-                                  paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-                st.plotly_chart(fig, width="stretch")
+                                 opacity=0.7)
+                _apply_modern_layout(fig)
+                st.plotly_chart(fig, use_container_width=True)
 
         if "cta_type" in filtered.columns:
             st.markdown("**CTA Type Distribution**")
             cta_counts = filtered["cta_type"].value_counts().head(15).reset_index()
             cta_counts.columns = ["CTA Type", "Count"]
             fig = px.bar(cta_counts, x="Count", y="CTA Type", orientation="h",
-                         color="Count", color_continuous_scale="tealgrn")
-            fig.update_layout(margin=dict(t=20, b=10, l=10, r=10),
-                              paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                              yaxis=dict(autorange="reversed"))
-            st.plotly_chart(fig, width="stretch")
+                         color="Count", color_continuous_scale=GRADIENT_TEAL)
+            _apply_modern_layout(fig, yaxis=dict(autorange="reversed"))
+            st.plotly_chart(fig, use_container_width=True)
 
     # ---- Brands ----
     with tab_brands:
@@ -248,9 +262,16 @@ def ads_main():
 
             st.metric("🏢 Total Brands", format_number(len(brand_stats)))
 
+            search_brands = st.text_input("🔍 Search brands…", key="search_ads_brands",
+                                            placeholder="Type to filter…", label_visibility="collapsed")
+            show_brands = brand_stats
+            if search_brands:
+                mask = brand_stats.apply(
+                    lambda row: row.astype(str).str.contains(search_brands, case=False, na=False).any(), axis=1)
+                show_brands = brand_stats[mask]
             st.dataframe(
-                brand_stats,
-                hide_index=True, width="stretch", height=450,
+                show_brands,
+                hide_index=True, use_container_width=True, height=450,
             )
 
             # Top brands chart
@@ -258,11 +279,9 @@ def ads_main():
             if len(top_brands) > 1:
                 st.markdown("**Top Brands by Ad Count**")
                 fig = px.bar(top_brands, x="Ads", y="Brand", orientation="h",
-                             color="Avg Score", color_continuous_scale="viridis")
-                fig.update_layout(margin=dict(t=20, b=10, l=10, r=10),
-                                  paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                                  yaxis=dict(autorange="reversed"))
-                st.plotly_chart(fig, width="stretch")
+                             color="Avg Score", color_continuous_scale=GRADIENT_BLUE)
+                _apply_modern_layout(fig, yaxis=dict(autorange="reversed"))
+                st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No brand data available.")
 
@@ -284,25 +303,30 @@ def ads_main():
                 dcols = st.columns(2)
                 with dcols[0]:
                     st.markdown("**Top Domains**")
-                    st.dataframe(domain_counts, hide_index=True, width="stretch", height=400)
+                    st.dataframe(domain_counts, hide_index=True, use_container_width=True, height=400)
                 with dcols[1]:
                     if len(domain_counts) > 1:
                         fig = px.bar(domain_counts, x="Ads", y="Domain", orientation="h",
-                                     color="Ads", color_continuous_scale="blues")
-                        fig.update_layout(margin=dict(t=20, b=10, l=10, r=10),
-                                          paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                                          yaxis=dict(autorange="reversed"))
-                        st.plotly_chart(fig, width="stretch")
+                                     color="Ads", color_continuous_scale=GRADIENT_BLUE)
+                        _apply_modern_layout(fig, yaxis=dict(autorange="reversed"))
+                        st.plotly_chart(fig, use_container_width=True)
 
                 # Landing page table
                 st.markdown("**All Landing Pages**")
                 lp_display = ["brand_name", "landing_page", "title", "performance_score", "days_active", "platform"]
                 lp_display = [c for c in lp_display if c in lp.columns]
+                search_lp = st.text_input("🔍 Search landing pages…", key="search_ads_lp",
+                                          placeholder="Type to filter…", label_visibility="collapsed")
+                lp_show = lp[lp_display].drop_duplicates(subset=["landing_page"]).sort_values(
+                    "performance_score", ascending=False, na_position="last"
+                ) if "performance_score" in lp.columns else lp[lp_display].drop_duplicates(subset=["landing_page"])
+                if search_lp:
+                    mask = lp_show.apply(
+                        lambda row: row.astype(str).str.contains(search_lp, case=False, na=False).any(), axis=1)
+                    lp_show = lp_show[mask]
                 st.dataframe(
-                    lp[lp_display].drop_duplicates(subset=["landing_page"]).sort_values(
-                        "performance_score", ascending=False, na_position="last"
-                    ) if "performance_score" in lp.columns else lp[lp_display].drop_duplicates(subset=["landing_page"]),
-                    hide_index=True, width="stretch", height=500,
+                    lp_show,
+                    hide_index=True, use_container_width=True, height=500,
                     column_config={
                         "landing_page": st.column_config.LinkColumn("Landing Page"),
                         "brand_name": "Brand",
@@ -325,10 +349,11 @@ def ads_main():
                     st.markdown("**CTA Types**")
                     cta_type_counts = cta_df["cta_type"].value_counts().reset_index()
                     cta_type_counts.columns = ["CTA Type", "Count"]
-                    fig = px.pie(cta_type_counts, names="CTA Type", values="Count", hole=0.4)
-                    fig.update_layout(margin=dict(t=20, b=10, l=10, r=10),
-                                      paper_bgcolor="rgba(0,0,0,0)")
-                    st.plotly_chart(fig, width="stretch")
+                    fig = px.pie(cta_type_counts, names="CTA Type", values="Count", hole=0.45)
+                    _apply_modern_layout(fig)
+                    fig.update_traces(textinfo="percent+label", textfont_size=11,
+                                      marker=dict(line=dict(color="#0e1117", width=1.5)))
+                    st.plotly_chart(fig, use_container_width=True)
 
             with cta_cols[1]:
                 if "cta_text" in cta_df.columns:
@@ -336,11 +361,9 @@ def ads_main():
                     cta_text_counts = cta_df["cta_text"].value_counts().head(20).reset_index()
                     cta_text_counts.columns = ["CTA Text", "Count"]
                     fig = px.bar(cta_text_counts, x="Count", y="CTA Text", orientation="h",
-                                 color="Count", color_continuous_scale="tealgrn")
-                    fig.update_layout(margin=dict(t=20, b=10, l=10, r=10),
-                                      paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                                      yaxis=dict(autorange="reversed"))
-                    st.plotly_chart(fig, width="stretch")
+                                 color="Count", color_continuous_scale=GRADIENT_TEAL)
+                    _apply_modern_layout(fig, yaxis=dict(autorange="reversed"))
+                    st.plotly_chart(fig, use_container_width=True)
 
             # CTA performance
             if "cta_type" in cta_df.columns and "performance_score" in cta_df.columns:
@@ -349,14 +372,14 @@ def ads_main():
                 cta_perf.columns = ["CTA Type", "Avg Score", "Ad Count"]
                 cta_perf["Avg Score"] = cta_perf["Avg Score"].round(1)
                 cta_perf = cta_perf.sort_values("Avg Score", ascending=False)
-                st.dataframe(cta_perf, hide_index=True, width="stretch")
+                st.dataframe(cta_perf, hide_index=True, use_container_width=True)
 
             # CTA by brand
             if "cta_type" in cta_df.columns and "brand_name" in cta_df.columns:
                 st.markdown("**CTA Types by Brand**")
                 cta_brand = cta_df.groupby(["brand_name", "cta_type"]).size().reset_index(name="Count")
                 cta_brand = cta_brand.sort_values("Count", ascending=False)
-                st.dataframe(cta_brand, hide_index=True, width="stretch", height=400)
+                st.dataframe(cta_brand, hide_index=True, use_container_width=True, height=400)
         else:
             st.info("No CTA data available.")
 
@@ -386,9 +409,8 @@ def ads_main():
                     fig = px.scatter(copy_df[copy_df["body_length"] > 0], x="body_length", y="performance_score",
                                      color="brand_name" if "brand_name" in copy_df.columns else None,
                                      opacity=0.6, labels={"body_length": "Body Length (chars)", "performance_score": "Score"})
-                    fig.update_layout(margin=dict(t=20, b=10, l=10, r=10),
-                                      paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-                    st.plotly_chart(fig, width="stretch")
+                    _apply_modern_layout(fig)
+                    st.plotly_chart(fig, use_container_width=True)
 
             # Top performing ad copies
             if "performance_score" in copy_df.columns:
@@ -396,7 +418,7 @@ def ads_main():
                 top_copy_cols = [c for c in ["brand_name", "title", "body", "performance_score", "days_active", "cta_text", "share_url"] if c in copy_df.columns]
                 top_copies = copy_df.nlargest(25, "performance_score")[top_copy_cols]
                 st.dataframe(
-                    top_copies, hide_index=True, width="stretch", height=500,
+                    top_copies, hide_index=True, use_container_width=True, height=500,
                     column_config={
                         "share_url": st.column_config.LinkColumn("Ad Link"),
                         "brand_name": "Brand",
@@ -423,10 +445,11 @@ def ads_main():
                     st.markdown("**Gender Audience Distribution**")
                     gender_counts = aud_df["gender_audience"].value_counts().reset_index()
                     gender_counts.columns = ["Gender", "Count"]
-                    fig = px.pie(gender_counts, names="Gender", values="Count", hole=0.4)
-                    fig.update_layout(margin=dict(t=20, b=10, l=10, r=10),
-                                      paper_bgcolor="rgba(0,0,0,0)")
-                    st.plotly_chart(fig, width="stretch")
+                    fig = px.pie(gender_counts, names="Gender", values="Count", hole=0.45)
+                    _apply_modern_layout(fig)
+                    fig.update_traces(textinfo="percent+label", textfont_size=11,
+                                      marker=dict(line=dict(color="#0e1117", width=1.5)))
+                    st.plotly_chart(fig, use_container_width=True)
 
             with acols[1]:
                 if has_age:
@@ -437,10 +460,9 @@ def ads_main():
                         age_counts = age_data["range"].value_counts().reset_index()
                         age_counts.columns = ["Age Range", "Count"]
                         fig = px.bar(age_counts, x="Age Range", y="Count", color="Count",
-                                     color_continuous_scale="viridis")
-                        fig.update_layout(margin=dict(t=20, b=10, l=10, r=10),
-                                          paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-                        st.plotly_chart(fig, width="stretch")
+                                     color_continuous_scale=GRADIENT_PURPLE)
+                        _apply_modern_layout(fig, bargap=0.15)
+                        st.plotly_chart(fig, use_container_width=True)
 
             if has_spend:
                 st.markdown("**Ad Spend Range Distribution**")
@@ -448,10 +470,9 @@ def ads_main():
                 spend_counts = aud_df[spend_col].value_counts().reset_index()
                 spend_counts.columns = ["Spend Range", "Count"]
                 fig = px.bar(spend_counts, x="Spend Range", y="Count", color="Count",
-                             color_continuous_scale="oranges")
-                fig.update_layout(margin=dict(t=20, b=10, l=10, r=10),
-                                  paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-                st.plotly_chart(fig, width="stretch")
+                             color_continuous_scale=GRADIENT_SUNSET)
+                _apply_modern_layout(fig, bargap=0.15)
+                st.plotly_chart(fig, use_container_width=True)
 
             # Audience summary table
             st.markdown("**Audience Targeting by Brand**")
@@ -459,7 +480,7 @@ def ads_main():
                                     "ad_spend_range_score_title", "eu_total_reach"] if c in aud_df.columns]
             if aud_cols:
                 aud_summary = aud_df[aud_cols].drop_duplicates().sort_values(aud_cols[0])
-                st.dataframe(aud_summary, hide_index=True, width="stretch", height=400)
+                st.dataframe(aud_summary, hide_index=True, use_container_width=True, height=400)
         else:
             st.info("No audience data available.")
 

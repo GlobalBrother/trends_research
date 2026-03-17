@@ -7,18 +7,26 @@ as well as the shared ``trends`` table for cross-platform dashboards.
 import json
 import logging
 import os
-import sqlite3
 import sys
 from datetime import datetime
 
 from dotenv import load_dotenv
 from ensembledata.api import EDClient
 from ensembledata.api.errors import EDError
+from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
 sys.path.insert(0, os.path.dirname(__file__))
-from db_helper import save_trend, save_error, save_token_usage, DB_PATH
+from db_helper import save_trend, save_error, save_token_usage
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+from src.db.connection import get_engine, is_sqlite
+from src.db.sql_compat import tbl
+
+_engine = get_engine()
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".env"))
 
@@ -73,9 +81,6 @@ CREATE TABLE IF NOT EXISTS reddit_posts (
     -- flair / tags
     link_flair_text     TEXT,
 
-    -- raw JSON blob
-    raw_data            TEXT,
-
     -- metadata
     extracted_at        TEXT,
     updated_at          TEXT
@@ -91,17 +96,8 @@ _CREATE_INDEXES = [
 
 
 def _ensure_table():
-    """Create the reddit_posts table and indexes if they don't exist."""
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute(_CREATE_REDDIT_POSTS)
-        for idx in _CREATE_INDEXES:
-            conn.execute(idx)
-        conn.commit()
-        logger.debug("reddit_posts table ensured.")
-    finally:
-        conn.close()
+    """Tables are pre-created in Azure SQL via migration schema."""
+    pass
 
 
 def _save_reddit_post(data: dict, keyword: str, geo: str):
@@ -141,46 +137,85 @@ def _save_reddit_post(data: dict, keyword: str, geo: str):
 
     now = datetime.now().isoformat()
 
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("""
-            INSERT INTO reddit_posts (
-                post_id, search_keyword, geo,
-                title, selftext, url, permalink, domain, post_hint,
-                is_self, is_video, over_18, spoiler, created_utc, thumbnail,
-                subreddit, subreddit_id, subreddit_subscribers,
-                author, author_fullname,
-                score, upvote_ratio, num_comments, num_crossposts, total_awards,
-                engagement_total, link_flair_text, raw_data,
-                extracted_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(post_id) DO UPDATE SET
-                score=excluded.score,
-                upvote_ratio=excluded.upvote_ratio,
-                num_comments=excluded.num_comments,
-                num_crossposts=excluded.num_crossposts,
-                total_awards=excluded.total_awards,
-                engagement_total=excluded.engagement_total,
-                raw_data=excluded.raw_data,
-                updated_at=excluded.updated_at
-        """, (
-            post_id, keyword, geo,
-            title, selftext, url, permalink, domain, post_hint,
-            is_self, is_video, over_18, spoiler, int(created_utc), thumbnail,
-            subreddit, subreddit_id, subreddit_subscribers,
-            author, author_fullname,
-            score, upvote_ratio, num_comments, num_crossposts, total_awards,
-            engagement, link_flair, json.dumps(data, default=str),
-            now, now,
-        ))
-        conn.commit()
-        logger.debug("Saved reddit_post id=%s", post_id)
-    except Exception:
-        logger.error("Failed to save reddit_post id=%s", post_id, exc_info=True)
-        raise
-    finally:
-        conn.close()
+    params = {
+        "post_id": post_id, "keyword": keyword, "geo": geo,
+        "title": title, "selftext": selftext, "url": url, "permalink": permalink,
+        "domain": domain, "post_hint": post_hint,
+        "is_self": is_self, "is_video": is_video, "over_18": over_18,
+        "spoiler": spoiler, "created_utc": int(created_utc), "thumbnail": thumbnail,
+        "subreddit": subreddit, "subreddit_id": subreddit_id,
+        "subreddit_subscribers": subreddit_subscribers,
+        "author": author, "author_fullname": author_fullname,
+        "score": score, "upvote_ratio": upvote_ratio, "num_comments": num_comments,
+        "num_crossposts": num_crossposts, "total_awards": total_awards,
+        "engagement_total": engagement, "link_flair_text": link_flair,
+        "extracted_at": now, "updated_at": now,
+    }
+
+    with _engine.connect() as conn:
+        try:
+            if is_sqlite():
+                existing = conn.execute(text(f"SELECT 1 FROM {tbl('reddit_posts')} WHERE post_id = :post_id"), {"post_id": post_id}).fetchone()
+                if existing:
+                    conn.execute(text(
+                        f"UPDATE {tbl('reddit_posts')} SET "
+                        "score = :score, upvote_ratio = :upvote_ratio, "
+                        "num_comments = :num_comments, num_crossposts = :num_crossposts, "
+                        "total_awards = :total_awards, engagement_total = :engagement_total, "
+                        "updated_at = :updated_at WHERE post_id = :post_id"
+                    ), params)
+                else:
+                    conn.execute(text(
+                        f"INSERT INTO {tbl('reddit_posts')} ("
+                        "post_id, search_keyword, geo, "
+                        "title, selftext, url, permalink, domain, post_hint, "
+                        "is_self, is_video, over_18, spoiler, created_utc, thumbnail, "
+                        "subreddit, subreddit_id, subreddit_subscribers, "
+                        "author, author_fullname, "
+                        "score, upvote_ratio, num_comments, num_crossposts, total_awards, "
+                        "engagement_total, link_flair_text, extracted_at, updated_at"
+                        ") VALUES ("
+                        ":post_id, :keyword, :geo, "
+                        ":title, :selftext, :url, :permalink, :domain, :post_hint, "
+                        ":is_self, :is_video, :over_18, :spoiler, :created_utc, :thumbnail, "
+                        ":subreddit, :subreddit_id, :subreddit_subscribers, "
+                        ":author, :author_fullname, "
+                        ":score, :upvote_ratio, :num_comments, :num_crossposts, :total_awards, "
+                        ":engagement_total, :link_flair_text, :extracted_at, :updated_at)"
+                    ), params)
+            else:
+                conn.execute(text(f"""
+                    MERGE {tbl('reddit_posts')} AS target
+                    USING (SELECT :post_id AS post_id) AS source
+                    ON target.post_id = source.post_id
+                    WHEN MATCHED THEN UPDATE SET
+                        score = :score, upvote_ratio = :upvote_ratio,
+                        num_comments = :num_comments, num_crossposts = :num_crossposts,
+                        total_awards = :total_awards, engagement_total = :engagement_total,
+                        updated_at = :updated_at
+                    WHEN NOT MATCHED THEN INSERT (
+                        post_id, search_keyword, geo,
+                        title, selftext, url, permalink, domain, post_hint,
+                        is_self, is_video, over_18, spoiler, created_utc, thumbnail,
+                        subreddit, subreddit_id, subreddit_subscribers,
+                        author, author_fullname,
+                        score, upvote_ratio, num_comments, num_crossposts, total_awards,
+                        engagement_total, link_flair_text, extracted_at, updated_at
+                    ) VALUES (
+                        :post_id, :keyword, :geo,
+                        :title, :selftext, :url, :permalink, :domain, :post_hint,
+                        :is_self, :is_video, :over_18, :spoiler, :created_utc, :thumbnail,
+                        :subreddit, :subreddit_id, :subreddit_subscribers,
+                        :author, :author_fullname,
+                        :score, :upvote_ratio, :num_comments, :num_crossposts, :total_awards,
+                        :engagement_total, :link_flair_text, :extracted_at, :updated_at
+                    );
+                """), params)
+            conn.commit()
+            logger.debug("Saved reddit_post id=%s", post_id)
+        except Exception:
+            logger.error("Failed to save reddit_post id=%s", post_id, exc_info=True)
+            raise
 
 
 # ---------------------------------------------------------------------------

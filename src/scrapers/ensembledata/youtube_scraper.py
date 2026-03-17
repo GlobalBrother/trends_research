@@ -8,18 +8,26 @@ import json
 import logging
 import os
 import re
-import sqlite3
 import sys
 from datetime import datetime
 
 from dotenv import load_dotenv
 from ensembledata.api import EDClient
 from ensembledata.api.errors import EDError
+from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
 sys.path.insert(0, os.path.dirname(__file__))
-from db_helper import save_trend, save_error, save_token_usage, DB_PATH
+from db_helper import save_trend, save_error, save_token_usage
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+from src.db.connection import get_engine, is_sqlite
+from src.db.sql_compat import tbl
+
+_engine = get_engine()
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".env"))
 
@@ -61,9 +69,6 @@ CREATE TABLE IF NOT EXISTS youtube_videos (
     -- engagement helpers (computed)
     engagement_total    INTEGER DEFAULT 0,
 
-    -- raw JSON blob
-    raw_data            TEXT,
-
     -- metadata
     extracted_at        TEXT,
     updated_at          TEXT
@@ -79,17 +84,8 @@ _CREATE_INDEXES = [
 
 
 def _ensure_table():
-    """Create the youtube_videos table and indexes if they don't exist."""
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute(_CREATE_YOUTUBE_VIDEOS)
-        for idx in _CREATE_INDEXES:
-            conn.execute(idx)
-        conn.commit()
-        logger.debug("youtube_videos table ensured.")
-    finally:
-        conn.close()
+    """Tables are pre-created in Azure SQL via migration schema."""
+    pass
 
 
 def _parse_int(val):
@@ -208,44 +204,78 @@ def _save_youtube_video(v: dict, keyword: str, geo: str):
     engagement = int(likes) + int(comments) + int(dislikes)
     now = datetime.now().isoformat()
 
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("""
-            INSERT INTO youtube_videos (
-                video_id, search_keyword, geo,
-                title, description, channel_title, channel_id,
-                published, duration, url, thumbnail_url,
-                category_id, tags, language,
-                view_count, like_count, dislike_count, comment_count, favorite_count,
-                engagement_total, raw_data,
-                extracted_at, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(video_id) DO UPDATE SET
-                view_count=excluded.view_count,
-                like_count=excluded.like_count,
-                dislike_count=excluded.dislike_count,
-                comment_count=excluded.comment_count,
-                favorite_count=excluded.favorite_count,
-                engagement_total=excluded.engagement_total,
-                raw_data=excluded.raw_data,
-                updated_at=excluded.updated_at
-        """, (
-            video_id, keyword, geo,
-            title, description, channel, channel_id,
-            published, duration, url, thumbnail,
-            category_id, tags, language,
-            int(views), int(likes), int(dislikes), int(comments), int(favorites),
-            engagement, json.dumps(v, default=str),
-            now, now,
-        ))
-        conn.commit()
-        logger.debug("Saved youtube_video video_id=%s", video_id)
-    except Exception:
-        logger.error("Failed to save youtube_video video_id=%s", video_id, exc_info=True)
-        raise
-    finally:
-        conn.close()
+    params = {
+        "video_id": video_id, "keyword": keyword, "geo": geo,
+        "title": title, "description": description, "channel_title": channel,
+        "channel_id": channel_id, "published": published, "duration": duration,
+        "url": url, "thumbnail_url": thumbnail, "category_id": category_id,
+        "tags": tags, "language": language,
+        "view_count": int(views), "like_count": int(likes), "dislike_count": int(dislikes),
+        "comment_count": int(comments), "favorite_count": int(favorites),
+        "engagement_total": engagement,
+        "extracted_at": now, "updated_at": now,
+    }
+
+    with _engine.connect() as conn:
+        try:
+            if is_sqlite():
+                existing = conn.execute(text(f"SELECT 1 FROM {tbl('youtube_videos')} WHERE video_id = :video_id"), {"video_id": video_id}).fetchone()
+                if existing:
+                    conn.execute(text(
+                        f"UPDATE {tbl('youtube_videos')} SET "
+                        "view_count = :view_count, like_count = :like_count, "
+                        "dislike_count = :dislike_count, comment_count = :comment_count, "
+                        "favorite_count = :favorite_count, engagement_total = :engagement_total, "
+                        "updated_at = :updated_at WHERE video_id = :video_id"
+                    ), params)
+                else:
+                    conn.execute(text(
+                        f"INSERT INTO {tbl('youtube_videos')} ("
+                        "video_id, search_keyword, geo, "
+                        "title, description, channel_title, channel_id, "
+                        "published, duration, url, thumbnail_url, "
+                        "category_id, tags, language, "
+                        "view_count, like_count, dislike_count, comment_count, favorite_count, "
+                        "engagement_total, extracted_at, updated_at"
+                        ") VALUES ("
+                        ":video_id, :keyword, :geo, "
+                        ":title, :description, :channel_title, :channel_id, "
+                        ":published, :duration, :url, :thumbnail_url, "
+                        ":category_id, :tags, :language, "
+                        ":view_count, :like_count, :dislike_count, :comment_count, :favorite_count, "
+                        ":engagement_total, :extracted_at, :updated_at)"
+                    ), params)
+            else:
+                conn.execute(text(f"""
+                    MERGE {tbl('youtube_videos')} AS target
+                    USING (SELECT :video_id AS video_id) AS source
+                    ON target.video_id = source.video_id
+                    WHEN MATCHED THEN UPDATE SET
+                        view_count = :view_count, like_count = :like_count,
+                        dislike_count = :dislike_count, comment_count = :comment_count,
+                        favorite_count = :favorite_count, engagement_total = :engagement_total,
+                        updated_at = :updated_at
+                    WHEN NOT MATCHED THEN INSERT (
+                        video_id, search_keyword, geo,
+                        title, description, channel_title, channel_id,
+                        published, duration, url, thumbnail_url,
+                        category_id, tags, language,
+                        view_count, like_count, dislike_count, comment_count, favorite_count,
+                        engagement_total, extracted_at, updated_at
+                    ) VALUES (
+                        :video_id, :keyword, :geo,
+                        :title, :description, :channel_title, :channel_id,
+                        :published, :duration, :url, :thumbnail_url,
+                        :category_id, :tags, :language,
+                        :view_count, :like_count, :dislike_count, :comment_count, :favorite_count,
+                        :engagement_total, :extracted_at, :updated_at
+                    );
+                """), params)
+            conn.commit()
+            logger.debug("Saved youtube_video video_id=%s", video_id)
+        except Exception:
+            logger.error("Failed to save youtube_video video_id=%s", video_id, exc_info=True)
+            raise
 
 
 # ---------------------------------------------------------------------------
