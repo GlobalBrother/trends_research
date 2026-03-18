@@ -39,6 +39,70 @@ def is_sqlite():
     return get_backend() == "sqlite"
 
 
+def switch_backend(backend):
+    """Switch the database backend at runtime.
+
+    Parameters
+    ----------
+    backend : str
+        Either ``"sqlite"`` or ``"mssql"``.
+
+    Returns
+    -------
+    str
+        The newly active backend name.
+
+    Raises
+    ------
+    ValueError
+        If *backend* is not ``"sqlite"`` or ``"mssql"``.
+    """
+    global _engine, _backend
+    backend = backend.lower()
+    if backend not in ("sqlite", "mssql"):
+        raise ValueError(f"Invalid backend: {backend!r}. Must be 'sqlite' or 'mssql'.")
+
+    # Dispose the old engine so connections are released
+    if _engine is not None:
+        try:
+            _engine.dispose()
+        except Exception:
+            pass
+        _engine = None
+
+    _backend = backend
+    os.environ["DB_BACKEND"] = backend
+    # Eagerly create the new engine so callers get immediate feedback
+    get_engine()
+    return _backend
+
+
+def test_connection():
+    """Test the current database connection.
+
+    Returns
+    -------
+    tuple[bool, str]
+        ``(True, info_message)`` on success, ``(False, error_message)`` on failure.
+    """
+    try:
+        engine = get_engine()
+        with engine.connect() as conn:
+            row = conn.execute(text("SELECT 1")).fetchone()
+            if row:
+                backend = get_backend()
+                if backend == "sqlite":
+                    db_path = os.getenv("DB_PATH", os.path.join(project_root, "src", "collector", "trends.db"))
+                    return True, f"Connected to SQLite: {db_path}"
+                else:
+                    server = os.getenv("AZURE_SQL_SERVER", "Azure SQL")
+                    db = os.getenv("AZURE_SQL_DB", os.getenv("AZURE_SQL_DATABASE", ""))
+                    return True, f"Connected to Azure SQL: {server}/{db}"
+        return False, "Connection returned no result"
+    except Exception as e:
+        return False, str(e)
+
+
 def get_engine():
     """Return a SQLAlchemy engine (singleton).
 
@@ -171,6 +235,3 @@ def get_session():
     return get_session_factory()()
 
 
-def get_connection():
-    """Return a new connection from the engine."""
-    return get_engine().connect()

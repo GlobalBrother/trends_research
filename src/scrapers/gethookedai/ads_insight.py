@@ -71,69 +71,8 @@ BASE_URL = "https://app.gethookd.ai/api/v1"
 # Ads Insight table — matches PublicAd schema from md.json
 # ---------------------------------------------------------------------------
 
-_CREATE_ADS_INSIGHT = """
-CREATE TABLE IF NOT EXISTS ads_insight (
-    -- identifiers
-    hookd_id                INTEGER PRIMARY KEY,
-    external_id             TEXT,
-    search_keyword          TEXT,
-
-    -- content
-    platform                TEXT,
-    display_format          TEXT,
-    title                   TEXT,
-    body                    TEXT,
-    landing_page            TEXT,
-    link_description        TEXT,
-    cta_type                TEXT,
-    cta_text                TEXT,
-
-    -- scheduling
-    start_date              TEXT,
-    end_date                TEXT,
-    days_active             INTEGER DEFAULT 0,
-    active_in_library       INTEGER DEFAULT 0,
-
-    -- performance
-    performance_score       INTEGER,
-    performance_score_title TEXT,
-    used_count              INTEGER DEFAULT 0,
-    is_aaa_eligible         INTEGER,
-
-    -- audience
-    age_audience_min        INTEGER,
-    age_audience_max        INTEGER,
-    gender_audience         TEXT,
-    eu_total_reach          INTEGER,
-
-    -- spend
-    ad_spend_range_score        INTEGER,
-    ad_spend_range_score_title  TEXT,
-
-    -- brand (PublicBrand schema)
-    brand_external_id       TEXT,
-    brand_name              TEXT,
-    brand_logo_url          TEXT,
-    brand_active_ads        INTEGER DEFAULT 0,
-
-    -- media (JSON array of PublicAdMedia)
-    media                   TEXT,
-
-    -- ad cards (JSON array of PublicAdCard)
-    ad_cards                TEXT,
-
-    -- share
-    share_url               TEXT,
-
-    -- metadata
-    extracted_at            TEXT,
-    updated_at              TEXT
-);
-"""
-
-
 def _ensure_table():
-    """Tables are pre-created in Azure SQL via migration schema."""
+    """Tables are created via ORM metadata (Base.metadata.create_all)."""
     pass
 
 

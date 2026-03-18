@@ -1,6 +1,6 @@
 """
 Azure SQL Server Schema Setup
-Reads azure_schema.sql and executes it against the configured Azure SQL Server.
+Uses SQLAlchemy ORM metadata to create all tables.
 
 Usage:
     $env:PYTHONPATH="."
@@ -16,41 +16,21 @@ if project_root not in sys.path:
 from dotenv import load_dotenv
 load_dotenv(os.path.join(project_root, ".env"))
 
-from sqlalchemy import text
-from src.db.connection import get_engine
+from src.db.models import Base
+from src.db.connection import get_engine, switch_backend
 
 
 def run_schema():
-    schema_path = os.path.join(os.path.dirname(__file__), "azure_schema.sql")
-    with open(schema_path, "r", encoding="utf-8") as f:
-        sql = f.read()
-
+    switch_backend("mssql")
     engine = get_engine()
 
-    # Split on GO-like boundaries: each statement separated by blank lines
-    # For T-SQL, we split on semicolons at statement boundaries
-    # But our schema uses IF NOT EXISTS blocks without semicolons between them
-    # Split on double newlines before IF/CREATE/PRINT
-    import re
-    statements = re.split(r'\n(?=IF NOT EXISTS|CREATE INDEX|PRINT)', sql)
+    db_url = str(engine.url)
+    print(f"Database : {db_url}")
+    print(f"Models   : src/db/models.py")
 
-    with engine.connect() as conn:
-        for stmt in statements:
-            stmt = stmt.strip()
-            if not stmt or stmt.startswith("--"):
-                # skip pure comments
-                lines = [l for l in stmt.split("\n") if l.strip() and not l.strip().startswith("--")]
-                if not lines:
-                    continue
-            try:
-                conn.execute(text(stmt))
-                conn.commit()
-            except Exception as e:
-                print(f"ERROR executing statement:\n{stmt[:120]}...\n{e}\n")
-                conn.rollback()
-                continue
+    Base.metadata.create_all(engine)
 
-    print("Schema setup complete.")
+    print("Azure SQL schema setup completed successfully (from ORM models).")
 
 
 if __name__ == "__main__":

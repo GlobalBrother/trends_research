@@ -1,5 +1,6 @@
 """
-Apply the SQLite schema (sqlite_schema.sql) to the local trends.db.
+Create / update the local SQLite database (trends.db) from the
+SQLAlchemy ORM models defined in src/db/models.py.
 
 Usage:
     PYTHONPATH="." python src/db/setup_sqlite.py
@@ -7,28 +8,27 @@ Usage:
 
 import os
 import sys
-import sqlite3
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-DB_PATH = os.getenv("DB_PATH", os.path.join(project_root, "src", "collector", "trends.db"))
-SCHEMA_FILE = os.path.join(os.path.dirname(__file__), "sqlite_schema.sql")
+from src.db.models import Base
+from src.db.connection import get_engine, switch_backend
 
 
 def run():
-    print(f"Database : {DB_PATH}")
-    print(f"Schema   : {SCHEMA_FILE}")
+    # Force SQLite backend for local setup
+    switch_backend("sqlite")
+    engine = get_engine()
 
-    with open(SCHEMA_FILE, "r", encoding="utf-8") as f:
-        schema_sql = f.read()
+    db_url = str(engine.url)
+    print(f"Database : {db_url}")
+    print(f"Models   : src/db/models.py")
 
-    conn = sqlite3.connect(DB_PATH)
-    conn.executescript(schema_sql)
-    conn.close()
+    Base.metadata.create_all(engine)
 
-    print("SQLite schema setup completed successfully.")
+    print("SQLite schema setup completed successfully (from ORM models).")
 
 
 if __name__ == "__main__":

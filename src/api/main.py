@@ -30,10 +30,10 @@ from src.collector.trend_collector import TrendCollector
 from src.analytics.analytics_engine import AnalyticsEngine
 from src.niche.niche_discovery import NicheDiscovery
 from src.db.connection import get_engine, get_session, is_sqlite
-from src.db.sql_compat import expires_check, limit_clause, tbl, get_platform_id, get_platform_name, insert_niche_if_not_exists, verify_otp
+from src.db.sql_compat import get_platform_id, get_platform_name, insert_niche_if_not_exists, verify_otp
 from src.db.models import (
-    User, OtpCode, AuthToken, Niche, TokenUsage, ScrapeError as ScrapeErrorModel,
-    AdsInsight, Content, ContentMetric, Author, Platform,
+    Base, User, OtpCode, AuthToken, Niche, TokenUsage, ScrapeError as ScrapeErrorModel,
+    AdsInsight, Content, ContentMetric, Author, Platform, Trend,
 )
 
 # Try to import GetHookdAI ads scraper
@@ -82,25 +82,12 @@ niche = NicheDiscovery()
 # ---------------------------------------------------------------------------
 
 def _init_auth_tables():
-    """Ensure auth tables exist.
-
-    SQLite  – run the full schema file (all CREATE IF NOT EXISTS).
-    Azure SQL – tables are pre-created via the migration schema.
-    """
-    if not is_sqlite():
-        return
-    schema_file = os.path.join(project_root, "src", "db", "sqlite_schema.sql")
-    if os.path.exists(schema_file):
-        with open(schema_file, "r", encoding="utf-8") as f:
-            schema_sql = f.read()
-        raw_url = str(engine.url)
-        # Extract path from sqlite:///path
-        db_path = raw_url.replace("sqlite:///", "")
-        import sqlite3
-        _conn = sqlite3.connect(db_path)
-        _conn.executescript(schema_sql)
-        _conn.close()
-        logger.info("SQLite schema applied from %s", schema_file)
+    """Ensure all tables exist using ORM metadata."""
+    try:
+        Base.metadata.create_all(engine)
+        logger.info("Database tables verified via ORM metadata.")
+    except Exception as e:
+        logger.warning("Could not create tables via ORM: %s", e)
 
 _init_auth_tables()
 
@@ -919,35 +906,17 @@ def get_scrape_errors(platform: Optional[str] = Query(None)):
     return {"data": []}
 
 # ---------------------------------------------------------------------------
-# Helper: run a query against a dedicated platform table
+# Table filters (dynamic dropdowns) — ORM
 # ---------------------------------------------------------------------------
 
-def _query_platform_table(query: str, params: dict):
-    """Execute a SELECT query against the DB and return JSON-safe records."""
-    try:
-        with engine.connect() as conn:
-            df = pd.read_sql_query(text(query), conn, params=params)
-        return _sanitize_and_serialize(df) if not df.empty else []
-    except Exception as e:
-        logger.error(f"DB query error: {e}")
-        return []
+# Map of table names to ORM model classes for safe dynamic access
+_TABLE_MODEL_MAP = {
+    "content": Content,
+    "trends": Trend,
+    "ads_insight": AdsInsight,
+    "scrape_errors": ScrapeErrorModel,
+}
 
-
-def _geo_clause(col: str = "geo"):
-    return f" AND (UPPER({col}) = UPPER(:geo_param) OR {col} = '' OR UPPER({col}) = 'GLOBAL' OR {col} IS NULL)"
-
-
-def _keyword_clause(keywords: list, col: str = "keyword"):
-    if not keywords:
-        return "", {}
-    placeholders = ", ".join([f":kw_{i}" for i in range(len(keywords))])
-    kw_params = {f"kw_{i}": kw for i, kw in enumerate(keywords)}
-    return f" AND {col} IN ({placeholders})", kw_params
-
-
-# ---------------------------------------------------------------------------
-# Table filters (dynamic dropdowns)
-# ---------------------------------------------------------------------------
 
 @app.get("/table_filters")
 def get_table_filters(
@@ -956,24 +925,45 @@ def get_table_filters(
     keyword_col: str = Query("search_keyword"),
 ):
     """Return distinct geo and keyword values from a given DB table."""
+    import re
+    _safe = re.compile(r"^\w+$")
+    if not _safe.match(table_name) or not _safe.match(geo_col) or not _safe.match(keyword_col):
+        raise HTTPException(status_code=400, detail="Invalid table/column name")
+
     geos, keywords = ["Global"], ["All"]
     try:
-        # Sanitise column/table names (allow only alphanumeric + underscore)
-        import re
-        _safe = re.compile(r"^\w+$")
-        if not _safe.match(table_name) or not _safe.match(geo_col) or not _safe.match(keyword_col):
-            raise HTTPException(status_code=400, detail="Invalid table/column name")
+        model = _TABLE_MODEL_MAP.get(table_name)
+        if not model:
+            # Fallback: try to find model by tablename
+            for m in Base.registry.mappers:
+                if m.class_.__tablename__ == table_name:
+                    model = m.class_
+                    break
+        if not model:
+            return {"geos": geos, "keywords": keywords}
 
-        with engine.connect() as conn:
-            rows = conn.execute(text(f"SELECT DISTINCT {geo_col} FROM {tbl(table_name)} WHERE {geo_col} IS NOT NULL AND {geo_col} != ''")).fetchall()
-            geos_raw = sorted(set(r[0] for r in rows if r[0]))
-            if geos_raw:
-                geos = ["All"] + geos_raw
+        geo_attr = getattr(model, geo_col, None)
+        kw_attr = getattr(model, keyword_col, None)
 
-            rows = conn.execute(text(f"SELECT DISTINCT {keyword_col} FROM {tbl(table_name)} WHERE {keyword_col} IS NOT NULL AND {keyword_col} != ''")).fetchall()
-            kw_raw = sorted(set(r[0] for r in rows if r[0]))
-            if kw_raw:
-                keywords = ["All"] + kw_raw
+        session = SessionFactory()
+        try:
+            if geo_attr is not None:
+                rows = session.query(geo_attr).filter(
+                    geo_attr.isnot(None), geo_attr != ""
+                ).distinct().all()
+                geos_raw = sorted(set(r[0] for r in rows if r[0]))
+                if geos_raw:
+                    geos = ["All"] + geos_raw
+
+            if kw_attr is not None:
+                rows = session.query(kw_attr).filter(
+                    kw_attr.isnot(None), kw_attr != ""
+                ).distinct().all()
+                kw_raw = sorted(set(r[0] for r in rows if r[0]))
+                if kw_raw:
+                    keywords = ["All"] + kw_raw
+        finally:
+            session.close()
     except HTTPException:
         raise
     except Exception:
@@ -982,38 +972,64 @@ def get_table_filters(
 
 
 # ---------------------------------------------------------------------------
-# Normalized content query helper
+# Normalized content query helper — ORM
 # ---------------------------------------------------------------------------
 
-def _content_query(platform_name: str, niche_name, geo, limit, order_col="m.likes DESC"):
-    """Build and execute a query against the normalized content/authors/metrics tables."""
-    _c = tbl('content')
-    _a = tbl('authors')
-    _m = tbl('content_metrics')
-    _p = tbl('platforms')
-    query = f"""
-        SELECT c.external_id, c.text_content, c.keyword, c.geo,
-               c.media_type, c.url, c.created_at,
-               a.username, a.full_name, a.follower_count, a.is_verified, a.profile_pic_url,
-               m.likes, m.comments, m.shares, m.views, m.saves,
-               p.name AS platform
-        FROM {_c} c
-        JOIN {_p} p ON p.id = c.platform_id
-        LEFT JOIN {_a} a ON a.id = c.author_id
-        LEFT JOIN {_m} m ON m.content_id = c.id
-        WHERE p.name = :platform_name
-    """
-    params = {"platform_name": platform_name}
-    if geo and geo != "Global":
-        query += _geo_clause("c.geo")
-        params["geo_param"] = geo
-    if niche_name:
-        kws = _get_niche_keywords_from_db(niche_name)
-        clause, kw_params = _keyword_clause(kws, col="c.keyword")
-        query += clause
-        params.update(kw_params)
-    query += limit_clause(order_col, limit)
-    return _query_platform_table(query, params)
+def _content_query(platform_name: str, niche_name, geo, limit, order_attr=None):
+    """Query the normalized content/authors/metrics tables via ORM."""
+    session = SessionFactory()
+    try:
+        query = session.query(
+            Content.external_id, Content.text_content, Content.keyword, Content.geo,
+            Content.media_type, Content.url, Content.created_at,
+            Author.username, Author.full_name, Author.follower_count,
+            Author.is_verified, Author.profile_pic_url,
+            ContentMetric.likes, ContentMetric.comments, ContentMetric.shares,
+            ContentMetric.views, ContentMetric.saves,
+            Platform.name.label("platform"),
+        ).join(
+            Platform, Platform.id == Content.platform_id
+        ).outerjoin(
+            Author, Author.id == Content.author_id
+        ).outerjoin(
+            ContentMetric, ContentMetric.content_id == Content.id
+        ).filter(
+            Platform.name == platform_name
+        )
+
+        if geo and geo != "Global":
+            query = query.filter(
+                (func.upper(Content.geo) == func.upper(geo)) |
+                (Content.geo == "") |
+                (func.upper(Content.geo) == "GLOBAL") |
+                (Content.geo.is_(None))
+            )
+        if niche_name:
+            kws = _get_niche_keywords_from_db(niche_name)
+            if kws:
+                query = query.filter(Content.keyword.in_(kws))
+
+        if order_attr is not None:
+            query = query.order_by(order_attr)
+        else:
+            query = query.order_by(ContentMetric.likes.desc())
+
+        query = query.limit(limit)
+        rows = query.all()
+    finally:
+        session.close()
+
+    columns = [
+        "external_id", "text_content", "keyword", "geo",
+        "media_type", "url", "created_at",
+        "username", "full_name", "follower_count",
+        "is_verified", "profile_pic_url",
+        "likes", "comments", "shares", "views", "saves", "platform",
+    ]
+    if not rows:
+        return []
+    df = pd.DataFrame(rows, columns=columns)
+    return _sanitize_and_serialize(df)
 
 
 # ---------------------------------------------------------------------------
@@ -1026,7 +1042,7 @@ def get_youtube_videos(
     geo: Optional[str] = Query(None),
     limit: int = Query(500),
 ):
-    data = _content_query("YouTube", niche_name, geo, limit, order_col="m.views DESC")
+    data = _content_query("YouTube", niche_name, geo, limit, order_attr=ContentMetric.views.desc())
     return {"data": data}
 
 
@@ -1040,7 +1056,7 @@ def get_tiktok_videos(
     geo: Optional[str] = Query(None),
     limit: int = Query(500),
 ):
-    data = _content_query("TikTok", niche_name, geo, limit, order_col="m.views DESC")
+    data = _content_query("TikTok", niche_name, geo, limit, order_attr=ContentMetric.views.desc())
     for row in data:
         ca = row.get("created_at")
         if ca:
@@ -1061,7 +1077,7 @@ def get_instagram_posts(
     geo: Optional[str] = Query(None),
     limit: int = Query(500),
 ):
-    data = _content_query("Instagram", niche_name, geo, limit, order_col="m.likes DESC")
+    data = _content_query("Instagram", niche_name, geo, limit, order_attr=ContentMetric.likes.desc())
     for row in data:
         ca = row.get("created_at")
         if ca:
@@ -1082,7 +1098,7 @@ def get_reddit_posts(
     geo: Optional[str] = Query(None),
     limit: int = Query(500),
 ):
-    data = _content_query("Reddit", niche_name, geo, limit, order_col="m.likes DESC")
+    data = _content_query("Reddit", niche_name, geo, limit, order_attr=ContentMetric.likes.desc())
     for row in data:
         ca = row.get("created_at")
         if ca:
@@ -1103,7 +1119,7 @@ def get_threads_posts(
     geo: Optional[str] = Query(None),
     limit: int = Query(500),
 ):
-    data = _content_query("Threads", niche_name, geo, limit, order_col="m.likes DESC")
+    data = _content_query("Threads", niche_name, geo, limit, order_attr=ContentMetric.likes.desc())
     for row in data:
         ca = row.get("created_at")
         if ca:
@@ -1124,26 +1140,42 @@ def get_ads_insight(
     geo: Optional[str] = Query(None),
     limit: int = Query(500),
 ):
-    query = f"""
-        SELECT hookd_id, external_id, search_keyword,
-               platform, display_format, title, body,
-               landing_page, cta_type, cta_text,
-               start_date, end_date, days_active, active_in_library,
-               performance_score, performance_score_title, used_count,
-               age_audience_min, age_audience_max, gender_audience, eu_total_reach,
-               brand_name, brand_logo_url, brand_active_ads,
-               media, share_url,
-               extracted_at
-        FROM {tbl('ads_insight')} WHERE 1=1
-    """
-    params = {}
-    if niche_name:
-        kws = _get_niche_keywords_from_db(niche_name)
-        clause, kw_params = _keyword_clause(kws, col="search_keyword")
-        query += clause
-        params.update(kw_params)
-    query += limit_clause("extracted_at DESC", limit)
-    return {"data": _query_platform_table(query, params)}
+    session = SessionFactory()
+    try:
+        q = session.query(
+            AdsInsight.hookd_id, AdsInsight.external_id, AdsInsight.search_keyword,
+            AdsInsight.platform, AdsInsight.display_format, AdsInsight.title, AdsInsight.body,
+            AdsInsight.landing_page, AdsInsight.cta_type, AdsInsight.cta_text,
+            AdsInsight.start_date, AdsInsight.end_date, AdsInsight.days_active, AdsInsight.active_in_library,
+            AdsInsight.performance_score, AdsInsight.performance_score_title, AdsInsight.used_count,
+            AdsInsight.age_audience_min, AdsInsight.age_audience_max, AdsInsight.gender_audience, AdsInsight.eu_total_reach,
+            AdsInsight.brand_name, AdsInsight.brand_logo_url, AdsInsight.brand_active_ads,
+            AdsInsight.media, AdsInsight.share_url,
+            AdsInsight.extracted_at,
+        )
+        if niche_name:
+            kws = _get_niche_keywords_from_db(niche_name)
+            if kws:
+                q = q.filter(AdsInsight.search_keyword.in_(kws))
+        q = q.order_by(AdsInsight.extracted_at.desc()).limit(limit)
+        rows = q.all()
+    finally:
+        session.close()
+
+    columns = [
+        "hookd_id", "external_id", "search_keyword",
+        "platform", "display_format", "title", "body",
+        "landing_page", "cta_type", "cta_text",
+        "start_date", "end_date", "days_active", "active_in_library",
+        "performance_score", "performance_score_title", "used_count",
+        "age_audience_min", "age_audience_max", "gender_audience", "eu_total_reach",
+        "brand_name", "brand_logo_url", "brand_active_ads",
+        "media", "share_url", "extracted_at",
+    ]
+    if not rows:
+        return {"data": []}
+    df = pd.DataFrame(rows, columns=columns)
+    return {"data": _sanitize_and_serialize(df)}
 
 
 # ---------------------------------------------------------------------------
@@ -1295,12 +1327,6 @@ def get_token_usage():
 # Azure DB: schema setup & data population
 # ---------------------------------------------------------------------------
 
-_SQLITE_TO_AZURE_TABLES = [
-    "trends", "scrape_errors", "scrape_log", "users", "otp_codes",
-    "auth_tokens", "token_usage", "niches", "raw_data_archive",
-    "tiktok_videos", "instagram_posts", "youtube_videos",
-    "reddit_posts", "threads_posts", "ads_insight",
-]
 
 
 @app.post("/admin/azure/setup_schema")
@@ -1324,21 +1350,21 @@ def populate_azure_db(background_tasks: BackgroundTasks):
 @app.get("/admin/azure/status")
 def azure_status():
     """Check Azure SQL connectivity and return table row counts."""
-    import importlib
     try:
-        # Build a temporary mssql engine
         azure_engine = _get_azure_engine()
         with azure_engine.connect() as conn:
             conn.execute(text("SELECT 1")).scalar()
-        # Get row counts
+        # Get row counts via ORM metadata inspection
+        from sqlalchemy.orm import Session as _Ses
         counts = {}
-        with azure_engine.connect() as conn:
-            for t in _SQLITE_TO_AZURE_TABLES:
+        with _Ses(bind=azure_engine) as az_session:
+            for mapper in Base.registry.mappers:
+                tname = mapper.class_.__tablename__
                 try:
-                    n = conn.execute(text(f"SELECT COUNT(*) FROM dbo.{t}")).scalar()
-                    counts[t] = n
+                    n = az_session.query(func.count()).select_from(mapper.class_).scalar()
+                    counts[tname] = n
                 except Exception:
-                    counts[t] = "N/A"
+                    counts[tname] = "N/A"
         return {"connected": True, "tables": counts}
     except Exception as e:
         return {"connected": False, "error": str(e)}
@@ -1363,63 +1389,53 @@ def _get_azure_engine():
 
 
 def _populate_azure_task():
-    """Background task: read each table from SQLite and bulk-insert into Azure."""
-    import sqlite3
-    sqlite_path = os.getenv("DB_PATH", os.path.join(project_root, "src", "collector", "trends.db"))
+    """Background task: read each table from SQLite and bulk-insert into Azure via ORM."""
+    from sqlalchemy.orm import Session as _Ses
     try:
         azure_engine = _get_azure_engine()
     except Exception as e:
         logger.error("Cannot create Azure engine: %s", e)
         return
 
-    sqlite_conn = sqlite3.connect(sqlite_path)
-    sqlite_conn.row_factory = sqlite3.Row
+    # Build a local SQLite session
+    sqlite_engine = get_engine()  # current engine (should be sqlite)
+    local_session = _Ses(bind=sqlite_engine)
+    az_session = _Ses(bind=azure_engine)
 
-    for table in _SQLITE_TO_AZURE_TABLES:
-        try:
-            rows = sqlite_conn.execute(f"SELECT * FROM {table}").fetchall()
-            if not rows:
-                logger.info("Table %s is empty in SQLite — skipping.", table)
-                continue
+    try:
+        for mapper in Base.registry.mappers:
+            model = mapper.class_
+            tname = model.__tablename__
+            try:
+                rows = local_session.query(model).all()
+                if not rows:
+                    logger.info("Table %s is empty in SQLite — skipping.", tname)
+                    continue
 
-            cols = rows[0].keys()
-            # Skip auto-increment 'id' column for tables that have it
-            insert_cols = [c for c in cols if c != "id"]
-            col_list = ", ".join(insert_cols)
-            val_list = ", ".join(f":{c}" for c in insert_cols)
-
-            with azure_engine.connect() as az_conn:
-                batch_size = 500
                 inserted = 0
-                for i in range(0, len(rows), batch_size):
-                    batch = rows[i:i + batch_size]
-                    params_list = [{c: row[c] for c in insert_cols} for row in batch]
-                    try:
-                        az_conn.execute(
-                            text(f"INSERT INTO dbo.{table} ({col_list}) VALUES ({val_list})"),
-                            params_list,
-                        )
-                        az_conn.commit()
-                        inserted += len(batch)
-                    except Exception as e:
-                        logger.warning("Batch insert into %s failed (batch %d): %s", table, i // batch_size, e)
-                        az_conn.rollback()
-                        # Try row-by-row for this batch
-                        for params in params_list:
-                            try:
-                                az_conn.execute(
-                                    text(f"INSERT INTO dbo.{table} ({col_list}) VALUES ({val_list})"),
-                                    params,
-                                )
-                                az_conn.commit()
-                                inserted += 1
-                            except Exception:
-                                az_conn.rollback()
-                logger.info("Populated dbo.%s: %d rows inserted.", table, inserted)
-        except Exception as e:
-            logger.error("Failed to populate table %s: %s", table, e)
-
-    sqlite_conn.close()
+                for row in rows:
+                    # Create a detached copy for the Azure session
+                    data = {c.key: getattr(row, c.key) for c in mapper.column_attrs if c.key != "id"}
+                    az_session.add(model(**data))
+                    inserted += 1
+                    if inserted % 500 == 0:
+                        try:
+                            az_session.commit()
+                        except Exception as e:
+                            logger.warning("Batch commit for %s failed: %s", tname, e)
+                            az_session.rollback()
+                try:
+                    az_session.commit()
+                except Exception as e:
+                    logger.warning("Final commit for %s failed: %s", tname, e)
+                    az_session.rollback()
+                logger.info("Populated %s: %d rows inserted.", tname, inserted)
+            except Exception as e:
+                logger.error("Failed to populate table %s: %s", tname, e)
+                az_session.rollback()
+    finally:
+        local_session.close()
+        az_session.close()
     logger.info("Azure DB population complete.")
 
 

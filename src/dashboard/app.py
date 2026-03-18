@@ -16,6 +16,7 @@ from src.dashboard.tabs import (
     format_number, tab_niche_research, tab_daily_trends, tab_youtube,
     tab_tiktok, tab_instagram, tab_threads, tab_reddit, tab_community_news,
 )
+from src.db.connection import get_backend, switch_backend, test_connection
 
 
 def inject_custom_css():
@@ -208,6 +209,54 @@ def render_sidebar(api):
             st.markdown('<span class="status-badge status-ok">⚡ Direct mode</span>', unsafe_allow_html=True)
         else:
             st.markdown('<span class="status-badge status-warn">🌐 API mode</span>', unsafe_allow_html=True)
+
+        # --- Database connection switcher ---
+        st.divider()
+        st.markdown(
+            '<div style="font-size:0.75rem;font-weight:600;color:#8b949e;'
+            'text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.4rem;">'
+            '🗄️ Database</div>',
+            unsafe_allow_html=True,
+        )
+
+        current_backend = get_backend()
+
+        # Initialise session state for DB
+        if "db_backend" not in st.session_state:
+            st.session_state.db_backend = current_backend
+        if "db_status" not in st.session_state:
+            st.session_state.db_status = None
+
+        backend_choice = st.radio(
+            "Backend",
+            options=["sqlite", "mssql"],
+            index=0 if st.session_state.db_backend == "sqlite" else 1,
+            format_func=lambda x: "🏠 Local (SQLite)" if x == "sqlite" else "☁️ Azure SQL",
+            key="db_backend_radio",
+            horizontal=True,
+            label_visibility="collapsed",
+        )
+
+        if st.button("🔌 Connect to DB", key="db_connect_btn", use_container_width=True):
+            try:
+                switch_backend(backend_choice)
+                ok, msg = test_connection()
+                st.session_state.db_backend = backend_choice
+                if ok:
+                    st.session_state.db_status = ("success", msg)
+                else:
+                    st.session_state.db_status = ("error", msg)
+            except Exception as e:
+                st.session_state.db_status = ("error", str(e))
+            st.rerun()
+
+        # Show connection status
+        if st.session_state.db_status:
+            level, msg = st.session_state.db_status
+            if level == "success":
+                st.success(msg, icon="✅")
+            else:
+                st.error(msg, icon="❌")
 
         # App switcher for admin users
         if role == "admin":
