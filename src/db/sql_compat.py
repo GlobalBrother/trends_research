@@ -150,9 +150,19 @@ def upsert_author(session: Session, platform_id, external_author_id, username=""
     return new_author.id
 
 
+def _ensure_datetime(val):
+    """Convert ISO-format strings to datetime objects; pass through None/datetime."""
+    if val is None or isinstance(val, datetime):
+        return val
+    if isinstance(val, str):
+        return datetime.fromisoformat(val)
+    return val
+
+
 def upsert_content(session: Session, platform_id, external_id, keyword="", geo="",
                    text_content="", media_type="", url="", created_at=None, author_id=None):
     """Insert or update a content row and return the content id."""
+    created_at = _ensure_datetime(created_at)
     row = session.query(Content).filter(
         Content.platform_id == platform_id,
         Content.external_id == external_id,

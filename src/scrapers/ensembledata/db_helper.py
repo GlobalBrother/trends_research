@@ -48,7 +48,7 @@ def save_trend(platform, topic, growth, keyword, geo, url=None, extra_data=None)
             upsert_scrape_log(
                 session, platform,
                 f"{keyword}_{geo}" if geo else keyword,
-                200, extracted_at.isoformat(),
+                200, extracted_at,
             )
             session.commit()
             logger.debug("Saved trend: platform=%s, topic=%.60s, keyword=%s", platform, topic, keyword)

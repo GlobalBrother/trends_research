@@ -95,7 +95,7 @@ class TokenImportSpider(scrapy.Spider):
             url=url,
             status=status,
             reason=failure.getErrorMessage(),
-            extracted_at=datetime.now().isoformat(),
+            extracted_at=datetime.now(),
         )
         self.logger.error("Token import request failed: %s", failure.getErrorMessage())
 
@@ -123,7 +123,7 @@ class TokenImportSpider(scrapy.Spider):
                 url=response.url,
                 status=response.status,
                 reason="Non-200 response in token import widget request",
-                extracted_at=datetime.now().isoformat(),
+                extracted_at=datetime.now(),
             )
             return
 

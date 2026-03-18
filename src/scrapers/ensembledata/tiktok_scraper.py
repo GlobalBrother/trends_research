@@ -66,7 +66,7 @@ def _save_tiktok_video(v: dict, keyword: str, geo: str):
         text_content=desc,
         media_type="video",
         url=share_url,
-        content_created_at=datetime.fromtimestamp(v.get("create_time", 0)).isoformat() if v.get("create_time") else None,
+        content_created_at=datetime.fromtimestamp(v.get("create_time", 0)) if v.get("create_time") else None,
         author_external_id=author_uid if author_uid else None,
         author_username=username,
         author_full_name=author.get("nickname", ""),

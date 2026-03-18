@@ -50,7 +50,7 @@ class NewsApiSpider(scrapy.Spider):
                         'popularity': 80
                     }
                 ],
-                extracted_at=datetime.now().isoformat()
+                extracted_at=datetime.now()
             )
         else:
             yield scrapy.Request(self.url, callback=self.parse, errback=self.handle_error)
@@ -66,7 +66,7 @@ class NewsApiSpider(scrapy.Spider):
             url=request.url if request else self.url,
             status=status,
             reason=failure.getErrorMessage(),
-            extracted_at=datetime.now().isoformat()
+            extracted_at=datetime.now()
         )
 
     def parse(self, response):
@@ -77,7 +77,7 @@ class NewsApiSpider(scrapy.Spider):
                 url=response.url,
                 status=response.status,
                 reason=f"HTTP {response.status}",
-                extracted_at=datetime.now().isoformat()
+                extracted_at=datetime.now()
             )
             return
 
@@ -89,7 +89,7 @@ class NewsApiSpider(scrapy.Spider):
                 url=response.url,
                 status=response.status,
                 reason=data.get('message', 'Unknown API error'),
-                extracted_at=datetime.now().isoformat()
+                extracted_at=datetime.now()
             )
             self.logger.error(f"NewsAPI error: {data.get('message')}")
             return
@@ -113,7 +113,7 @@ class NewsApiSpider(scrapy.Spider):
             category=0,
             data_type="news_trends",
             results=results,
-            extracted_at=datetime.now().isoformat()
+            extracted_at=datetime.now()
         )
 
 

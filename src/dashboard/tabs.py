@@ -163,15 +163,19 @@ def exclude_regions(df):
 # Per-tab filter helper
 # ---------------------------------------------------------------------------
 
-def render_tab_filters(api, tab_key, table_name, geo_col="geo", keyword_col="search_keyword"):
+def render_tab_filters(api, tab_key, table_name, geo_col="geo", keyword_col="search_keyword", show_geo=True):
     """Render Country & Niche selectors inside a tab, populated from DB data."""
     geos, keywords = api.get_table_filters(table_name, geo_col=geo_col, keyword_col=keyword_col)
     niches = api.get_niches()
 
-    col1, col2 = st.columns(2)
-    with col1:
-        geo = st.selectbox("🌍 Country / Geo", geos, key=f"geo_{tab_key}")
-    with col2:
+    if show_geo:
+        col1, col2 = st.columns(2)
+        with col1:
+            geo = st.selectbox("🌍 Country / Geo", geos, key=f"geo_{tab_key}")
+        with col2:
+            niche = st.selectbox("🎯 Niche", niches, key=f"niche_{tab_key}")
+    else:
+        geo = "All"
         niche = st.selectbox("🎯 Niche", niches, key=f"niche_{tab_key}")
 
     # Map "All" back to values the API methods expect
@@ -288,6 +292,11 @@ def tab_daily_trends(api):
         st.info("No daily trends found. The scraper might be running or blocked.")
         return
 
+    # Ensure numeric columns are properly typed
+    for col in ('growth', 'virality_score'):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
     # KPIs
     metric_cards([
         {"label": "Trends", "value": format_number(len(df)), "icon": "🔥"},
@@ -311,7 +320,7 @@ def tab_daily_trends(api):
 
 def tab_youtube(api):
     """YouTube — dedicated tab using youtube_videos table."""
-    cfg = render_tab_filters(api, "yt", "youtube_videos")
+    cfg = render_tab_filters(api, "yt", "youtube_videos", show_geo=False)
 
     col_a, col_b = st.columns([3, 1])
     with col_a:
@@ -393,7 +402,7 @@ def tab_youtube(api):
 
 def tab_tiktok(api):
     """TikTok — dedicated tab using tiktok_videos table."""
-    cfg = render_tab_filters(api, "tiktok", "tiktok_videos")
+    cfg = render_tab_filters(api, "tiktok", "tiktok_videos", show_geo=False)
 
     col_a, col_b = st.columns([3, 1])
     with col_a:
@@ -505,7 +514,7 @@ def tab_tiktok(api):
 
 def tab_instagram(api):
     """Instagram posts from dedicated table."""
-    cfg = render_tab_filters(api, "instagram", "instagram_posts")
+    cfg = render_tab_filters(api, "instagram", "instagram_posts", show_geo=False)
 
     col_a, col_b = st.columns([3, 1])
     with col_a:

@@ -76,7 +76,7 @@ def _save_instagram_post(item: dict, keyword: str, geo: str):
         text_content=caption,
         media_type=media_type,
         url=url,
-        content_created_at=datetime.fromtimestamp(taken_at).isoformat() if taken_at else None,
+        content_created_at=datetime.fromtimestamp(taken_at) if taken_at else None,
         author_external_id=user_pk if user_pk else None,
         author_username=username,
         author_full_name=full_name,

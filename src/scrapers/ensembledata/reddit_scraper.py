@@ -60,7 +60,7 @@ def _save_reddit_post(data: dict, keyword: str, geo: str):
         text_content=text_content,
         media_type="text" if data.get("is_self") else "link",
         url=full_url,
-        content_created_at=datetime.fromtimestamp(data.get("created_utc", 0)).isoformat() if data.get("created_utc") else None,
+        content_created_at=datetime.fromtimestamp(data.get("created_utc", 0)) if data.get("created_utc") else None,
         author_external_id=author_fullname if author_fullname else (author if author else None),
         author_username=author,
         likes=score,

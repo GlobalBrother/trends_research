@@ -100,7 +100,7 @@ class SocialBaseTrendsSpider(scrapy.Spider):
             url=url,
             status=status,
             reason=reason,
-            extracted_at=datetime.now().isoformat(),
+            extracted_at=datetime.now(),
         )
 
     def handle_error(self, failure):

@@ -1,17 +1,20 @@
+import hashlib
+import json
+import logging
+import os
+import secrets
+import sys
+import time
+import traceback
+from datetime import datetime, timedelta
+from typing import Optional
+
+import pandas as pd
+import resend
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Query, BackgroundTasks, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional, List
-from datetime import datetime, timedelta
-import pandas as pd
-import os
-import sys
-import secrets
-
-import logging
-import traceback
-import resend
-from dotenv import load_dotenv
 from sqlalchemy import text, func
 from sqlalchemy.exc import IntegrityError
 
@@ -50,6 +53,14 @@ try:
 except ImportError:
     HAS_GETHOOKEDAI = False
 
+# To force SQLite backend, set the environment variable DB_BACKEND=sqlite
+# before starting the server.  Examples:
+#   $env:DB_BACKEND="sqlite"; python -m uvicorn src.api.main:app --reload
+#   python src/api/main.py --sqlite          (convenience shortcut)
+if "--sqlite" in sys.argv:
+    os.environ["DB_BACKEND"] = "sqlite"
+    sys.argv.remove("--sqlite")
+
 engine = get_engine()
 SessionFactory = get_session
 
@@ -57,9 +68,21 @@ SessionFactory = get_session
 resend.api_key = os.getenv("RESEND_API_KEY", "")
 RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "noreply@yourdomain.com")
 
-# Test account that bypasses OTP (for development/testing)
-TEST_ACCOUNT_EMAIL = os.getenv("TEST_ACCOUNT_EMAIL", "").strip()
+# Test account that bypasses OTP (for development/testing).
+# In SQLite mode, a default test account is enabled automatically so you can
+# log in without a real email provider.
+_is_sqlite = os.getenv("DB_BACKEND", "").lower() == "sqlite"
+TEST_ACCOUNT_EMAIL = os.getenv(
+    "TEST_ACCOUNT_EMAIL",
+    "test@localhost" if _is_sqlite else "",
+).strip()
 TEST_ACCOUNT_OTP = os.getenv("TEST_ACCOUNT_OTP", "000000").strip()
+if _is_sqlite and TEST_ACCOUNT_EMAIL:
+    logger.info(
+        "SQLite mode: test account enabled — email=%s, OTP=%s",
+        TEST_ACCOUNT_EMAIL,
+        TEST_ACCOUNT_OTP,
+    )
 
 app = FastAPI(title="Trends Research API")
 
@@ -92,11 +115,6 @@ def _init_auth_tables():
 _init_auth_tables()
 
 
-def _init_token_usage_table():
-    """Ensure token_usage table exists (Azure SQL – tables created via migration schema)."""
-    pass
-
-_init_token_usage_table()
 
 
 def _init_niches_table():
@@ -165,7 +183,13 @@ def request_otp(email: str = Query(...)):
     try:
         user = session.query(User).filter(User.email == email).first()
         if not user:
-            raise HTTPException(status_code=403, detail="Email not whitelisted")
+            # In SQLite (local dev) mode, auto-whitelist any email
+            if os.getenv("DB_BACKEND") == "sqlite":
+                user = User(email=email, role="admin")
+                session.add(user)
+                session.flush()
+            else:
+                raise HTTPException(status_code=403, detail="Email not whitelisted")
 
         user_id = user.id
         code = secrets.token_hex(3).upper()  # 6-char hex code
@@ -199,6 +223,14 @@ def verify_otp_endpoint(email: str = Query(...), code: str = Query(...)):
             raise HTTPException(status_code=401, detail="Invalid or expired OTP")
         user_id = user.id
         user_role = user.role
+
+        # Test account bypass: accept the fixed OTP without DB lookup
+        if TEST_ACCOUNT_EMAIL and email == TEST_ACCOUNT_EMAIL and code == TEST_ACCOUNT_OTP:
+            token = secrets.token_hex(32)
+            expires_at = datetime.utcnow() + timedelta(hours=12)
+            session.add(AuthToken(token=token, user_id=user_id, expires_at=expires_at))
+            session.commit()
+            return {"message": "Authenticated", "email": email, "role": user_role, "token": token}
 
         otp = verify_otp(session, user_id, code.upper())
         if not otp:
@@ -299,7 +331,7 @@ def delete_user(email: str = Query(...)):
 def read_root():
     return {"message": "Trends Research API is running"}
 
-@app.get("/niches", response_model=List[str])
+@app.get("/niches", response_model=list[str])
 def get_niches():
     """Return distinct niche names from the DB."""
     try:
@@ -332,11 +364,11 @@ def get_niche_keywords(niche_name: str):
 
 class NicheCreate(BaseModel):
     niche_name: str
-    keywords: List[str] = []
+    keywords: list[str] = []
 
 
 class KeywordAdd(BaseModel):
-    keywords: List[str]
+    keywords: list[str]
 
 
 @app.post("/niches")
@@ -595,12 +627,8 @@ async def import_tokens(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-import json
-import time
-import hashlib
-
 # Simple in-memory cache for processed trends
-_trends_cache = {}
+_trends_cache: dict = {}
 _CACHE_TTL_SECONDS = 300  # 5 minutes
 
 def _get_cached_or_compute(cache_key, compute_fn):
@@ -925,8 +953,8 @@ def get_table_filters(
     keyword_col: str = Query("search_keyword"),
 ):
     """Return distinct geo and keyword values from a given DB table."""
-    import re
-    _safe = re.compile(r"^\w+$")
+    import re as _re
+    _safe = _re.compile(r"^\w+$")
     if not _safe.match(table_name) or not _safe.match(geo_col) or not _safe.match(keyword_col):
         raise HTTPException(status_code=400, detail="Invalid table/column name")
 
@@ -1057,7 +1085,28 @@ def get_tiktok_videos(
     limit: int = Query(500),
 ):
     data = _content_query("TikTok", niche_name, geo, limit, order_attr=ContentMetric.views.desc())
+    # Map generic normalized column names to TikTok-specific names expected by the dashboard
+    rename_map = {
+        "text_content": "description",
+        "username": "author_unique_id",
+        "views": "play_count",
+        "likes": "digg_count",
+        "comments": "comment_count",
+        "shares": "share_count",
+        "saves": "collect_count",
+        "url": "share_url",
+    }
     for row in data:
+        for old_key, new_key in rename_map.items():
+            if old_key in row:
+                row[new_key] = row.pop(old_key)
+        # Compute engagement_total
+        row["engagement_total"] = (
+            (row.get("digg_count") or 0) +
+            (row.get("comment_count") or 0) +
+            (row.get("share_count") or 0) +
+            (row.get("collect_count") or 0)
+        )
         ca = row.get("created_at")
         if ca:
             try:
@@ -1440,5 +1489,21 @@ def _populate_azure_task():
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Trends Research API")
+    parser.add_argument(
+        "--sqlite",
+        action="store_true",
+        help="Force SQLite backend instead of auto-detecting Azure SQL.",
+    )
+    parser.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000)")
+    args = parser.parse_args()
+
+    if args.sqlite:
+        os.environ["DB_BACKEND"] = "sqlite"
+        logger.info("Forced SQLite backend via --sqlite flag.")
+
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host=args.host, port=args.port)

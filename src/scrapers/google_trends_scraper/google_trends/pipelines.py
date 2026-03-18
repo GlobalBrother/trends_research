@@ -21,7 +21,7 @@ from .items import (
 
 class GoogleTrendsPipeline:
     def process_item(self, item, spider):
-        item['extracted_at'] = datetime.datetime.now().isoformat()
+        item['extracted_at'] = datetime.datetime.now()
         return item
 
 class JSONLPipeline:
@@ -58,7 +58,7 @@ class SQLitePipeline:
                 ScrapeLog.platform == platform,
                 ScrapeLog.identifier == identifier,
                 ScrapeLog.status.in_([200, 301]),
-                ScrapeLog.extracted_at > since.isoformat(),
+                ScrapeLog.extracted_at > since,
             ).first()
             return row is not None
         finally:
