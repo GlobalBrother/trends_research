@@ -3,14 +3,15 @@ import os
 import sys
 import datetime
 
-from sqlalchemy import text
-
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from src.db.connection import get_engine
-from src.db.sql_compat import duplicate_check_sql, upsert_scrape_log, tbl
+from src.db.connection import get_session
+from src.db.models import Trend, ScrapeError, ScrapeLog
+from src.db.sql_compat import (
+    is_duplicate_trend, upsert_scrape_log, get_platform_id,
+)
 
 from .items import (
     BaseItem, GoogleTrendsItem, TrendingNowItem,
@@ -36,34 +37,32 @@ class JSONLPipeline:
         return item
 
 class SQLitePipeline:
-    """Pipeline that writes to Azure SQL Server via SQLAlchemy."""
-
-    def __init__(self):
-        self.engine = None
+    """Pipeline that writes to the database via SQLAlchemy ORM."""
 
     @classmethod
     def from_crawler(cls, crawler):
         return cls()
 
     def open_spider(self, spider):
-        self.engine = get_engine()
+        pass
 
     def close_spider(self, spider):
         pass
 
     def is_recently_scraped(self, platform, identifier, hours=24):
         """Checks if the identifier was scraped for the platform in the last X hours."""
-        since = (datetime.datetime.now() - datetime.timedelta(hours=hours)).isoformat()
-        with self.engine.connect() as conn:
-            row = conn.execute(
-                text(
-                    f"SELECT 1 FROM {tbl('scrape_log')} "
-                    "WHERE platform = :platform AND identifier = :identifier "
-                    "AND status IN (200, 301) AND extracted_at > :since"
-                ),
-                {"platform": platform, "identifier": identifier, "since": since},
-            ).fetchone()
-        return row is not None
+        since = datetime.datetime.now() - datetime.timedelta(hours=hours)
+        session = get_session()
+        try:
+            row = session.query(ScrapeLog).filter(
+                ScrapeLog.platform == platform,
+                ScrapeLog.identifier == identifier,
+                ScrapeLog.status.in_([200, 301]),
+                ScrapeLog.extracted_at > since.isoformat(),
+            ).first()
+            return row is not None
+        finally:
+            session.close()
 
     def _parse_traffic(self, traffic_str):
         if not traffic_str or not isinstance(traffic_str, str):
@@ -97,33 +96,16 @@ class SQLitePipeline:
         except:
             return None
 
-    def _is_duplicate(self, conn, platform, topic, keyword, geo):
-        """Check if the same trend was already saved today."""
-        row = conn.execute(
-            text(duplicate_check_sql()),
-            {"platform": platform, "topic": topic, "keyword": keyword, "geo": geo},
-        ).fetchone()
-        return row is not None
-
-    def _upsert_scrape_log(self, conn, platform, identifier, status, extracted_at):
-        """Upsert a scrape_log entry."""
-        upsert_scrape_log(conn, platform, identifier, status, extracted_at)
-
     def process_item(self, item, spider):
-        with self.engine.connect() as conn:
+        session = get_session()
+        try:
             if isinstance(item, ScrapeErrorItem):
-                conn.execute(
-                    text(
-                        f"INSERT INTO {tbl('scrape_errors')} (platform, keyword, url, status, reason, extracted_at) "
-                        "VALUES (:platform, :keyword, :url, :status, :reason, :extracted_at)"
-                    ),
-                    {
-                        "platform": item.get('platform'), "keyword": item.get('keyword'),
-                        "url": item.get('url'), "status": item.get('status'),
-                        "reason": item.get('reason'), "extracted_at": item.get('extracted_at'),
-                    },
-                )
-                conn.commit()
+                session.add(ScrapeError(
+                    platform=item.get('platform'), keyword=item.get('keyword'),
+                    url=item.get('url'), status=item.get('status'),
+                    reason=item.get('reason'), extracted_at=item.get('extracted_at'),
+                ))
+                session.commit()
                 return item
 
             data_type = item.get('data_type')
@@ -189,7 +171,6 @@ class SQLitePipeline:
                 elif data_type == 'interest_over_time':
                     platform = "Google Interest"
                     topic = item.get('keyword')
-                    # For interest over time, we use the peak interest as growth
                     if results:
                         growth = max([r.get('value', [0])[0] if isinstance(r.get('value'), list) else r.get('value', 0) for r in results])
                     else:
@@ -207,47 +188,42 @@ class SQLitePipeline:
                             'geoName': r.get('geoName'),
                             'region_value': reg_growth
                         }
-                        if not self._is_duplicate(conn, platform, reg_topic, keyword, geo):
-                            conn.execute(
-                                text(
-                                    f"INSERT INTO {tbl('trends')} (platform, topic, growth, keyword, geo, extracted_at, extra_data) "
-                                    "VALUES (:platform, :topic, :growth, :keyword, :geo, :extracted_at, :extra_data)"
-                                ),
-                                {
-                                    "platform": platform, "topic": reg_topic, "growth": reg_growth,
-                                    "keyword": keyword, "geo": geo, "extracted_at": extracted_at,
-                                    "extra_data": json.dumps(reg_extra),
-                                },
-                            )
+                        platform_id = get_platform_id(session, platform)
+                        if not is_duplicate_trend(session, platform_id, reg_topic, keyword, geo):
+                            session.add(Trend(
+                                platform_id=platform_id, topic=reg_topic, growth=reg_growth,
+                                keyword=keyword, geo=geo, extracted_at=extracted_at,
+                                extra_data=json.dumps(reg_extra),
+                            ))
                     
                     # We skip the default insert for Google Regions since we added per-region rows
                     continue
 
                 if platform and topic:
-                    if self._is_duplicate(conn, platform, topic, keyword, geo):
+                    platform_id = get_platform_id(session, platform)
+                    if is_duplicate_trend(session, platform_id, topic, keyword, geo):
                         continue
                     # Merge url into extra_data (url column removed from trends table)
                     if url:
                         extra_data['url'] = url
-                    conn.execute(
-                        text(
-                            f"INSERT INTO {tbl('trends')} (platform, topic, growth, keyword, geo, extracted_at, extra_data) "
-                            "VALUES (:platform, :topic, :growth, :keyword, :geo, :extracted_at, :extra_data)"
-                        ),
-                        {
-                            "platform": platform, "topic": topic, "growth": growth,
-                            "keyword": keyword, "geo": geo, "extracted_at": extracted_at,
-                            "extra_data": json.dumps(extra_data),
-                        },
-                    )
+                    session.add(Trend(
+                        platform_id=platform_id, topic=topic, growth=growth,
+                        keyword=keyword, geo=geo, extracted_at=extracted_at,
+                        extra_data=json.dumps(extra_data),
+                    ))
                     
                     # Also log the successful scrape by URL if it exists
                     if url:
-                        self._upsert_scrape_log(conn, platform, url, 200, extracted_at)
+                        upsert_scrape_log(session, platform, url, 200, extracted_at)
 
                     # Also log the successful scrape by keyword_geo for broader skipping
                     identifier = f"{keyword}_{geo}" if geo else keyword
-                    self._upsert_scrape_log(conn, platform, identifier, 200, extracted_at)
+                    upsert_scrape_log(session, platform, identifier, 200, extracted_at)
             
-            conn.commit()
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
         return item

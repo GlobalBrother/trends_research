@@ -3,17 +3,16 @@ import os
 import sys
 import datetime
 from scrapy.exceptions import IgnoreRequest
-from sqlalchemy import text
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from src.db.connection import get_engine
+from src.db.connection import get_session
+from src.db.models import ScrapeLog
 
 class SkipRecentlyScrapedMiddleware:
     def __init__(self, hours):
-        self.engine = get_engine()
         self.hours = hours
 
     @classmethod
@@ -63,25 +62,21 @@ class SkipRecentlyScrapedMiddleware:
             elif platform == 'reddit':
                 platform_variants.append('Reddit')
 
-            # Ensure we have exactly 4 variants
+            # Ensure we have at least 4 variants
             while len(platform_variants) < 4:
                 platform_variants.append(platform)
 
-            with self.engine.connect() as conn:
-                row = conn.execute(
-                    text(
-                        "SELECT 1 FROM scrape_log "
-                        "WHERE platform IN (:p0, :p1, :p2, :p3) "
-                        "AND identifier = :identifier "
-                        "AND status IN (200, 301) AND extracted_at > :since"
-                    ),
-                    {
-                        "p0": platform_variants[0], "p1": platform_variants[1],
-                        "p2": platform_variants[2], "p3": platform_variants[3],
-                        "identifier": str(identifier).strip(), "since": since,
-                    },
-                ).fetchone()
-            return row is not None
+            session = get_session()
+            try:
+                row = session.query(ScrapeLog).filter(
+                    ScrapeLog.platform.in_(platform_variants),
+                    ScrapeLog.identifier == str(identifier).strip(),
+                    ScrapeLog.status.in_([200, 301]),
+                    ScrapeLog.extracted_at > since,
+                ).first()
+                return row is not None
+            finally:
+                session.close()
         except Exception:
             return False
 

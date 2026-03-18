@@ -12,7 +12,7 @@ import logging
 import traceback
 import resend
 from dotenv import load_dotenv
-from sqlalchemy import text
+from sqlalchemy import text, func
 from sqlalchemy.exc import IntegrityError
 
 load_dotenv()
@@ -29,8 +29,12 @@ if project_root not in sys.path:
 from src.collector.trend_collector import TrendCollector
 from src.analytics.analytics_engine import AnalyticsEngine
 from src.niche.niche_discovery import NicheDiscovery
-from src.db.connection import get_engine, is_sqlite
-from src.db.sql_compat import otp_verify_sql, expires_check, insert_if_not_exists_niches, limit_clause, tbl
+from src.db.connection import get_engine, get_session, is_sqlite
+from src.db.sql_compat import expires_check, limit_clause, tbl, get_platform_id, get_platform_name, insert_niche_if_not_exists, verify_otp
+from src.db.models import (
+    User, OtpCode, AuthToken, Niche, TokenUsage, ScrapeError as ScrapeErrorModel,
+    AdsInsight, Content, ContentMetric, Author, Platform,
+)
 
 # Try to import GetHookdAI ads scraper
 try:
@@ -47,6 +51,7 @@ except ImportError:
     HAS_GETHOOKEDAI = False
 
 engine = get_engine()
+SessionFactory = get_session
 
 # Resend API config
 resend.api_key = os.getenv("RESEND_API_KEY", "")
@@ -110,17 +115,17 @@ _init_token_usage_table()
 def _init_niches_table():
     """Seed niches table with defaults if empty."""
     try:
-        with engine.connect() as conn:
-            count = conn.execute(text(f"SELECT COUNT(*) FROM {tbl('niches')}")).scalar()
+        session = SessionFactory()
+        try:
+            count = session.query(Niche).count()
             if count == 0:
                 _nd = NicheDiscovery()
                 for niche_name, keywords in _nd.niche_map.items():
                     for kw in keywords:
-                        conn.execute(
-                            text(insert_if_not_exists_niches()),
-                            {"niche_name": niche_name, "kw": kw},
-                        )
-                conn.commit()
+                        insert_niche_if_not_exists(session, niche_name, kw)
+                session.commit()
+        finally:
+            session.close()
     except Exception as e:
         logger.warning(f"Could not seed niches table: {e}")
 
@@ -156,22 +161,31 @@ def request_otp(email: str = Query(...)):
     """Send an OTP code to a whitelisted email via Resend."""
     # Test account bypass: auto-create user and skip email
     if TEST_ACCOUNT_EMAIL and email == TEST_ACCOUNT_EMAIL:
-        with engine.connect() as conn:
-            row = conn.execute(text(f"SELECT email FROM {tbl('users')} WHERE email = :email"), {"email": email}).fetchone()
-            if not row:
-                conn.execute(text(f"INSERT INTO {tbl('users')} (email, role) VALUES (:email, :role)"), {"email": email, "role": "admin"})
-            conn.execute(text(f"INSERT INTO {tbl('otp_codes')} (email, code) VALUES (:email, :code)"), {"email": email, "code": TEST_ACCOUNT_OTP})
-            conn.commit()
+        session = SessionFactory()
+        try:
+            user = session.query(User).filter(User.email == email).first()
+            if not user:
+                user = User(email=email, role="admin")
+                session.add(user)
+                session.flush()
+            session.add(OtpCode(user_id=user.id, code=TEST_ACCOUNT_OTP))
+            session.commit()
+        finally:
+            session.close()
         return {"message": "OTP sent", "email": email}
 
-    with engine.connect() as conn:
-        row = conn.execute(text(f"SELECT email, role FROM {tbl('users')} WHERE email = :email"), {"email": email}).fetchone()
-        if not row:
+    session = SessionFactory()
+    try:
+        user = session.query(User).filter(User.email == email).first()
+        if not user:
             raise HTTPException(status_code=403, detail="Email not whitelisted")
 
+        user_id = user.id
         code = secrets.token_hex(3).upper()  # 6-char hex code
-        conn.execute(text(f"INSERT INTO {tbl('otp_codes')} (email, code) VALUES (:email, :code)"), {"email": email, "code": code})
-        conn.commit()
+        session.add(OtpCode(user_id=user_id, code=code))
+        session.commit()
+    finally:
+        session.close()
 
     try:
         resend.Emails.send({
@@ -189,52 +203,60 @@ def request_otp(email: str = Query(...)):
 
 
 @app.post("/auth/verify_otp")
-def verify_otp(email: str = Query(...), code: str = Query(...)):
+def verify_otp_endpoint(email: str = Query(...), code: str = Query(...)):
     """Verify an OTP code and return the user's role."""
-    with engine.connect() as conn:
-        row = conn.execute(
-            text(otp_verify_sql()),
-            {"email": email, "code": code.upper()},
-        ).fetchone()
-        if not row:
+    session = SessionFactory()
+    try:
+        user = session.query(User).filter(User.email == email).first()
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid or expired OTP")
+        user_id = user.id
+        user_role = user.role
+
+        otp = verify_otp(session, user_id, code.upper())
+        if not otp:
             raise HTTPException(status_code=401, detail="Invalid or expired OTP")
 
-        conn.execute(text(f"UPDATE {tbl('otp_codes')} SET used = 1 WHERE id = :id"), {"id": row[0]})
-        user = conn.execute(text(f"SELECT role FROM {tbl('users')} WHERE email = :email"), {"email": email}).fetchone()
-        conn.commit()
+        otp.used = 1
 
-    # Generate auth token valid for 12 hours
-    token = secrets.token_hex(32)
-    expires_at = (datetime.utcnow() + timedelta(hours=12)).strftime("%Y-%m-%d %H:%M:%S")
-    with engine.connect() as conn:
-        conn.execute(
-            text(f"INSERT INTO {tbl('auth_tokens')} (token, email, role, expires_at) VALUES (:token, :email, :role, :expires_at)"),
-            {"token": token, "email": email, "role": user[0], "expires_at": expires_at},
-        )
-        conn.commit()
+        # Generate auth token valid for 12 hours
+        token = secrets.token_hex(32)
+        expires_at = datetime.utcnow() + timedelta(hours=12)
+        session.add(AuthToken(token=token, user_id=user_id, expires_at=expires_at))
+        session.commit()
+    finally:
+        session.close()
 
-    return {"message": "Authenticated", "email": email, "role": user[0], "token": token}
+    return {"message": "Authenticated", "email": email, "role": user_role, "token": token}
 
 
 @app.get("/auth/validate_token")
 def validate_token(token: str = Query(...)):
     """Validate an auth token and return user info if still valid."""
-    with engine.connect() as conn:
-        row = conn.execute(
-            text(f"SELECT email, role FROM {tbl('auth_tokens')} WHERE token = :token AND {expires_check('expires_at')}"),
-            {"token": token},
-        ).fetchone()
+    session = SessionFactory()
+    try:
+        row = session.query(User.email, User.role).join(
+            AuthToken, AuthToken.user_id == User.id
+        ).filter(
+            AuthToken.token == token,
+            AuthToken.expires_at > datetime.utcnow(),
+        ).first()
+    finally:
+        session.close()
     if not row:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
-    return {"email": row[0], "role": row[1]}
+    return {"email": row.email, "role": row.role}
 
 
 @app.get("/auth/users")
 def list_users():
     """List all whitelisted users."""
-    with engine.connect() as conn:
-        rows = conn.execute(text(f"SELECT email, role, created_at FROM {tbl('users')} ORDER BY created_at")).fetchall()
-    return [{"email": r[0], "role": r[1], "created_at": r[2]} for r in rows]
+    session = SessionFactory()
+    try:
+        rows = session.query(User.email, User.role, User.created_at).order_by(User.created_at).all()
+    finally:
+        session.close()
+    return [{"email": r.email, "role": r.role, "created_at": r.created_at} for r in rows]
 
 
 @app.post("/auth/users")
@@ -242,12 +264,15 @@ def add_user(user: UserCreate):
     """Add a whitelisted user."""
     if user.role not in ("admin", "trends"):
         raise HTTPException(status_code=400, detail="Role must be 'admin' or 'trends'")
+    session = SessionFactory()
     try:
-        with engine.connect() as conn:
-            conn.execute(text(f"INSERT INTO {tbl('users')} (email, role) VALUES (:email, :role)"), {"email": user.email, "role": user.role})
-            conn.commit()
+        session.add(User(email=user.email, role=user.role))
+        session.commit()
     except IntegrityError:
+        session.rollback()
         raise HTTPException(status_code=409, detail="User already exists")
+    finally:
+        session.close()
     return {"message": "User added", "email": user.email, "role": user.role}
 
 
@@ -256,22 +281,30 @@ def update_user_role(email: str = Query(...), role: str = Query(...)):
     """Update a user's role."""
     if role not in ("admin", "trends"):
         raise HTTPException(status_code=400, detail="Role must be 'admin' or 'trends'")
-    with engine.connect() as conn:
-        cur = conn.execute(text(f"UPDATE {tbl('users')} SET role = :role WHERE email = :email"), {"role": role, "email": email})
-        conn.commit()
-        if cur.rowcount == 0:
+    session = SessionFactory()
+    try:
+        user = session.query(User).filter(User.email == email).first()
+        if not user:
             raise HTTPException(status_code=404, detail="User not found")
+        user.role = role
+        session.commit()
+    finally:
+        session.close()
     return {"message": "Role updated", "email": email, "role": role}
 
 
 @app.delete("/auth/users")
 def delete_user(email: str = Query(...)):
     """Remove a whitelisted user."""
-    with engine.connect() as conn:
-        cur = conn.execute(text(f"DELETE FROM {tbl('users')} WHERE email = :email"), {"email": email})
-        conn.commit()
-        if cur.rowcount == 0:
+    session = SessionFactory()
+    try:
+        user = session.query(User).filter(User.email == email).first()
+        if not user:
             raise HTTPException(status_code=404, detail="User not found")
+        session.delete(user)
+        session.commit()
+    finally:
+        session.close()
     return {"message": "User removed", "email": email}
 
 
@@ -283,9 +316,12 @@ def read_root():
 def get_niches():
     """Return distinct niche names from the DB."""
     try:
-        with engine.connect() as conn:
-            rows = conn.execute(text(f"SELECT DISTINCT niche_name FROM {tbl('niches')} ORDER BY niche_name")).fetchall()
-        return [r[0] for r in rows]
+        session = SessionFactory()
+        try:
+            rows = session.query(Niche.niche_name).distinct().order_by(Niche.niche_name).all()
+        finally:
+            session.close()
+        return [r.niche_name for r in rows]
     except Exception:
         return niche.get_available_niches()
 
@@ -293,12 +329,14 @@ def get_niches():
 def get_niche_keywords(niche_name: str):
     """Return keywords for a niche from the DB."""
     try:
-        with engine.connect() as conn:
-            rows = conn.execute(
-                text(f"SELECT keyword FROM {tbl('niches')} WHERE niche_name = :niche_name ORDER BY keyword"),
-                {"niche_name": niche_name},
-            ).fetchall()
-        keywords = [r[0] for r in rows]
+        session = SessionFactory()
+        try:
+            rows = session.query(Niche.keyword).filter(
+                Niche.niche_name == niche_name
+            ).order_by(Niche.keyword).all()
+        finally:
+            session.close()
+        keywords = [r.keyword for r in rows]
         return {"niche": niche_name, "keywords": keywords if keywords else [niche_name]}
     except Exception:
         keywords = niche.get_niche_keywords(niche_name)
@@ -321,20 +359,22 @@ def create_niche(body: NicheCreate):
         raise HTTPException(status_code=400, detail="Niche name cannot be empty")
     keywords = body.keywords if body.keywords else [body.niche_name.strip()]
     added = 0
-    with engine.connect() as conn:
+    session = SessionFactory()
+    try:
         for kw in keywords:
             kw = kw.strip()
             if not kw:
                 continue
-            try:
-                conn.execute(
-                    text(f"INSERT INTO {tbl('niches')} (niche_name, keyword) VALUES (:niche_name, :kw)"),
-                    {"niche_name": body.niche_name.strip(), "kw": kw},
-                )
+            existing = session.query(Niche).filter(
+                Niche.niche_name == body.niche_name.strip(),
+                Niche.keyword == kw,
+            ).first()
+            if not existing:
+                session.add(Niche(niche_name=body.niche_name.strip(), keyword=kw))
                 added += 1
-            except IntegrityError:
-                pass
-        conn.commit()
+        session.commit()
+    finally:
+        session.close()
     return {"message": f"Niche '{body.niche_name}' created with {added} keyword(s)"}
 
 
@@ -342,56 +382,64 @@ def create_niche(body: NicheCreate):
 def add_keywords(niche_name: str, body: KeywordAdd):
     """Add keywords to an existing niche."""
     added = 0
-    with engine.connect() as conn:
+    session = SessionFactory()
+    try:
         for kw in body.keywords:
             kw = kw.strip()
             if not kw:
                 continue
-            try:
-                conn.execute(
-                    text(f"INSERT INTO {tbl('niches')} (niche_name, keyword) VALUES (:niche_name, :kw)"),
-                    {"niche_name": niche_name, "kw": kw},
-                )
+            existing = session.query(Niche).filter(
+                Niche.niche_name == niche_name,
+                Niche.keyword == kw,
+            ).first()
+            if not existing:
+                session.add(Niche(niche_name=niche_name, keyword=kw))
                 added += 1
-            except IntegrityError:
-                pass
-        conn.commit()
+        session.commit()
+    finally:
+        session.close()
     return {"message": f"Added {added} keyword(s) to '{niche_name}'"}
 
 
 @app.delete("/niches/{niche_name}")
 def delete_niche(niche_name: str):
     """Delete an entire niche and all its keywords."""
-    with engine.connect() as conn:
-        cur = conn.execute(text(f"DELETE FROM {tbl('niches')} WHERE niche_name = :niche_name"), {"niche_name": niche_name})
-        conn.commit()
-        if cur.rowcount == 0:
+    session = SessionFactory()
+    try:
+        count = session.query(Niche).filter(Niche.niche_name == niche_name).delete()
+        session.commit()
+        if count == 0:
             raise HTTPException(status_code=404, detail="Niche not found")
+    finally:
+        session.close()
     return {"message": f"Niche '{niche_name}' deleted"}
 
 
 @app.delete("/niches/{niche_name}/keywords/{keyword}")
 def delete_keyword(niche_name: str, keyword: str):
     """Remove a single keyword from a niche."""
-    with engine.connect() as conn:
-        cur = conn.execute(
-            text(f"DELETE FROM {tbl('niches')} WHERE niche_name = :niche_name AND keyword = :keyword"),
-            {"niche_name": niche_name, "keyword": keyword},
-        )
-        conn.commit()
-        if cur.rowcount == 0:
+    session = SessionFactory()
+    try:
+        count = session.query(Niche).filter(
+            Niche.niche_name == niche_name,
+            Niche.keyword == keyword,
+        ).delete()
+        session.commit()
+        if count == 0:
             raise HTTPException(status_code=404, detail="Keyword not found")
+    finally:
+        session.close()
     return {"message": f"Keyword '{keyword}' removed from '{niche_name}'"}
 
 def _log_token_usage(platform: str, keyword: str = None, units: float = 1.0, geo: str = None):
     """Record an API / scrape usage entry."""
     try:
-        with engine.connect() as conn:
-            conn.execute(
-                text(f"INSERT INTO {tbl('token_usage')} (platform, keyword, units_charged, geo) VALUES (:platform, :keyword, :units, :geo)"),
-                {"platform": platform, "keyword": keyword, "units": units, "geo": geo},
-            )
-            conn.commit()
+        session = SessionFactory()
+        try:
+            session.add(TokenUsage(platform=platform, keyword=keyword, units_charged=units, geo=geo))
+            session.commit()
+        finally:
+            session.close()
     except Exception as e:
         logger.error(f"Failed to log token usage: {e}")
 
@@ -414,11 +462,12 @@ def _run_and_log(func, log_platform, log_keywords, log_geo, **kwargs):
 def _get_niche_keywords_from_db(niche_name: str) -> list:
     """Fetch keywords for a niche from the DB, falling back to NicheDiscovery."""
     try:
-        with engine.connect() as conn:
-            rows = conn.execute(
-                text(f"SELECT keyword FROM {tbl('niches')} WHERE niche_name = :niche_name"), {"niche_name": niche_name}
-            ).fetchall()
-        keywords = [r[0] for r in rows]
+        session = SessionFactory()
+        try:
+            rows = session.query(Niche.keyword).filter(Niche.niche_name == niche_name).all()
+        finally:
+            session.close()
+        keywords = [r.keyword for r in rows]
         if keywords:
             return keywords
     except Exception:
@@ -888,7 +937,7 @@ def _geo_clause(col: str = "geo"):
     return f" AND (UPPER({col}) = UPPER(:geo_param) OR {col} = '' OR UPPER({col}) = 'GLOBAL' OR {col} IS NULL)"
 
 
-def _keyword_clause(keywords: list, col: str = "search_keyword"):
+def _keyword_clause(keywords: list, col: str = "keyword"):
     if not keywords:
         return "", {}
     placeholders = ", ".join([f":kw_{i}" for i in range(len(keywords))])
@@ -933,7 +982,42 @@ def get_table_filters(
 
 
 # ---------------------------------------------------------------------------
-# YouTube videos (dedicated table)
+# Normalized content query helper
+# ---------------------------------------------------------------------------
+
+def _content_query(platform_name: str, niche_name, geo, limit, order_col="m.likes DESC"):
+    """Build and execute a query against the normalized content/authors/metrics tables."""
+    _c = tbl('content')
+    _a = tbl('authors')
+    _m = tbl('content_metrics')
+    _p = tbl('platforms')
+    query = f"""
+        SELECT c.external_id, c.text_content, c.keyword, c.geo,
+               c.media_type, c.url, c.created_at,
+               a.username, a.full_name, a.follower_count, a.is_verified, a.profile_pic_url,
+               m.likes, m.comments, m.shares, m.views, m.saves,
+               p.name AS platform
+        FROM {_c} c
+        JOIN {_p} p ON p.id = c.platform_id
+        LEFT JOIN {_a} a ON a.id = c.author_id
+        LEFT JOIN {_m} m ON m.content_id = c.id
+        WHERE p.name = :platform_name
+    """
+    params = {"platform_name": platform_name}
+    if geo and geo != "Global":
+        query += _geo_clause("c.geo")
+        params["geo_param"] = geo
+    if niche_name:
+        kws = _get_niche_keywords_from_db(niche_name)
+        clause, kw_params = _keyword_clause(kws, col="c.keyword")
+        query += clause
+        params.update(kw_params)
+    query += limit_clause(order_col, limit)
+    return _query_platform_table(query, params)
+
+
+# ---------------------------------------------------------------------------
+# YouTube videos (normalized content table)
 # ---------------------------------------------------------------------------
 
 @app.get("/youtube_videos")
@@ -942,39 +1026,12 @@ def get_youtube_videos(
     geo: Optional[str] = Query(None),
     limit: int = Query(500),
 ):
-    query = f"""
-        SELECT video_id, title, description, search_keyword, geo,
-               channel_title, channel_id, published, duration, url,
-               thumbnail_url, tags, language,
-               view_count, like_count, comment_count,
-               engagement_total,
-               extracted_at
-        FROM {tbl('youtube_videos')} WHERE 1=1
-    """
-    params = {}
-    if geo and geo != "Global":
-        query += _geo_clause()
-        params["geo_param"] = geo
-    if niche_name:
-        kws = _get_niche_keywords_from_db(niche_name)
-        clause, kw_params = _keyword_clause(kws)
-        query += clause
-        params.update(kw_params)
-    query += limit_clause("view_count DESC", limit)
-    data = _query_platform_table(query, params)
-    # Post-process tags
-    for row in data:
-        tags = row.get("tags")
-        if tags and isinstance(tags, str) and tags.startswith("["):
-            try:
-                row["tags"] = ", ".join(json.loads(tags))
-            except Exception:
-                pass
+    data = _content_query("YouTube", niche_name, geo, limit, order_col="m.views DESC")
     return {"data": data}
 
 
 # ---------------------------------------------------------------------------
-# TikTok videos (dedicated table)
+# TikTok videos (normalized content table)
 # ---------------------------------------------------------------------------
 
 @app.get("/tiktok_videos")
@@ -983,47 +1040,19 @@ def get_tiktok_videos(
     geo: Optional[str] = Query(None),
     limit: int = Query(500),
 ):
-    query = f"""
-        SELECT aweme_id, description, search_keyword, geo, region,
-               create_time, duration, share_url,
-               digg_count, comment_count, share_count, play_count,
-               download_count, collect_count, engagement_total,
-               author_unique_id, author_nickname, author_follower_count,
-               author_verified,
-               music_title, music_author,
-               hashtags, video_ratio,
-               extracted_at
-        FROM {tbl('tiktok_videos')} WHERE 1=1
-    """
-    params = {}
-    if geo and geo != "Global":
-        query += _geo_clause()
-        params["geo_param"] = geo
-    if niche_name:
-        kws = _get_niche_keywords_from_db(niche_name)
-        clause, kw_params = _keyword_clause(kws)
-        query += clause
-        params.update(kw_params)
-    query += limit_clause("play_count DESC", limit)
-    data = _query_platform_table(query, params)
+    data = _content_query("TikTok", niche_name, geo, limit, order_col="m.views DESC")
     for row in data:
-        ht = row.get("hashtags")
-        if ht and isinstance(ht, str):
+        ca = row.get("created_at")
+        if ca:
             try:
-                row["hashtags"] = ", ".join(json.loads(ht))
-            except Exception:
-                pass
-        ct = row.get("create_time")
-        if ct:
-            try:
-                row["created"] = datetime.utcfromtimestamp(int(ct)).strftime("%Y-%m-%d %H:%M")
+                row["created"] = str(ca)[:16]
             except Exception:
                 pass
     return {"data": data}
 
 
 # ---------------------------------------------------------------------------
-# Instagram posts (dedicated table)
+# Instagram posts (normalized content table)
 # ---------------------------------------------------------------------------
 
 @app.get("/instagram_posts")
@@ -1032,46 +1061,19 @@ def get_instagram_posts(
     geo: Optional[str] = Query(None),
     limit: int = Query(500),
 ):
-    query = f"""
-        SELECT post_pk, shortcode, search_keyword, geo,
-               caption, media_type, url, thumbnail_url, taken_at,
-               location_name,
-               username, full_name, follower_count, is_verified,
-               like_count, comment_count, share_count, save_count,
-               video_view_count, video_play_count,
-               engagement_total, hashtags,
-               extracted_at
-        FROM {tbl('instagram_posts')} WHERE 1=1
-    """
-    params = {}
-    if geo and geo != "Global":
-        query += _geo_clause()
-        params["geo_param"] = geo
-    if niche_name:
-        kws = _get_niche_keywords_from_db(niche_name)
-        clause, kw_params = _keyword_clause(kws)
-        query += clause
-        params.update(kw_params)
-    query += limit_clause("like_count DESC", limit)
-    data = _query_platform_table(query, params)
+    data = _content_query("Instagram", niche_name, geo, limit, order_col="m.likes DESC")
     for row in data:
-        ta = row.get("taken_at")
-        if ta:
+        ca = row.get("created_at")
+        if ca:
             try:
-                row["posted"] = datetime.utcfromtimestamp(int(ta)).strftime("%Y-%m-%d %H:%M")
-            except Exception:
-                pass
-        ht = row.get("hashtags")
-        if ht and isinstance(ht, str) and ht.startswith("["):
-            try:
-                row["hashtags"] = ", ".join(json.loads(ht))
+                row["posted"] = str(ca)[:16]
             except Exception:
                 pass
     return {"data": data}
 
 
 # ---------------------------------------------------------------------------
-# Reddit posts (dedicated table)
+# Reddit posts (normalized content table)
 # ---------------------------------------------------------------------------
 
 @app.get("/reddit_posts")
@@ -1080,38 +1082,19 @@ def get_reddit_posts(
     geo: Optional[str] = Query(None),
     limit: int = Query(500),
 ):
-    query = f"""
-        SELECT post_id, title, selftext, search_keyword, geo,
-               url, permalink, domain,
-               subreddit, author,
-               score, upvote_ratio, num_comments, total_awards,
-               engagement_total, link_flair_text,
-               created_utc, extracted_at
-        FROM {tbl('reddit_posts')} WHERE 1=1
-    """
-    params = {}
-    if geo and geo != "Global":
-        query += _geo_clause()
-        params["geo_param"] = geo
-    if niche_name:
-        kws = _get_niche_keywords_from_db(niche_name)
-        clause, kw_params = _keyword_clause(kws)
-        query += clause
-        params.update(kw_params)
-    query += limit_clause("score DESC", limit)
-    data = _query_platform_table(query, params)
+    data = _content_query("Reddit", niche_name, geo, limit, order_col="m.likes DESC")
     for row in data:
-        cu = row.get("created_utc")
-        if cu:
+        ca = row.get("created_at")
+        if ca:
             try:
-                row["posted"] = datetime.utcfromtimestamp(int(cu)).strftime("%Y-%m-%d %H:%M")
+                row["posted"] = str(ca)[:16]
             except Exception:
                 pass
     return {"data": data}
 
 
 # ---------------------------------------------------------------------------
-# Threads posts (dedicated table)
+# Threads posts (normalized content table)
 # ---------------------------------------------------------------------------
 
 @app.get("/threads_posts")
@@ -1120,31 +1103,12 @@ def get_threads_posts(
     geo: Optional[str] = Query(None),
     limit: int = Query(500),
 ):
-    query = f"""
-        SELECT post_code, search_keyword, geo,
-               caption, url, taken_at, media_type,
-               username, full_name, follower_count, is_verified,
-               like_count, reply_count, repost_count, quote_count, share_count,
-               engagement_total,
-               extracted_at
-        FROM {tbl('threads_posts')} WHERE 1=1
-    """
-    params = {}
-    if geo and geo != "Global":
-        query += _geo_clause()
-        params["geo_param"] = geo
-    if niche_name:
-        kws = _get_niche_keywords_from_db(niche_name)
-        clause, kw_params = _keyword_clause(kws)
-        query += clause
-        params.update(kw_params)
-    query += limit_clause("like_count DESC", limit)
-    data = _query_platform_table(query, params)
+    data = _content_query("Threads", niche_name, geo, limit, order_col="m.likes DESC")
     for row in data:
-        ta = row.get("taken_at")
-        if ta:
+        ca = row.get("created_at")
+        if ca:
             try:
-                row["posted"] = datetime.utcfromtimestamp(int(ta)).strftime("%Y-%m-%d %H:%M")
+                row["posted"] = str(ca)[:16]
             except Exception:
                 pass
     return {"data": data}
@@ -1175,7 +1139,7 @@ def get_ads_insight(
     params = {}
     if niche_name:
         kws = _get_niche_keywords_from_db(niche_name)
-        clause, kw_params = _keyword_clause(kws)
+        clause, kw_params = _keyword_clause(kws, col="search_keyword")
         query += clause
         params.update(kw_params)
     query += limit_clause("extracted_at DESC", limit)
@@ -1239,9 +1203,12 @@ def scrape_brand_ads_endpoint(
 @app.delete("/scrape_errors")
 def clear_scrape_errors():
     try:
-        with engine.connect() as conn:
-            conn.execute(text(f"DELETE FROM {tbl('scrape_errors')}"))
-            conn.commit()
+        session = SessionFactory()
+        try:
+            session.query(ScrapeErrorModel).delete()
+            session.commit()
+        finally:
+            session.close()
         return {"ok": True}
     except Exception as e:
         logger.error(f"Failed to clear scrape_errors: {e}")
@@ -1270,54 +1237,53 @@ def _provider_label(platform: str) -> str:
 def get_token_usage():
     """Return token/units consumption for ensembledata and gethookedai only."""
     try:
-        # Build named params for IN clause
-        plat_params = {f"p_{i}": p for i, p in enumerate(_TRACKED_PLATFORMS)}
-        placeholders = ", ".join([f":p_{i}" for i in range(len(_TRACKED_PLATFORMS))])
+        session = SessionFactory()
+        try:
+            # Recent usage rows (limit 1000)
+            rows = session.query(
+                TokenUsage.platform, TokenUsage.keyword,
+                TokenUsage.units_charged, TokenUsage.geo, TokenUsage.created_at,
+            ).filter(
+                TokenUsage.platform.in_(_TRACKED_PLATFORMS),
+            ).order_by(TokenUsage.created_at.desc()).limit(1000).all()
 
-        with engine.connect() as conn:
-            rows = conn.execute(
-                text(
-                    f"SELECT TOP 1000 platform, keyword, units_charged, geo, created_at "
-                    f"FROM {tbl('token_usage')} WHERE platform IN ({placeholders}) "
-                    f"ORDER BY created_at DESC"
-                ),
-                plat_params,
-            ).fetchall()
             data = []
             for r in rows:
-                d = dict(r._mapping)
-                d["provider"] = _provider_label(d["platform"])
-                data.append(d)
+                data.append({
+                    "platform": r.platform, "keyword": r.keyword,
+                    "units_charged": r.units_charged, "geo": r.geo,
+                    "created_at": r.created_at,
+                    "provider": _provider_label(r.platform),
+                })
 
-            summary = conn.execute(
-                text(
-                    f"SELECT platform, SUM(units_charged) as total_units, COUNT(*) as request_count "
-                    f"FROM {tbl('token_usage')} WHERE platform IN ({placeholders}) "
-                    f"GROUP BY platform ORDER BY total_units DESC"
-                ),
-                plat_params,
-            ).fetchall()
+            # Summary by platform
+            summary_rows = session.query(
+                TokenUsage.platform,
+                func.sum(TokenUsage.units_charged).label("total_units"),
+                func.count().label("request_count"),
+            ).filter(
+                TokenUsage.platform.in_(_TRACKED_PLATFORMS),
+            ).group_by(TokenUsage.platform).order_by(func.sum(TokenUsage.units_charged).desc()).all()
+
             summary_data = []
-            for r in summary:
-                d = dict(r._mapping)
-                d["provider"] = _provider_label(d["platform"])
-                summary_data.append(d)
+            for r in summary_rows:
+                summary_data.append({
+                    "platform": r.platform, "total_units": r.total_units,
+                    "request_count": r.request_count,
+                    "provider": _provider_label(r.platform),
+                })
 
-            provider_rows = conn.execute(
-                text(
-                    f"SELECT CASE "
-                    f"  WHEN platform IN ('ads_insight','ads_brand_spy') THEN 'gethookedai' "
-                    f"  ELSE 'ensembledata' END as provider, "
-                    f"  SUM(units_charged) as total_units, COUNT(*) as request_count "
-                    f"FROM {tbl('token_usage')} WHERE platform IN ({placeholders}) "
-                    f"GROUP BY CASE "
-                    f"  WHEN platform IN ('ads_insight','ads_brand_spy') THEN 'gethookedai' "
-                    f"  ELSE 'ensembledata' END "
-                    f"ORDER BY total_units DESC"
-                ),
-                plat_params,
-            ).fetchall()
-            provider_data = [dict(r._mapping) for r in provider_rows]
+            # Provider-level summary (computed in Python from summary_data)
+            provider_agg = {}
+            for s in summary_data:
+                prov = s["provider"]
+                if prov not in provider_agg:
+                    provider_agg[prov] = {"provider": prov, "total_units": 0, "request_count": 0}
+                provider_agg[prov]["total_units"] += s["total_units"] or 0
+                provider_agg[prov]["request_count"] += s["request_count"] or 0
+            provider_data = sorted(provider_agg.values(), key=lambda x: x["total_units"], reverse=True)
+        finally:
+            session.close()
 
         return {"data": data, "summary": summary_data, "provider_summary": provider_data}
     except Exception as e:

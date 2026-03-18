@@ -35,7 +35,6 @@ from datetime import datetime
 
 import requests
 from dotenv import load_dotenv
-from sqlalchemy import text as sa_text
 
 logging.basicConfig(
     level=logging.INFO,
@@ -50,10 +49,8 @@ from db_helper import save_trend, save_error
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
-from src.db.connection import get_engine, is_sqlite
-from src.db.sql_compat import tbl
-
-_engine = get_engine()
+from src.db.connection import get_session
+from src.db.models import AdsInsight
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".env"))
 
@@ -172,24 +169,17 @@ def _handle_credits(resp, keyword=""):
 
 
 def _save_ad(ad: dict, keyword: str):
-    """Persist a single ad record into the ads_insight table.
+    """Persist a single ad record into the ads_insight table using ORM.
 
-    Fields mapped from PublicAd schema (md.json):
-      id, external_id, platform, display_format, title, body,
-      landing_page, link_description, cta_type, cta_text,
-      start_date, end_date, days_active, active_in_library,
-      used_count, is_aaa_eligible, age_audience_min, age_audience_max,
-      gender_audience, eu_total_reach, ad_spend_range_score,
-      ad_spend_range_score_title, performance_score, performance_score_title,
-      share_url, brand (PublicBrand), media (PublicAdMedia[]), ad_cards (PublicAdCard[])
+    Fields mapped from PublicAd schema (md.json).
     """
-    now = datetime.now().isoformat()
+    now = datetime.now()
     brand = ad.get("brand") or {}
     media = ad.get("media") or []
     ad_cards = ad.get("ad_cards") or []
 
-    params = {
-        "hookd_id": ad.get("id"), "external_id": ad.get("external_id"), "keyword": keyword,
+    fields = {
+        "external_id": ad.get("external_id"), "search_keyword": keyword,
         "platform": ad.get("platform"), "display_format": ad.get("display_format"),
         "title": ad.get("title"), "body": ad.get("body"),
         "landing_page": ad.get("landing_page"), "link_description": ad.get("link_description"),
@@ -207,104 +197,26 @@ def _save_ad(ad: dict, keyword: str):
         "brand_logo_url": brand.get("logo_url"), "brand_active_ads": brand.get("active_ads", 0),
         "media": json.dumps(media), "ad_cards": json.dumps(ad_cards),
         "share_url": ad.get("share_url"),
-        "extracted_at": now, "updated_at": now,
+        "updated_at": now,
     }
 
-    with _engine.connect() as conn:
-        try:
-            if is_sqlite():
-                existing = conn.execute(sa_text(f"SELECT 1 FROM {tbl('ads_insight')} WHERE hookd_id = :hookd_id"), {"hookd_id": ad.get("id")}).fetchone()
-                if existing:
-                    conn.execute(sa_text(
-                        f"UPDATE {tbl('ads_insight')} SET "
-                        "external_id = :external_id, search_keyword = :keyword, "
-                        "platform = :platform, display_format = :display_format, "
-                        "title = :title, body = :body, landing_page = :landing_page, "
-                        "link_description = :link_description, cta_type = :cta_type, cta_text = :cta_text, "
-                        "start_date = :start_date, end_date = :end_date, "
-                        "days_active = :days_active, active_in_library = :active_in_library, "
-                        "performance_score = :performance_score, performance_score_title = :performance_score_title, "
-                        "used_count = :used_count, is_aaa_eligible = :is_aaa_eligible, "
-                        "age_audience_min = :age_audience_min, age_audience_max = :age_audience_max, "
-                        "gender_audience = :gender_audience, eu_total_reach = :eu_total_reach, "
-                        "ad_spend_range_score = :ad_spend_range_score, "
-                        "ad_spend_range_score_title = :ad_spend_range_score_title, "
-                        "brand_external_id = :brand_external_id, brand_name = :brand_name, "
-                        "brand_logo_url = :brand_logo_url, brand_active_ads = :brand_active_ads, "
-                        "media = :media, ad_cards = :ad_cards, share_url = :share_url, "
-                        "updated_at = :updated_at WHERE hookd_id = :hookd_id"
-                    ), params)
-                else:
-                    conn.execute(sa_text(
-                        f"INSERT INTO {tbl('ads_insight')} ("
-                        "hookd_id, external_id, search_keyword, "
-                        "platform, display_format, title, body, "
-                        "landing_page, link_description, cta_type, cta_text, "
-                        "start_date, end_date, days_active, active_in_library, "
-                        "performance_score, performance_score_title, used_count, is_aaa_eligible, "
-                        "age_audience_min, age_audience_max, gender_audience, eu_total_reach, "
-                        "ad_spend_range_score, ad_spend_range_score_title, "
-                        "brand_external_id, brand_name, brand_logo_url, brand_active_ads, "
-                        "media, ad_cards, share_url, extracted_at, updated_at"
-                        ") VALUES ("
-                        ":hookd_id, :external_id, :keyword, "
-                        ":platform, :display_format, :title, :body, "
-                        ":landing_page, :link_description, :cta_type, :cta_text, "
-                        ":start_date, :end_date, :days_active, :active_in_library, "
-                        ":performance_score, :performance_score_title, :used_count, :is_aaa_eligible, "
-                        ":age_audience_min, :age_audience_max, :gender_audience, :eu_total_reach, "
-                        ":ad_spend_range_score, :ad_spend_range_score_title, "
-                        ":brand_external_id, :brand_name, :brand_logo_url, :brand_active_ads, "
-                        ":media, :ad_cards, :share_url, :extracted_at, :updated_at)"
-                    ), params)
-            else:
-                conn.execute(sa_text(f"""
-                    MERGE {tbl('ads_insight')} AS target
-                    USING (SELECT :hookd_id AS hookd_id) AS source
-                    ON target.hookd_id = source.hookd_id
-                    WHEN MATCHED THEN UPDATE SET
-                        external_id = :external_id, search_keyword = :keyword,
-                        platform = :platform, display_format = :display_format,
-                        title = :title, body = :body, landing_page = :landing_page,
-                        link_description = :link_description, cta_type = :cta_type, cta_text = :cta_text,
-                        start_date = :start_date, end_date = :end_date,
-                        days_active = :days_active, active_in_library = :active_in_library,
-                        performance_score = :performance_score, performance_score_title = :performance_score_title,
-                        used_count = :used_count, is_aaa_eligible = :is_aaa_eligible,
-                        age_audience_min = :age_audience_min, age_audience_max = :age_audience_max,
-                        gender_audience = :gender_audience, eu_total_reach = :eu_total_reach,
-                        ad_spend_range_score = :ad_spend_range_score,
-                        ad_spend_range_score_title = :ad_spend_range_score_title,
-                        brand_external_id = :brand_external_id, brand_name = :brand_name,
-                        brand_logo_url = :brand_logo_url, brand_active_ads = :brand_active_ads,
-                        media = :media, ad_cards = :ad_cards, share_url = :share_url,
-                        updated_at = :updated_at
-                    WHEN NOT MATCHED THEN INSERT (
-                        hookd_id, external_id, search_keyword,
-                        platform, display_format, title, body,
-                        landing_page, link_description, cta_type, cta_text,
-                        start_date, end_date, days_active, active_in_library,
-                        performance_score, performance_score_title, used_count, is_aaa_eligible,
-                        age_audience_min, age_audience_max, gender_audience, eu_total_reach,
-                        ad_spend_range_score, ad_spend_range_score_title,
-                        brand_external_id, brand_name, brand_logo_url, brand_active_ads,
-                        media, ad_cards, share_url, extracted_at, updated_at
-                    ) VALUES (
-                        :hookd_id, :external_id, :keyword,
-                        :platform, :display_format, :title, :body,
-                        :landing_page, :link_description, :cta_type, :cta_text,
-                        :start_date, :end_date, :days_active, :active_in_library,
-                        :performance_score, :performance_score_title, :used_count, :is_aaa_eligible,
-                        :age_audience_min, :age_audience_max, :gender_audience, :eu_total_reach,
-                        :ad_spend_range_score, :ad_spend_range_score_title,
-                        :brand_external_id, :brand_name, :brand_logo_url, :brand_active_ads,
-                        :media, :ad_cards, :share_url, :extracted_at, :updated_at
-                    );
-                """), params)
-            conn.commit()
-        except Exception:
-            logger.error("Failed to save ad hookd_id=%s, keyword=%s", ad.get("id"), keyword, exc_info=True)
-            raise
+    session = get_session()
+    try:
+        existing = session.query(AdsInsight).filter(AdsInsight.hookd_id == ad.get("id")).first()
+        if existing:
+            for k, v in fields.items():
+                setattr(existing, k, v)
+        else:
+            fields["hookd_id"] = ad.get("id")
+            fields["extracted_at"] = now
+            session.add(AdsInsight(**fields))
+        session.commit()
+    except Exception:
+        session.rollback()
+        logger.error("Failed to save ad hookd_id=%s, keyword=%s", ad.get("id"), keyword, exc_info=True)
+        raise
+    finally:
+        session.close()
 
 
 # ---------------------------------------------------------------------------

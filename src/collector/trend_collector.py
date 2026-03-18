@@ -22,22 +22,19 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from sqlalchemy import text
-from src.db.connection import get_engine
-from src.db.sql_compat import tbl
+from sqlalchemy import func
+from src.db.connection import get_session
+from src.db.models import Trend, Platform, ScrapeError
 
 
 class TrendCollector:
     def __init__(self):
-        self.engine = get_engine()
+        pass
         
     def get_db_trends(self, geo=None, include_trending_now=False, include_youtube=False, include_social=False, include_hackernews=False, include_reddit=False, include_news=False):
         """Reads trends from the database."""
         try:
-            query = f"SELECT platform, topic, growth, keyword, geo, extracted_at, extra_data FROM {tbl('trends')} WHERE 1=1"
-            params = {}
-
-            # Platform filtering - use IN for included platforms (faster with index)
+            # Platform filtering
             included_platforms = []
             if include_trending_now:
                 included_platforms.append('Google Trends')
@@ -55,43 +52,52 @@ class TrendCollector:
             # Always include Google niche platforms
             always_included = ['Google Interest', 'Google Regions', 'Google Related Queries', 'Google Related Topics']
             included_platforms.extend(always_included)
-            
-            plat_placeholders = ', '.join([f':plat_{i}' for i in range(len(included_platforms))])
-            query += f" AND platform IN ({plat_placeholders})"
-            for i, p in enumerate(included_platforms):
-                params[f'plat_{i}'] = p
 
-            # Geo filtering
-            if geo is not None and geo != "Global":
-                query += " AND (UPPER(geo) = UPPER(:geo) OR geo = '' OR UPPER(geo) = 'GLOBAL' OR geo IS NULL)"
-                params['geo'] = geo
-            elif geo == "Global":
-                query += " AND (UPPER(geo) = 'GLOBAL' OR geo = '' OR geo IS NULL)"
+            session = get_session()
+            try:
+                query = session.query(
+                    Platform.name.label('platform'),
+                    Trend.topic, Trend.growth, Trend.keyword,
+                    Trend.geo, Trend.extracted_at, Trend.extra_data,
+                ).join(Platform, Platform.id == Trend.platform_id).filter(
+                    Platform.name.in_(included_platforms),
+                )
 
-            query += " ORDER BY extracted_at DESC"
-            
-            with self.engine.connect() as conn:
-                result = conn.execute(text(query), params)
-                rows = result.fetchall()
-                columns = result.keys()
+                # Geo filtering
+                if geo is not None and geo != "Global":
+                    query = query.filter(
+                        (func.upper(Trend.geo) == func.upper(geo)) |
+                        (Trend.geo == '') |
+                        (func.upper(Trend.geo) == 'GLOBAL') |
+                        (Trend.geo.is_(None))
+                    )
+                elif geo == "Global":
+                    query = query.filter(
+                        (func.upper(Trend.geo) == 'GLOBAL') |
+                        (Trend.geo == '') |
+                        (Trend.geo.is_(None))
+                    )
+
+                query = query.order_by(Trend.extracted_at.desc())
+                rows = query.all()
+            finally:
+                session.close()
 
             trends = []
             for row in rows:
-                row_dict = dict(zip(columns, row))
                 item = {
-                    "platform": row_dict['platform'],
-                    "topic": row_dict['topic'],
-                    "growth": row_dict['growth'],
-                    "keyword": row_dict['keyword'],
-                    "geo": row_dict['geo'],
-                    "extracted_at": row_dict['extracted_at']
+                    "platform": row.platform,
+                    "topic": row.topic,
+                    "growth": row.growth,
+                    "keyword": row.keyword,
+                    "geo": row.geo,
+                    "extracted_at": row.extracted_at,
                 }
                 
                 # Expand extra_data
-                extra_data = row_dict['extra_data']
-                if extra_data:
+                if row.extra_data:
                     try:
-                        extra = json.loads(extra_data)
+                        extra = json.loads(row.extra_data)
                         item.update(extra)
                     except:
                         pass
@@ -234,18 +240,23 @@ class TrendCollector:
     def get_scrape_errors(self, platform=None):
         """Reads scrape errors from the database."""
         try:
-            query = f"SELECT platform, keyword, url, status, reason, extracted_at FROM {tbl('scrape_errors')}"
-            params = {}
-            
-            if platform:
-                query += " WHERE platform = :platform"
-                params["platform"] = platform
-            
-            query += " ORDER BY extracted_at DESC"
-            
-            with self.engine.connect() as conn:
-                df = pd.read_sql_query(text(query), conn, params=params)
-            return df
+            session = get_session()
+            try:
+                query = session.query(
+                    ScrapeError.platform, ScrapeError.keyword,
+                    ScrapeError.url, ScrapeError.status,
+                    ScrapeError.reason, ScrapeError.extracted_at,
+                )
+                if platform:
+                    query = query.filter(ScrapeError.platform == platform)
+                query = query.order_by(ScrapeError.extracted_at.desc())
+                rows = query.all()
+            finally:
+                session.close()
+
+            if rows:
+                return pd.DataFrame(rows, columns=['platform', 'keyword', 'url', 'status', 'reason', 'extracted_at'])
+            return pd.DataFrame(columns=['platform', 'keyword', 'url', 'status', 'reason', 'extracted_at'])
         except Exception as e:
             print(f"Error reading scrape errors from DB: {e}")
             return pd.DataFrame(columns=['platform', 'keyword', 'url', 'status', 'reason', 'extracted_at'])

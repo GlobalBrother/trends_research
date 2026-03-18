@@ -1,7 +1,8 @@
 """YouTube scraper using ensembledata API.
 
-Saves comprehensive video data into a dedicated ``youtube_videos`` table
-as well as the shared ``trends`` table for cross-platform dashboards.
+Saves content data into the normalized ``content``, ``authors``,
+``content_metrics``, and ``content_hashtags`` tables, as well as the
+shared ``trends`` table for cross-platform dashboards.
 """
 
 import json
@@ -14,78 +15,19 @@ from datetime import datetime
 from dotenv import load_dotenv
 from ensembledata.api import EDClient
 from ensembledata.api.errors import EDError
-from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
 sys.path.insert(0, os.path.dirname(__file__))
-from db_helper import save_trend, save_error, save_token_usage
+from db_helper import save_trend, save_error, save_token_usage, save_content_normalized
 
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
-from src.db.connection import get_engine, is_sqlite
-from src.db.sql_compat import tbl
-
-_engine = get_engine()
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".env"))
 
 PLATFORM = "YouTube"
-
-# ---------------------------------------------------------------------------
-# YouTube-specific table
-# ---------------------------------------------------------------------------
-
-_CREATE_YOUTUBE_VIDEOS = """
-CREATE TABLE IF NOT EXISTS youtube_videos (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-
-    -- identifiers
-    video_id            TEXT UNIQUE,
-    search_keyword      TEXT,
-    geo                 TEXT,
-
-    -- content
-    title               TEXT,
-    description         TEXT,
-    channel_title       TEXT,
-    channel_id          TEXT,
-    published           TEXT,
-    duration            TEXT,
-    url                 TEXT,
-    thumbnail_url       TEXT,
-    category_id         TEXT,
-    tags                TEXT,
-    language            TEXT,
-
-    -- statistics
-    view_count          INTEGER DEFAULT 0,
-    like_count          INTEGER DEFAULT 0,
-    dislike_count       INTEGER DEFAULT 0,
-    comment_count       INTEGER DEFAULT 0,
-    favorite_count      INTEGER DEFAULT 0,
-
-    -- engagement helpers (computed)
-    engagement_total    INTEGER DEFAULT 0,
-
-    -- metadata
-    extracted_at        TEXT,
-    updated_at          TEXT
-);
-"""
-
-_CREATE_INDEXES = [
-    "CREATE INDEX IF NOT EXISTS idx_yt_keyword ON youtube_videos (search_keyword);",
-    "CREATE INDEX IF NOT EXISTS idx_yt_channel ON youtube_videos (channel_title);",
-    "CREATE INDEX IF NOT EXISTS idx_yt_published ON youtube_videos (published);",
-    "CREATE INDEX IF NOT EXISTS idx_yt_views ON youtube_videos (view_count DESC);",
-]
-
-
-def _ensure_table():
-    """Tables are pre-created in Azure SQL via migration schema."""
-    pass
 
 
 def _parse_int(val):
@@ -99,58 +41,42 @@ def _parse_int(val):
 
 
 def _normalize_video(raw: dict) -> dict:
-    """Flatten a videoRenderer envelope into a simple dict.
-
-    The ensembledata YouTube API returns items wrapped as::
-
-        {"videoRenderer": {"videoId": ..., "title": {"runs": [{"text": ...}]}, ...}}
-
-    This helper unwraps the envelope and extracts nested text fields so that
-    downstream code can use simple ``dict.get()`` calls.
-    """
+    """Flatten a videoRenderer envelope into a simple dict."""
     vr = raw.get("videoRenderer") if isinstance(raw, dict) else None
     if not vr:
-        # Already flat or unknown shape – return as-is
         return raw
 
-    v = dict(vr)  # shallow copy
+    v = dict(vr)
 
-    # title.runs[0].text -> title
     title_obj = v.get("title")
     if isinstance(title_obj, dict):
         runs = title_obj.get("runs", [])
         v["title"] = runs[0].get("text", "") if runs else ""
 
-    # ownerText / longBylineText / shortBylineText -> channelTitle
     for key in ("ownerText", "longBylineText", "shortBylineText"):
         obj = v.get(key)
         if isinstance(obj, dict):
             runs = obj.get("runs", [])
             if runs:
                 v["channelTitle"] = runs[0].get("text", "")
-                # channel id from browseEndpoint
                 nav = runs[0].get("navigationEndpoint", {})
                 browse = nav.get("browseEndpoint", {})
                 if browse.get("browseId"):
                     v["channelId"] = browse["browseId"]
                 break
 
-    # viewCountText.simpleText -> viewCount  ("133,744 views")
     vct = v.get("viewCountText")
     if isinstance(vct, dict):
         v["viewCount"] = vct.get("simpleText", "0")
 
-    # publishedTimeText.simpleText -> publishedTimeText
     ptt = v.get("publishedTimeText")
     if isinstance(ptt, dict):
         v["publishedTimeText"] = ptt.get("simpleText", "")
 
-    # lengthText.simpleText -> lengthText
     lt = v.get("lengthText")
     if isinstance(lt, dict):
         v["lengthText"] = lt.get("simpleText", "")
 
-    # detailedMetadataSnippets[0].snippetText.runs[0].text -> description
     snippets = v.get("detailedMetadataSnippets", [])
     if snippets and isinstance(snippets, list):
         snippet_text = snippets[0].get("snippetText", {})
@@ -162,7 +88,7 @@ def _normalize_video(raw: dict) -> dict:
 
 
 def _save_youtube_video(v: dict, keyword: str, geo: str):
-    """Insert or update a single video row in youtube_videos."""
+    """Save a single YouTube video into the normalized content tables."""
     video_id = v.get("videoId") or v.get("video_id") or ""
     if not video_id:
         return
@@ -171,111 +97,40 @@ def _save_youtube_video(v: dict, keyword: str, geo: str):
     description = v.get("description") or v.get("descriptionSnippet") or ""
     channel = v.get("channelTitle") or v.get("channel") or ""
     channel_id = v.get("channelId") or v.get("channel_id") or ""
-    published = v.get("publishedTimeText") if isinstance(v.get("publishedTimeText"), str) else ""
-    if not published:
-        published = v.get("published") or v.get("publishDate") or ""
-    duration = v.get("lengthText") if isinstance(v.get("lengthText"), str) else ""
-    if not duration:
-        duration = v.get("duration") or ""
     url = f"https://www.youtube.com/watch?v={video_id}" if video_id else v.get("url", "")
-    thumbnail = ""
-    thumbs = v.get("thumbnail", {})
-    if isinstance(thumbs, dict):
-        thumb_list = thumbs.get("thumbnails", [])
-        if thumb_list:
-            thumbnail = thumb_list[-1].get("url", "")
-    elif isinstance(thumbs, str):
-        thumbnail = thumbs
-    if not thumbnail:
-        thumbnail = v.get("thumbnailUrl") or v.get("thumbnail_url") or ""
-
-    category_id = v.get("categoryId") or v.get("category_id") or ""
-    tags = v.get("tags") or v.get("keywords") or []
-    if isinstance(tags, list):
-        tags = json.dumps(tags)
-    language = v.get("defaultLanguage") or v.get("language") or ""
 
     views = _parse_int(v.get("viewCount") or v.get("view_count") or v.get("views") or 0)
     likes = _parse_int(v.get("likeCount") or v.get("like_count") or v.get("likes") or 0)
-    dislikes = _parse_int(v.get("dislikeCount") or v.get("dislike_count") or 0)
     comments = _parse_int(v.get("commentCount") or v.get("comment_count") or 0)
-    favorites = _parse_int(v.get("favoriteCount") or v.get("favorite_count") or 0)
 
-    engagement = int(likes) + int(comments) + int(dislikes)
-    now = datetime.now().isoformat()
-
-    params = {
-        "video_id": video_id, "keyword": keyword, "geo": geo,
-        "title": title, "description": description, "channel_title": channel,
-        "channel_id": channel_id, "published": published, "duration": duration,
-        "url": url, "thumbnail_url": thumbnail, "category_id": category_id,
-        "tags": tags, "language": language,
-        "view_count": int(views), "like_count": int(likes), "dislike_count": int(dislikes),
-        "comment_count": int(comments), "favorite_count": int(favorites),
-        "engagement_total": engagement,
-        "extracted_at": now, "updated_at": now,
-    }
-
-    with _engine.connect() as conn:
+    tags = v.get("tags") or v.get("keywords") or []
+    if isinstance(tags, str):
         try:
-            if is_sqlite():
-                existing = conn.execute(text(f"SELECT 1 FROM {tbl('youtube_videos')} WHERE video_id = :video_id"), {"video_id": video_id}).fetchone()
-                if existing:
-                    conn.execute(text(
-                        f"UPDATE {tbl('youtube_videos')} SET "
-                        "view_count = :view_count, like_count = :like_count, "
-                        "dislike_count = :dislike_count, comment_count = :comment_count, "
-                        "favorite_count = :favorite_count, engagement_total = :engagement_total, "
-                        "updated_at = :updated_at WHERE video_id = :video_id"
-                    ), params)
-                else:
-                    conn.execute(text(
-                        f"INSERT INTO {tbl('youtube_videos')} ("
-                        "video_id, search_keyword, geo, "
-                        "title, description, channel_title, channel_id, "
-                        "published, duration, url, thumbnail_url, "
-                        "category_id, tags, language, "
-                        "view_count, like_count, dislike_count, comment_count, favorite_count, "
-                        "engagement_total, extracted_at, updated_at"
-                        ") VALUES ("
-                        ":video_id, :keyword, :geo, "
-                        ":title, :description, :channel_title, :channel_id, "
-                        ":published, :duration, :url, :thumbnail_url, "
-                        ":category_id, :tags, :language, "
-                        ":view_count, :like_count, :dislike_count, :comment_count, :favorite_count, "
-                        ":engagement_total, :extracted_at, :updated_at)"
-                    ), params)
-            else:
-                conn.execute(text(f"""
-                    MERGE {tbl('youtube_videos')} AS target
-                    USING (SELECT :video_id AS video_id) AS source
-                    ON target.video_id = source.video_id
-                    WHEN MATCHED THEN UPDATE SET
-                        view_count = :view_count, like_count = :like_count,
-                        dislike_count = :dislike_count, comment_count = :comment_count,
-                        favorite_count = :favorite_count, engagement_total = :engagement_total,
-                        updated_at = :updated_at
-                    WHEN NOT MATCHED THEN INSERT (
-                        video_id, search_keyword, geo,
-                        title, description, channel_title, channel_id,
-                        published, duration, url, thumbnail_url,
-                        category_id, tags, language,
-                        view_count, like_count, dislike_count, comment_count, favorite_count,
-                        engagement_total, extracted_at, updated_at
-                    ) VALUES (
-                        :video_id, :keyword, :geo,
-                        :title, :description, :channel_title, :channel_id,
-                        :published, :duration, :url, :thumbnail_url,
-                        :category_id, :tags, :language,
-                        :view_count, :like_count, :dislike_count, :comment_count, :favorite_count,
-                        :engagement_total, :extracted_at, :updated_at
-                    );
-                """), params)
-            conn.commit()
-            logger.debug("Saved youtube_video video_id=%s", video_id)
+            tags = json.loads(tags)
         except Exception:
-            logger.error("Failed to save youtube_video video_id=%s", video_id, exc_info=True)
-            raise
+            tags = []
+
+    text_content = title
+    if description:
+        text_content = f"{title}\n{description}" if title else description
+
+    save_content_normalized(
+        platform=PLATFORM,
+        external_id=video_id,
+        keyword=keyword,
+        geo=geo,
+        text_content=text_content,
+        media_type="video",
+        url=url,
+        content_created_at=None,
+        author_external_id=channel_id if channel_id else None,
+        author_username=channel,
+        author_full_name=channel,
+        likes=likes,
+        comments=comments,
+        views=views,
+        hashtags=tags if isinstance(tags, list) else [],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -299,7 +154,6 @@ def scrape_youtube(keywords, geo="Global", depth=1, period="month", sorting="vie
         logger.warning("ENSEMBLEDATA_TOKEN not set – skipping YouTube scrape.")
         return
 
-    _ensure_table()
     client = EDClient(token=token)
 
     for kw in keywords:
@@ -309,7 +163,6 @@ def scrape_youtube(keywords, geo="Global", depth=1, period="month", sorting="vie
             )
             raw_data = result.data or []
 
-            # Unwrap ensembledata envelope: data.posts[]
             if isinstance(raw_data, dict):
                 items = (
                     raw_data.get("posts")
@@ -322,16 +175,15 @@ def scrape_youtube(keywords, geo="Global", depth=1, period="month", sorting="vie
             else:
                 items = []
 
-            # Normalize videoRenderer wrappers
             items = [_normalize_video(item) for item in items]
 
             count = 0
             for v in items[:50]:
-                # --- save to comprehensive youtube_videos table ---
+                # --- save to normalized content tables ---
                 try:
                     _save_youtube_video(v, keyword=kw, geo=geo)
                 except Exception:
-                    logger.error("Failed saving youtube_video detail for kw=%s", kw, exc_info=True)
+                    logger.error("Failed saving youtube content for kw=%s", kw, exc_info=True)
 
                 # --- save to shared trends table for dashboard ---
                 title = v.get("title", "") if isinstance(v.get("title"), str) else ""

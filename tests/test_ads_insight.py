@@ -78,17 +78,18 @@ class TestHandleCredits:
 
 class TestSaveAd:
     def _setup_test_db(self, tmp_path):
-        """Create a temp SQLite DB with ads_insight table and patch the engine."""
+        """Create a temp SQLite DB with ads_insight table via ORM and return session factory."""
         from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from src.db.models import Base
         db_file = str(tmp_path / "test.db")
-        conn = sqlite3.connect(db_file)
-        conn.executescript(ads_insight._CREATE_ADS_INSIGHT)
-        conn.close()
         engine = create_engine(f"sqlite:///{db_file}")
-        return db_file, engine
+        Base.metadata.create_all(engine)
+        session_factory = sessionmaker(bind=engine)
+        return db_file, session_factory
 
     def test_save_and_read(self, tmp_path):
-        db_file, engine = self._setup_test_db(tmp_path)
+        db_file, session_factory = self._setup_test_db(tmp_path)
 
         ad = {
             "id": 1, "external_id": "ext1", "platform": "facebook",
@@ -107,9 +108,7 @@ class TestSaveAd:
             "ad_cards": [],
         }
 
-        with patch.object(ads_insight, "_engine", engine), \
-             patch("src.scrapers.gethookedai.ads_insight.is_sqlite", return_value=True), \
-             patch("src.db.sql_compat.is_sqlite", return_value=True):
+        with patch("src.scrapers.gethookedai.ads_insight.get_session", side_effect=session_factory):
             ads_insight._save_ad(ad, "test_keyword")
 
         conn = sqlite3.connect(db_file)
@@ -124,12 +123,10 @@ class TestSaveAd:
         assert json.loads(row["media"]) == [{"url": "http://media"}]
 
     def test_save_minimal_ad(self, tmp_path):
-        db_file, engine = self._setup_test_db(tmp_path)
+        db_file, session_factory = self._setup_test_db(tmp_path)
 
         ad = {"id": 99}
-        with patch.object(ads_insight, "_engine", engine), \
-             patch("src.scrapers.gethookedai.ads_insight.is_sqlite", return_value=True), \
-             patch("src.db.sql_compat.is_sqlite", return_value=True):
+        with patch("src.scrapers.gethookedai.ads_insight.get_session", side_effect=session_factory):
             ads_insight._save_ad(ad, "kw")
 
         conn = sqlite3.connect(db_file)

@@ -1,0 +1,76 @@
+-- This are the SQL scripts run for the Azure SQL Reporting databases after they were created.
+
+-- For Meta Ads Reporting
+CREATE TABLE meta_campaign_metrics
+(
+    ad_account_id NVARCHAR(50) NOT NULL,
+    campaign_name NVARCHAR(255) NOT NULL,
+    date_start DATE NOT NULL,
+    date_stop DATE NOT NULL,
+    clicks INT NOT NULL,
+    impressions INT NOT NULL,
+    spend FLOAT NOT NULL,
+    purchase FLOAT NOT NULL,
+    account_name NVARCHAR(255) NOT NULL,
+    inserted_at DATETIME2 DEFAULT SYSDATETIME() NOT NULL,
+    updated_at DATETIME2 DEFAULT SYSDATETIME() NOT NULL,
+    CONSTRAINT PK_meta_campaign_metrics PRIMARY KEY (ad_account_id, campaign_name, date_start)
+);
+
+
+CREATE TABLE meta_config
+(
+    ad_account_id NVARCHAR(50) NOT NULL PRIMARY KEY,
+    business_name NVARCHAR(255) NOT NULL,
+    inserted_at DATETIME2 DEFAULT SYSDATETIME() NOT NULL,
+    updated_at DATETIME2 DEFAULT SYSDATETIME() NOT NULL
+);
+
+
+CREATE TRIGGER trg_UpdateMetaCampaignMetrics
+ON meta_campaign_metrics
+AFTER UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+    UPDATE m
+    SET updated_at = SYSDATETIME()
+    FROM meta_campaign_metrics m
+        INNER JOIN inserted i ON
+        m.ad_account_id = i.ad_account_id AND
+            m.campaign_name = i.campaign_name AND
+            m.date_start = i.date_start;
+END;
+
+CREATE TRIGGER trg_UpdateMetaConfig
+ON meta_config
+AFTER UPDATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+    UPDATE mc
+    SET updated_at = SYSDATETIME()
+    FROM meta_config mc
+        INNER JOIN inserted i ON mc.ad_account_id = i.ad_account_id;
+END;
+
+
+-- We need to give access to the Azure Function App to the database
+--get the connection string for the Azure Function App
+az sql db show-connection-string --name GB_Reporting_DB --server gb-ads-sql-server --client sqlcmd
+-- Use the connection string to connect to the database
+sqlcmd -S gb-ads-sql-server.database.windows.net -d GB_Reporting_DB -G -U <your user>
+
+-- Create a user for the Azure Function App, one for the alert logic app and one for powerbi user group
+CREATE USER [gb-metaads-function] FROM EXTERNAL PROVIDER; 
+ALTER ROLE db_datareader ADD MEMBER [gb-metaads-function];
+ALTER ROLE db_datawriter ADD MEMBER [gb-metaads-function];
+CREATE USER [ads_spend_alert] FROM EXTERNAL PROVIDER;
+ALTER ROLE db_datareader ADD MEMBER [ads_spend_alert];
+CREATE USER [budget_alert] FROM EXTERNAL PROVIDER;
+ALTER ROLE db_datareader ADD MEMBER [budget_alert];
+CREATE USER [SG_SQL_Reporting_readonly] FROM EXTERNAL PROVIDER;
+ALTER ROLE db_datareader ADD MEMBER [SG_SQL_Reporting_readonly];
+GO
+EXIT
+-- Now we can use the Azure Function App to insert data into the database

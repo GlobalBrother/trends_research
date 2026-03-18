@@ -108,6 +108,13 @@ def get_engine():
 
         # Map ADO.NET keys to ODBC equivalents
         conn_str = conn_str.replace("Initial Catalog=", "DATABASE=")
+        conn_str = conn_str.replace("User ID=", "UID=")
+        conn_str = conn_str.replace("User Id=", "UID=")
+        conn_str = conn_str.replace("Password=", "PWD=")
+        # Strip ADO.NET-only keys unsupported by ODBC
+        import re
+        conn_str = re.sub(r'Persist Security Info=[^;]*;?\s*', '', conn_str)
+        conn_str = re.sub(r'MultipleActiveResultSets=[^;]*;?\s*', '', conn_str)
 
         # "Active Directory Default" auth requires ODBC Driver 17+.
         # If only the legacy driver is available, fall back to SQL auth.
@@ -151,6 +158,17 @@ def get_engine():
         pool_recycle=300,
     )
     return _engine
+
+
+def get_session_factory():
+    """Return a sessionmaker bound to the engine (singleton)."""
+    from sqlalchemy.orm import sessionmaker
+    return sessionmaker(bind=get_engine())
+
+
+def get_session():
+    """Return a new ORM session."""
+    return get_session_factory()()
 
 
 def get_connection():
