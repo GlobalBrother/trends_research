@@ -35,7 +35,11 @@ def _set_cookie_js(name, value, max_age_seconds=43200):
     """Set a browser cookie via injected JavaScript (immediate, no render cycle needed)."""
     js = f"""
     <script>
-    document.cookie = "{name}={value}; path=/; max-age={max_age_seconds}; SameSite=Lax";
+    try {{
+        window.top.document.cookie = "{name}={value}; path=/; max-age={max_age_seconds}; SameSite=Lax";
+    }} catch(e) {{
+        try {{ parent.document.cookie = "{name}={value}; path=/; max-age={max_age_seconds}; SameSite=Lax"; }} catch(e2) {{}}
+    }}
     </script>
     """
     components.html(js, height=0, width=0)
@@ -45,7 +49,11 @@ def _delete_cookie_js(name):
     """Delete a browser cookie via injected JavaScript."""
     js = f"""
     <script>
-    document.cookie = "{name}=; path=/; max-age=0; SameSite=Lax";
+    try {{
+        window.top.document.cookie = "{name}=; path=/; max-age=0; SameSite=Lax";
+    }} catch(e) {{
+        try {{ parent.document.cookie = "{name}=; path=/; max-age=0; SameSite=Lax"; }} catch(e2) {{}}
+    }}
     </script>
     """
     components.html(js, height=0, width=0)
@@ -53,6 +61,11 @@ def _delete_cookie_js(name):
 
 def _get_cookie_from_headers(name):
     """Read a cookie value from the Streamlit request headers."""
+    # First check query params (reliable fallback)
+    token_from_params = st.query_params.get(name)
+    if token_from_params:
+        return token_from_params
+    # Then check cookies from headers
     try:
         cookie_header = st.context.headers.get("Cookie", "")
         for part in cookie_header.split(";"):
@@ -88,11 +101,15 @@ def _try_restore_from_cookies(api):
 def _save_auth_cookies(token):
     """Persist auth token in a cookie valid for 12 hours."""
     _set_cookie_js("tr_token", token, max_age_seconds=43200)
+    # Also persist in query params as a reliable fallback
+    st.query_params["tr_token"] = token
 
 
 def _clear_auth_cookies():
     """Remove auth cookie on logout."""
     _delete_cookie_js("tr_token")
+    if "tr_token" in st.query_params:
+        del st.query_params["tr_token"]
 
 
 def login_page(api):

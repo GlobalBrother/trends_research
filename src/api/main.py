@@ -1071,6 +1071,28 @@ def get_youtube_videos(
     limit: int = Query(500),
 ):
     data = _content_query("YouTube", niche_name, geo, limit, order_attr=ContentMetric.views.desc())
+    rename_map = {
+        "text_content": "title",
+        "username": "channel_title",
+        "views": "view_count",
+        "likes": "like_count",
+        "comments": "comment_count",
+    }
+    for row in data:
+        for old_key, new_key in rename_map.items():
+            if old_key in row:
+                row[new_key] = row.pop(old_key)
+        row["engagement_total"] = (
+            (row.get("view_count") or 0) +
+            (row.get("like_count") or 0) +
+            (row.get("comment_count") or 0)
+        )
+        ca = row.get("created_at")
+        if ca:
+            try:
+                row["published"] = str(ca)[:16]
+            except Exception:
+                pass
     return {"data": data}
 
 
@@ -1127,7 +1149,23 @@ def get_instagram_posts(
     limit: int = Query(500),
 ):
     data = _content_query("Instagram", niche_name, geo, limit, order_attr=ContentMetric.likes.desc())
+    rename_map = {
+        "text_content": "caption",
+        "likes": "like_count",
+        "comments": "comment_count",
+        "shares": "share_count",
+        "saves": "save_count",
+    }
     for row in data:
+        for old_key, new_key in rename_map.items():
+            if old_key in row:
+                row[new_key] = row.pop(old_key)
+        row["engagement_total"] = (
+            (row.get("like_count") or 0) +
+            (row.get("comment_count") or 0) +
+            (row.get("share_count") or 0) +
+            (row.get("save_count") or 0)
+        )
         ca = row.get("created_at")
         if ca:
             try:
@@ -1148,7 +1186,21 @@ def get_reddit_posts(
     limit: int = Query(500),
 ):
     data = _content_query("Reddit", niche_name, geo, limit, order_attr=ContentMetric.likes.desc())
+    rename_map = {
+        "text_content": "title",
+        "likes": "score",
+        "comments": "num_comments",
+        "username": "author",
+        "keyword": "subreddit",
+    }
     for row in data:
+        for old_key, new_key in rename_map.items():
+            if old_key in row:
+                row[new_key] = row.pop(old_key)
+        row["engagement_total"] = (
+            (row.get("score") or 0) +
+            (row.get("num_comments") or 0)
+        )
         ca = row.get("created_at")
         if ca:
             try:
@@ -1169,7 +1221,23 @@ def get_threads_posts(
     limit: int = Query(500),
 ):
     data = _content_query("Threads", niche_name, geo, limit, order_attr=ContentMetric.likes.desc())
+    rename_map = {
+        "text_content": "caption",
+        "likes": "like_count",
+        "comments": "reply_count",
+        "shares": "repost_count",
+        "saves": "quote_count",
+    }
     for row in data:
+        for old_key, new_key in rename_map.items():
+            if old_key in row:
+                row[new_key] = row.pop(old_key)
+        row["engagement_total"] = (
+            (row.get("like_count") or 0) +
+            (row.get("reply_count") or 0) +
+            (row.get("repost_count") or 0) +
+            (row.get("quote_count") or 0)
+        )
         ca = row.get("created_at")
         if ca:
             try:
