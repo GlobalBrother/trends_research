@@ -2,17 +2,21 @@
 Database connection management.
 
 Uses Azure SQL Server (MSSQL) via ODBC as the sole database backend.
+Provides a singleton engine with tuned connection pooling, a reusable
+session factory, and a context-manager helper for clean session lifecycle.
 """
 
+import contextlib
 import logging
 import os
 import re
 import struct
 import sys
+from typing import Generator
 from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -25,31 +29,109 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 # ---------------------------------------------------------------------------
-# Module-level state
+# Module-level singletons
 # ---------------------------------------------------------------------------
 
 _engine: Engine | None = None
+_session_factory: sessionmaker | None = None
 
 # ---------------------------------------------------------------------------
-# Constants
+# Pool & connection constants
 # ---------------------------------------------------------------------------
 
 DEFAULT_ODBC_DRIVER = "ODBC Driver 18 for SQL Server"
-POOL_RECYCLE_SECONDS = 300
+
+# Pool sizing — tuned for a mixed workload of API reads + scraper writes.
+# pool_size   : number of persistent connections kept open in the pool.
+# max_overflow: extra connections allowed above pool_size under burst load.
+# pool_timeout: seconds to wait for a connection before raising an error.
+# pool_recycle: seconds before a connection is recycled (Azure kills idle
+#               connections after ~30 min; 300 s keeps us well within that).
+POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "10"))
+POOL_MAX_OVERFLOW = int(os.getenv("DB_POOL_MAX_OVERFLOW", "20"))
+POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", "30"))
+POOL_RECYCLE_SECONDS = int(os.getenv("DB_POOL_RECYCLE", "300"))
 
 
 # ---------------------------------------------------------------------------
-# Backend helpers (kept for backward compatibility)
+# Engine creation
 # ---------------------------------------------------------------------------
 
-def get_backend() -> str:
-    """Return the active backend name. Always ``'mssql'``."""
-    return "mssql"
+def get_engine() -> Engine:
+    """Return a SQLAlchemy engine (singleton) connected to Azure SQL Server.
+
+    The engine is created once and reused for the lifetime of the process.
+    Connection health is validated on first creation and on every checkout
+    via ``pool_pre_ping``.
+    """
+    global _engine
+    if _engine is not None:
+        return _engine
+
+    engine = _create_mssql_engine()
+    # Verify the connection actually works
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+    _engine = engine
+    logger.info(
+        "Database engine created (pool_size=%d, max_overflow=%d, recycle=%ds)",
+        POOL_SIZE, POOL_MAX_OVERFLOW, POOL_RECYCLE_SECONDS,
+    )
+    return _engine
 
 
-def is_sqlite() -> bool:
-    """Return ``False``. SQLite is no longer supported."""
-    return False
+# ---------------------------------------------------------------------------
+# Session factory & helpers
+# ---------------------------------------------------------------------------
+
+def get_session_factory() -> sessionmaker:
+    """Return a **singleton** sessionmaker bound to the engine.
+
+    Unlike the previous implementation that created a new ``sessionmaker``
+    on every call, this caches the factory so that all callers share the
+    same configuration and underlying connection pool.
+    """
+    global _session_factory
+    if _session_factory is not None:
+        return _session_factory
+    _session_factory = sessionmaker(
+        bind=get_engine(),
+        expire_on_commit=False,  # avoid lazy-load after commit
+    )
+    return _session_factory
+
+
+def get_session() -> Session:
+    """Return a new ORM session from the singleton factory.
+
+    Callers are responsible for calling ``session.close()`` when done.
+    Prefer :func:`session_scope` for automatic lifecycle management.
+    """
+    return get_session_factory()()
+
+
+@contextlib.contextmanager
+def session_scope() -> Generator[Session, None, None]:
+    """Context manager that provides a transactional session scope.
+
+    Usage::
+
+        with session_scope() as session:
+            session.add(MyModel(...))
+            # auto-commits on clean exit, auto-rolls-back on exception
+
+    This eliminates the repetitive try/except/rollback/finally/close
+    pattern scattered throughout the codebase.
+    """
+    session = get_session()
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 # ---------------------------------------------------------------------------
@@ -78,22 +160,8 @@ def test_connection() -> tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
-# Engine creation
+# ODBC driver detection
 # ---------------------------------------------------------------------------
-
-def get_engine() -> Engine:
-    """Return a SQLAlchemy engine (singleton) connected to Azure SQL Server."""
-    global _engine
-    if _engine is not None:
-        return _engine
-
-    engine = _create_mssql_engine()
-    # Verify the connection actually works
-    with engine.connect() as conn:
-        conn.execute(text("SELECT 1"))
-    _engine = engine
-    return _engine
-
 
 def _detect_odbc_driver() -> str:
     """Auto-detect the best available SQL Server ODBC driver."""
@@ -109,13 +177,17 @@ def _detect_odbc_driver() -> str:
         return DEFAULT_ODBC_DRIVER
 
 
+# ---------------------------------------------------------------------------
+# Engine builders
+# ---------------------------------------------------------------------------
+
 def _uses_ad_auth(conn_str: str) -> bool:
     """Return True if the connection string uses Active Directory authentication."""
     return "Active Directory" in conn_str or "ActiveDirectory" in conn_str
 
 
 def _create_mssql_engine() -> Engine:
-    """Create and configure an Azure SQL / MSSQL engine."""
+    """Create and configure an Azure SQL / MSSQL engine with tuned pooling."""
     driver = _detect_odbc_driver()
     has_modern_driver = "ODBC Driver" in driver
     raw_conn_str = os.getenv("AZURE_SQL_CONNECTIONSTRING", "")
@@ -125,14 +197,21 @@ def _create_mssql_engine() -> Engine:
     else:
         conn_str = _build_connection_string(driver, has_modern_driver)
 
+    pool_kwargs = dict(
+        pool_pre_ping=True,
+        pool_size=POOL_SIZE,
+        max_overflow=POOL_MAX_OVERFLOW,
+        pool_timeout=POOL_TIMEOUT,
+        pool_recycle=POOL_RECYCLE_SECONDS,
+    )
+
     # If using Azure AD auth, use token-based approach via azure-identity
     if _uses_ad_auth(raw_conn_str or conn_str):
-        return _create_mssql_engine_with_token(conn_str, driver)
+        return _create_mssql_engine_with_token(conn_str, driver, pool_kwargs)
 
     return create_engine(
         f"mssql+pyodbc:///?odbc_connect={quote_plus(conn_str)}",
-        pool_pre_ping=True,
-        pool_recycle=POOL_RECYCLE_SECONDS,
+        **pool_kwargs,
     )
 
 
@@ -146,7 +225,7 @@ def _get_azure_token() -> bytes:
     return struct.pack(f"<I{len(token_bytes)}s", len(token_bytes), token_bytes)
 
 
-def _create_mssql_engine_with_token(conn_str: str, driver: str) -> Engine:
+def _create_mssql_engine_with_token(conn_str: str, driver: str, pool_kwargs: dict) -> Engine:
     """Create an MSSQL engine using Azure AD token authentication."""
     # Strip any Authentication= attribute from the ODBC string
     conn_str = re.sub(r'Authentication="[^"]*";?\s*', "", conn_str)
@@ -165,10 +244,13 @@ def _create_mssql_engine_with_token(conn_str: str, driver: str) -> Engine:
     return create_engine(
         "mssql+pyodbc://",
         creator=creator,
-        pool_pre_ping=True,
-        pool_recycle=POOL_RECYCLE_SECONDS,
+        **pool_kwargs,
     )
 
+
+# ---------------------------------------------------------------------------
+# Connection string helpers
+# ---------------------------------------------------------------------------
 
 def _normalise_connection_string(conn_str: str, driver: str, has_modern_driver: bool) -> str:
     """Normalise an ADO.NET / ODBC connection string."""
@@ -224,17 +306,3 @@ def _build_connection_string(driver: str, has_modern_driver: bool) -> str:
         f"UID={user};PWD={pwd};"
         f"Encrypt=yes;TrustServerCertificate={trust_cert};"
     )
-
-
-# ---------------------------------------------------------------------------
-# Session helpers
-# ---------------------------------------------------------------------------
-
-def get_session_factory() -> sessionmaker:
-    """Return a sessionmaker bound to the engine."""
-    return sessionmaker(bind=get_engine())
-
-
-def get_session() -> Session:
-    """Return a new ORM session."""
-    return get_session_factory()()

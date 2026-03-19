@@ -8,7 +8,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from src.db.connection import get_session
+from src.db.connection import session_scope
 from src.db.models import ScrapeLog
 
 class SkipRecentlyScrapedMiddleware:
@@ -66,8 +66,7 @@ class SkipRecentlyScrapedMiddleware:
             while len(platform_variants) < 4:
                 platform_variants.append(platform)
 
-            session = get_session()
-            try:
+            with session_scope() as session:
                 row = session.query(ScrapeLog).filter(
                     ScrapeLog.platform.in_(platform_variants),
                     ScrapeLog.identifier == str(identifier).strip(),
@@ -75,8 +74,6 @@ class SkipRecentlyScrapedMiddleware:
                     ScrapeLog.extracted_at > since,
                 ).first()
                 return row is not None
-            finally:
-                session.close()
         except Exception:
             return False
 

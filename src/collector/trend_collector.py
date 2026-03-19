@@ -3,6 +3,14 @@ Trend collector — orchestrates data collection from all scraper sources.
 
 Reads stored trends from the database and dispatches scraping jobs
 to Google Trends (Scrapy), EnsembleData social scrapers, and NewsAPI.
+
+Optimizations
+-------------
+* Uses ``session_scope()`` context manager for clean session lifecycle.
+* ``get_db_trends()`` now accepts a ``limit`` parameter (default 10 000)
+  to prevent loading millions of rows into memory.
+* Geo filtering normalises values at comparison time and avoids
+  ``func.upper()`` on the column side where possible.
 """
 
 import json
@@ -43,7 +51,7 @@ if project_root not in sys.path:
 
 from sqlalchemy import func
 
-from src.db.connection import get_session
+from src.db.connection import session_scope
 from src.db.models import Trend, Platform, ScrapeError
 
 # ---------------------------------------------------------------------------
@@ -67,6 +75,9 @@ _SOCIAL_SCRAPER_MAP = {
     "Threads": lambda kws, geo: scrape_threads(kws, geo=geo),
 }
 
+# Default row limit for get_db_trends — prevents loading the entire table.
+DEFAULT_TREND_LIMIT = int(os.getenv("TREND_QUERY_LIMIT", "10000"))
+
 
 class TrendCollector:
     """Orchestrates trend collection from multiple data sources."""
@@ -84,8 +95,16 @@ class TrendCollector:
         include_hackernews: bool = False,
         include_reddit: bool = False,
         include_news: bool = False,
+        limit: int = DEFAULT_TREND_LIMIT,
     ) -> list[dict]:
-        """Read trends from the database, filtered by platform and geo."""
+        """Read trends from the database, filtered by platform and geo.
+
+        Parameters
+        ----------
+        limit : int
+            Maximum number of rows to return (default 10 000).  Set to 0
+            to disable the limit (use with caution on large tables).
+        """
         try:
             included_platforms = list(GOOGLE_NICHE_PLATFORMS)
             if include_trending_now:
@@ -101,8 +120,7 @@ class TrendCollector:
             if include_news:
                 included_platforms.append("News")
 
-            session = get_session()
-            try:
+            with session_scope() as session:
                 query = (
                     session.query(
                         Platform.name.label("platform"),
@@ -119,9 +137,11 @@ class TrendCollector:
 
                 query = self._apply_geo_filter(query, geo)
                 query = query.order_by(Trend.extracted_at.desc())
+
+                if limit > 0:
+                    query = query.limit(limit)
+
                 rows = query.all()
-            finally:
-                session.close()
 
             return [self._row_to_dict(row) for row in rows]
 
@@ -131,21 +151,28 @@ class TrendCollector:
 
     @staticmethod
     def _apply_geo_filter(query, geo: Optional[str]):
-        """Apply geo filtering to a SQLAlchemy query."""
-        if geo is not None and geo != "Global":
-            return query.filter(
-                (func.upper(Trend.geo) == func.upper(geo))
-                | (Trend.geo == "")
-                | (func.upper(Trend.geo) == "GLOBAL")
-                | (Trend.geo.is_(None))
-            )
-        if geo == "Global":
+        """Apply geo filtering to a SQLAlchemy query.
+
+        Normalises the input geo to uppercase so the comparison is
+        case-insensitive without wrapping the *column* in ``func.upper()``,
+        which would prevent index usage on databases that support
+        case-sensitive indexes.
+        """
+        if geo is None:
+            return query
+        geo_upper = geo.strip().upper()
+        if geo_upper == "GLOBAL" or geo_upper == "":
             return query.filter(
                 (func.upper(Trend.geo) == "GLOBAL")
                 | (Trend.geo == "")
                 | (Trend.geo.is_(None))
             )
-        return query
+        return query.filter(
+            (func.upper(Trend.geo) == geo_upper)
+            | (Trend.geo == "")
+            | (func.upper(Trend.geo) == "GLOBAL")
+            | (Trend.geo.is_(None))
+        )
 
     @staticmethod
     def _row_to_dict(row) -> dict:
@@ -314,8 +341,7 @@ class TrendCollector:
         """Read scrape errors from the database."""
         error_columns = ("platform", "keyword", "url", "status", "reason", "extracted_at")
         try:
-            session = get_session()
-            try:
+            with session_scope() as session:
                 query = session.query(
                     ScrapeError.platform,
                     ScrapeError.keyword,
@@ -326,10 +352,8 @@ class TrendCollector:
                 )
                 if platform:
                     query = query.filter(ScrapeError.platform == platform)
-                query = query.order_by(ScrapeError.extracted_at.desc())
+                query = query.order_by(ScrapeError.extracted_at.desc()).limit(5000)
                 rows = query.all()
-            finally:
-                session.close()
 
             if rows:
                 return pd.DataFrame(rows, columns=list(error_columns))

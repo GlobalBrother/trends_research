@@ -49,7 +49,7 @@ from db_helper import save_trend, save_error
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
-from src.db.connection import get_session
+from src.db.connection import session_scope
 from src.db.models import AdsInsight
 
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".env"))
@@ -139,23 +139,19 @@ def _save_ad(ad: dict, keyword: str):
         "updated_at": now,
     }
 
-    session = get_session()
     try:
-        existing = session.query(AdsInsight).filter(AdsInsight.hookd_id == ad.get("id")).first()
-        if existing:
-            for k, v in fields.items():
-                setattr(existing, k, v)
-        else:
-            fields["hookd_id"] = ad.get("id")
-            fields["extracted_at"] = now
-            session.add(AdsInsight(**fields))
-        session.commit()
+        with session_scope() as session:
+            existing = session.query(AdsInsight).filter(AdsInsight.hookd_id == ad.get("id")).first()
+            if existing:
+                for k, v in fields.items():
+                    setattr(existing, k, v)
+            else:
+                fields["hookd_id"] = ad.get("id")
+                fields["extracted_at"] = now
+                session.add(AdsInsight(**fields))
     except Exception:
-        session.rollback()
         logger.error("Failed to save ad hookd_id=%s, keyword=%s", ad.get("id"), keyword, exc_info=True)
         raise
-    finally:
-        session.close()
 
 
 # ---------------------------------------------------------------------------

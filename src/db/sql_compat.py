@@ -1,6 +1,9 @@
 """
 SQL compatibility layer for Azure SQL Server.
+
 Uses SQLAlchemy ORM models exclusively — no raw SQL.
+Optimized for reduced round-trips: EXISTS checks, bulk lookups, and
+session-reuse patterns.
 """
 
 import os
@@ -11,7 +14,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from sqlalchemy import func, and_, or_, text
+from sqlalchemy import func, and_, exists, text
 from sqlalchemy.orm import Session
 
 from src.db.models import (
@@ -22,10 +25,10 @@ from src.db.models import (
 
 
 # ---------------------------------------------------------------------------
-# Platform ID resolution
+# Platform ID resolution (cached)
 # ---------------------------------------------------------------------------
 
-_platform_cache = {}
+_platform_cache: dict[str, int] = {}
 
 
 def get_platform_id(session: Session, platform_name: str) -> int:
@@ -47,8 +50,15 @@ def get_platform_id(session: Session, platform_name: str) -> int:
 
 def get_platform_name(session: Session, platform_id: int) -> str:
     """Return the platform name for a given id."""
+    # Check reverse cache first
+    for name, pid in _platform_cache.items():
+        if pid == platform_id:
+            return name
     row = session.query(Platform).filter(Platform.id == platform_id).first()
-    return row.name if row else ""
+    if row:
+        _platform_cache[row.name] = row.id
+        return row.name
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -72,20 +82,28 @@ def upsert_scrape_log(session: Session, platform, identifier, status, extracted_
 
 
 # ---------------------------------------------------------------------------
-# Duplicate check for trends
+# Duplicate check for trends (optimized with EXISTS)
 # ---------------------------------------------------------------------------
 
-def is_duplicate_trend(session: Session, platform_id, topic, keyword, geo):
-    """Check if a trend already exists today. Returns True if duplicate."""
+def is_duplicate_trend(session: Session, platform_id, topic, keyword, geo) -> bool:
+    """Check if a trend already exists today.
+
+    Uses an EXISTS subquery instead of loading the full row, which is
+    significantly faster on large tables — the DB can stop scanning as
+    soon as it finds one matching row.
+    """
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    exists = session.query(Trend).filter(
-        Trend.platform_id == platform_id,
-        Trend.topic == topic,
-        Trend.keyword == keyword,
-        Trend.geo == geo,
-        Trend.extracted_at > today,
-    ).first()
-    return exists is not None
+    return session.query(
+        exists().where(
+            and_(
+                Trend.platform_id == platform_id,
+                Trend.topic == topic,
+                Trend.keyword == keyword,
+                Trend.geo == geo,
+                Trend.extracted_at > today,
+            )
+        )
+    ).scalar()
 
 
 # ---------------------------------------------------------------------------
@@ -93,12 +111,13 @@ def is_duplicate_trend(session: Session, platform_id, topic, keyword, geo):
 # ---------------------------------------------------------------------------
 
 def insert_niche_if_not_exists(session: Session, niche_name, keyword):
-    """Insert a niche keyword if it doesn't exist."""
-    exists = session.query(Niche).filter(
-        Niche.niche_name == niche_name,
-        Niche.keyword == keyword,
-    ).first()
-    if not exists:
+    """Insert a niche keyword if it doesn't exist (uses EXISTS check)."""
+    already = session.query(
+        exists().where(
+            and_(Niche.niche_name == niche_name, Niche.keyword == keyword)
+        )
+    ).scalar()
+    if not already:
         session.add(Niche(niche_name=niche_name, keyword=keyword))
 
 
@@ -208,19 +227,42 @@ def upsert_content_metrics(session: Session, content_id, likes=0, comments=0, sh
 
 
 def upsert_hashtags(session: Session, content_id, tags):
-    """Insert hashtags and link them to content via content_hashtags."""
-    for tag in tags:
-        tag = tag.strip()
-        if not tag:
-            continue
-        ht = session.query(Hashtag).filter(Hashtag.tag == tag).first()
-        if not ht:
+    """Insert hashtags and link them to content via content_hashtags.
+
+    Optimized: pre-fetches all existing hashtags for the given tags in a
+    single IN query, and pre-fetches existing links, to avoid N+1 lookups.
+    """
+    clean_tags = [t.strip() for t in tags if t and t.strip()]
+    if not clean_tags:
+        return
+
+    # Bulk-fetch existing hashtags matching any of the tags
+    existing_hashtags = {
+        ht.tag: ht
+        for ht in session.query(Hashtag).filter(Hashtag.tag.in_(clean_tags)).all()
+    }
+
+    # Ensure all hashtags exist, collecting their IDs
+    tag_to_id: dict[str, int] = {}
+    for tag in clean_tags:
+        if tag in existing_hashtags:
+            tag_to_id[tag] = existing_hashtags[tag].id
+        else:
             ht = Hashtag(tag=tag)
             session.add(ht)
             session.flush()
-        existing = session.query(ContentHashtag).filter(
+            tag_to_id[tag] = ht.id
+
+    # Bulk-fetch existing links for this content
+    existing_links = set()
+    if tag_to_id:
+        rows = session.query(ContentHashtag.hashtag_id).filter(
             ContentHashtag.content_id == content_id,
-            ContentHashtag.hashtag_id == ht.id,
-        ).first()
-        if not existing:
-            session.add(ContentHashtag(content_id=content_id, hashtag_id=ht.id))
+            ContentHashtag.hashtag_id.in_(tag_to_id.values()),
+        ).all()
+        existing_links = {r.hashtag_id for r in rows}
+
+    # Insert only missing links
+    for tag, ht_id in tag_to_id.items():
+        if ht_id not in existing_links:
+            session.add(ContentHashtag(content_id=content_id, hashtag_id=ht_id))
