@@ -1,3 +1,17 @@
+"""
+Scrapy pipelines for persisting scraped items to the database.
+
+Optimizations
+-------------
+* ``DatabasePipeline`` now keeps a single session per spider (opened in
+  ``open_spider``, closed in ``close_spider``) instead of creating one
+  per item.
+* Batch commits: items are buffered and committed every ``COMMIT_BATCH``
+  items to reduce round-trips.
+* Platform IDs are resolved once and cached for the spider's lifetime.
+* ``is_recently_scraped`` reuses the spider-level session.
+"""
+
 import json
 import os
 import sys
@@ -19,10 +33,15 @@ from .items import (
     NewsItem, TokenImportItem, ScrapeErrorItem,
 )
 
+# Number of items to buffer before committing to the database.
+COMMIT_BATCH = int(os.getenv("PIPELINE_COMMIT_BATCH", "50"))
+
+
 class GoogleTrendsPipeline:
     def process_item(self, item, spider):
         item['extracted_at'] = datetime.datetime.now()
         return item
+
 
 class JSONLPipeline:
     def open_spider(self, spider):
@@ -36,35 +55,55 @@ class JSONLPipeline:
         self.file.write(line)
         return item
 
+
 class DatabasePipeline:
-    """Pipeline that writes to the database via SQLAlchemy ORM."""
+    """Pipeline that writes to the database via SQLAlchemy ORM.
+
+    Maintains a single session for the spider's lifetime and commits in
+    batches to reduce the number of database round-trips.
+    """
+
+    COMMIT_BATCH = COMMIT_BATCH
 
     @classmethod
     def from_crawler(cls, crawler):
         return cls()
 
     def open_spider(self, spider):
-        pass
+        self._session = get_session()
+        self._pending = 0
 
     def close_spider(self, spider):
-        pass
+        """Flush any remaining buffered items and close the session."""
+        try:
+            if self._pending > 0:
+                self._session.commit()
+        except Exception:
+            self._session.rollback()
+        finally:
+            self._session.close()
+
+    # ------------------------------------------------------------------
+    # Freshness check (reuses the spider-level session)
+    # ------------------------------------------------------------------
 
     def is_recently_scraped(self, platform, identifier, hours=24):
-        """Checks if the identifier was scraped for the platform in the last X hours."""
+        """Check if the identifier was scraped for the platform in the last X hours."""
         since = datetime.datetime.now() - datetime.timedelta(hours=hours)
-        session = get_session()
-        try:
-            row = session.query(ScrapeLog).filter(
-                ScrapeLog.platform == platform,
-                ScrapeLog.identifier == identifier,
-                ScrapeLog.status.in_([200, 301]),
-                ScrapeLog.extracted_at > since,
-            ).first()
-            return row is not None
-        finally:
-            session.close()
+        row = self._session.query(ScrapeLog).filter(
+            ScrapeLog.platform == platform,
+            ScrapeLog.identifier == identifier,
+            ScrapeLog.status.in_([200, 301]),
+            ScrapeLog.extracted_at > since,
+        ).first()
+        return row is not None
 
-    def _parse_traffic(self, traffic_str):
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_traffic(traffic_str):
         if not traffic_str or not isinstance(traffic_str, str):
             return None
         try:
@@ -74,10 +113,11 @@ class DatabasePipeline:
             if 'M' in traffic_str:
                 return int(float(traffic_str.replace('M', '')) * 1000000)
             return int(traffic_str)
-        except:
+        except Exception:
             return None
 
-    def _parse_views(self, views_str):
+    @staticmethod
+    def _parse_views(views_str):
         import re
         if not views_str or not isinstance(views_str, str):
             return None
@@ -93,11 +133,22 @@ class DatabasePipeline:
                     return int(val * 1000000)
                 return int(val)
             return None
-        except:
+        except Exception:
             return None
 
+    def _flush_if_needed(self):
+        """Commit the current batch if the buffer threshold is reached."""
+        self._pending += 1
+        if self._pending >= self.COMMIT_BATCH:
+            self._session.commit()
+            self._pending = 0
+
+    # ------------------------------------------------------------------
+    # Main item processor
+    # ------------------------------------------------------------------
+
     def process_item(self, item, spider):
-        session = get_session()
+        session = self._session
         try:
             if isinstance(item, ScrapeErrorItem):
                 session.add(ScrapeError(
@@ -105,7 +156,7 @@ class DatabasePipeline:
                     url=item.get('url'), status=item.get('status'),
                     reason=item.get('reason'), extracted_at=item.get('extracted_at'),
                 ))
-                session.commit()
+                self._flush_if_needed()
                 return item
 
             data_type = item.get('data_type')
@@ -145,7 +196,11 @@ class DatabasePipeline:
                     extra_data['duration'] = res.get('duration')
                     extra_data['description'] = res.get('description')
                 elif data_type in ['threads_trends', 'instagram_trends', 'tiktok_trends']:
-                    platform_map = {'threads_trends': 'Threads', 'instagram_trends': 'Instagram', 'tiktok_trends': 'TikTok'}
+                    platform_map = {
+                        'threads_trends': 'Threads',
+                        'instagram_trends': 'Instagram',
+                        'tiktok_trends': 'TikTok',
+                    }
                     platform = platform_map.get(data_type)
                     topic = res.get('topic')
                     growth = res.get('engagement', 0)
@@ -172,38 +227,42 @@ class DatabasePipeline:
                     platform = "Google Interest"
                     topic = item.get('keyword')
                     if results:
-                        growth = max([r.get('value', [0])[0] if isinstance(r.get('value'), list) else r.get('value', 0) for r in results])
+                        growth = max(
+                            r.get('value', [0])[0] if isinstance(r.get('value'), list) else r.get('value', 0)
+                            for r in results
+                        )
                     else:
                         growth = 0
                     extra_data['time_series'] = results
                 elif data_type == 'interest_by_region':
                     platform = "Google Regions"
                     topic = item.get('keyword')
-                    regions = [r for r in results if (r.get('value', [0])[0] if isinstance(r.get('value'), list) else r.get('value', 0)) > 0]
+                    regions = [
+                        r for r in results
+                        if (r.get('value', [0])[0] if isinstance(r.get('value'), list) else r.get('value', 0)) > 0
+                    ]
+                    platform_id = get_platform_id(session, platform)
                     for r in regions:
                         reg_topic = f"{topic} in {r.get('geoName')}"
                         reg_growth = r.get('value', [0])[0] if isinstance(r.get('value'), list) else r.get('value', 0)
                         reg_extra = {
                             'geoCode': r.get('geoCode'),
                             'geoName': r.get('geoName'),
-                            'region_value': reg_growth
+                            'region_value': reg_growth,
                         }
-                        platform_id = get_platform_id(session, platform)
                         if not is_duplicate_trend(session, platform_id, reg_topic, keyword, geo):
                             session.add(Trend(
                                 platform_id=platform_id, topic=reg_topic, growth=reg_growth,
                                 keyword=keyword, geo=geo, extracted_at=extracted_at,
                                 extra_data=json.dumps(reg_extra),
                             ))
-                    
-                    # We skip the default insert for Google Regions since we added per-region rows
+                    self._flush_if_needed()
                     continue
 
                 if platform and topic:
                     platform_id = get_platform_id(session, platform)
                     if is_duplicate_trend(session, platform_id, topic, keyword, geo):
                         continue
-                    # Merge url into extra_data (url column removed from trends table)
                     if url:
                         extra_data['url'] = url
                     session.add(Trend(
@@ -211,19 +270,17 @@ class DatabasePipeline:
                         keyword=keyword, geo=geo, extracted_at=extracted_at,
                         extra_data=json.dumps(extra_data),
                     ))
-                    
-                    # Also log the successful scrape by URL if it exists
+
                     if url:
                         upsert_scrape_log(session, platform, url, 200, extracted_at)
 
-                    # Also log the successful scrape by keyword_geo for broader skipping
                     identifier = f"{keyword}_{geo}" if geo else keyword
                     upsert_scrape_log(session, platform, identifier, 200, extracted_at)
-            
-            session.commit()
+
+            self._flush_if_needed()
+
         except Exception:
             session.rollback()
+            self._pending = 0
             raise
-        finally:
-            session.close()
         return item

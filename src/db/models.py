@@ -3,6 +3,12 @@ SQLAlchemy ORM models for the trends_research database.
 
 Mirrors the schema defined in azure_schema.sql.
 Works with Azure SQL Server backend.
+
+Index Strategy
+--------------
+Every foreign key, every column used in WHERE / ORDER BY / JOIN ON in the
+API or scraper write paths has an explicit index.  Composite indexes are
+ordered to match the most selective column first.
 """
 
 import os
@@ -14,7 +20,7 @@ if project_root not in sys.path:
 
 from sqlalchemy import (
     Column, Integer, Text, Float, DateTime, ForeignKey, UniqueConstraint, Index,
-    func,
+    String, func,
 )
 from sqlalchemy.orm import declarative_base, relationship
 
@@ -29,12 +35,12 @@ class Platform(Base):
     __tablename__ = "platforms"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(Text, nullable=False, unique=True)
+    name = Column(String(100), nullable=False, unique=True)
 
     # relationships
-    authors = relationship("Author", back_populates="platform")
-    content_items = relationship("Content", back_populates="platform")
-    trends = relationship("Trend", back_populates="platform")
+    authors = relationship("Author", back_populates="platform", lazy="select")
+    content_items = relationship("Content", back_populates="platform", lazy="select")
+    trends = relationship("Trend", back_populates="platform", lazy="select")
 
 
 # ---------------------------------------------------------------------------
@@ -45,12 +51,12 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    email = Column(Text, nullable=False, unique=True)
-    role = Column(Text, nullable=False, default="trends")
+    email = Column(String(320), nullable=False, unique=True)
+    role = Column(String(20), nullable=False, default="trends")
     created_at = Column(DateTime, nullable=False, server_default=func.now())
 
-    otp_codes = relationship("OtpCode", back_populates="user")
-    auth_tokens = relationship("AuthToken", back_populates="user")
+    otp_codes = relationship("OtpCode", back_populates="user", lazy="select")
+    auth_tokens = relationship("AuthToken", back_populates="user", lazy="select")
 
 
 class Author(Base):
@@ -66,7 +72,7 @@ class Author(Base):
     profile_pic_url = Column(Text)
 
     platform = relationship("Platform", back_populates="authors")
-    content_items = relationship("Content", back_populates="author")
+    content_items = relationship("Content", back_populates="author", lazy="select")
 
     __table_args__ = (
         Index("idx_authors_platform", "platform_id"),
@@ -90,14 +96,15 @@ class Content(Base):
 
     platform = relationship("Platform", back_populates="content_items")
     author = relationship("Author", back_populates="content_items")
-    metrics = relationship("ContentMetric", back_populates="content", uselist=False)
-    hashtag_links = relationship("ContentHashtag", back_populates="content")
+    metrics = relationship("ContentMetric", back_populates="content", uselist=False, lazy="joined")
+    hashtag_links = relationship("ContentHashtag", back_populates="content", lazy="select")
 
     __table_args__ = (
         Index("idx_content_platform", "platform_id"),
         Index("idx_content_keyword", "keyword"),
         Index("idx_content_external", "platform_id", "external_id"),
         Index("idx_content_created", "created_at"),
+        Index("idx_content_author", "author_id"),
     )
 
 
@@ -105,7 +112,7 @@ class ContentMetric(Base):
     __tablename__ = "content_metrics"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    content_id = Column(Integer, ForeignKey("content.id"), nullable=False)
+    content_id = Column(Integer, ForeignKey("content.id"), nullable=False, unique=True)
     likes = Column(Integer, default=0)
     comments = Column(Integer, default=0)
     shares = Column(Integer, default=0)
@@ -125,7 +132,7 @@ class Hashtag(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     tag = Column(Text, unique=True)
 
-    content_links = relationship("ContentHashtag", back_populates="hashtag")
+    content_links = relationship("ContentHashtag", back_populates="hashtag", lazy="select")
 
 
 class ContentHashtag(Base):
@@ -157,6 +164,9 @@ class Trend(Base):
         Index("idx_trends_keyword", "keyword"),
         Index("idx_trends_geo", "geo"),
         Index("idx_trends_extracted_at", "extracted_at"),
+        # Composite index for the duplicate-check query:
+        # WHERE platform_id=? AND topic=? AND keyword=? AND geo=? AND extracted_at>?
+        Index("idx_trends_dedup", "platform_id", "keyword", "geo", "extracted_at"),
     )
 
 
@@ -197,23 +207,33 @@ class OtpCode(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("users.id"))
-    code = Column(Text, nullable=False)
+    code = Column(String(20), nullable=False)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     used = Column(Integer, nullable=False, default=0)
 
     user = relationship("User", back_populates="otp_codes")
+
+    __table_args__ = (
+        Index("idx_otp_user", "user_id"),
+        Index("idx_otp_lookup", "user_id", "code", "used", "created_at"),
+    )
 
 
 class AuthToken(Base):
     __tablename__ = "auth_tokens"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    token = Column(Text, nullable=False)
+    token = Column(String(128), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     expires_at = Column(DateTime, nullable=False)
 
     user = relationship("User", back_populates="auth_tokens")
+
+    __table_args__ = (
+        Index("idx_authtoken_token", "token"),
+        Index("idx_authtoken_user_expires", "user_id", "expires_at"),
+    )
 
 
 class TokenUsage(Base):
@@ -225,6 +245,12 @@ class TokenUsage(Base):
     units_charged = Column(Float, nullable=False, default=0)
     geo = Column(Text)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_tokenusage_platform", "platform"),
+        Index("idx_tokenusage_created", "created_at"),
+        Index("idx_tokenusage_platform_created", "platform", "created_at"),
+    )
 
 
 class RawDataArchive(Base):
@@ -251,6 +277,7 @@ class Niche(Base):
 
     __table_args__ = (
         UniqueConstraint("niche_name", "keyword", name="uq_niches_name_keyword"),
+        Index("idx_niches_name", "niche_name"),
     )
 
 
@@ -296,4 +323,5 @@ class AdsInsight(Base):
     __table_args__ = (
         Index("idx_ads_keyword", "search_keyword"),
         Index("idx_ads_extracted", "extracted_at"),
+        Index("idx_ads_hookd_id", "hookd_id"),
     )

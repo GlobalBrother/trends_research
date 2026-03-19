@@ -24,7 +24,7 @@ from src.config import CORS_ORIGINS, CACHE_TTL_SECONDS, PROJECT_ROOT
 from src.collector.trend_collector import TrendCollector
 from src.analytics.analytics_engine import AnalyticsEngine
 from src.niche.niche_discovery import NicheDiscovery
-from src.db.connection import get_engine, get_session
+from src.db.connection import get_engine, get_session, session_scope, get_session_factory
 from src.db.sql_compat import get_platform_id, get_platform_name, insert_niche_if_not_exists, verify_otp
 from src.db.models import (
     Base, User, OtpCode, AuthToken, Niche, TokenUsage, ScrapeError as ScrapeErrorModel,
@@ -46,7 +46,7 @@ except ImportError:
     HAS_GETHOOKEDAI = False
 
 engine = get_engine()
-SessionFactory = get_session
+SessionFactory = get_session  # backward-compat alias
 
 # Resend API config
 resend.api_key = os.getenv("RESEND_API_KEY", "")
@@ -102,17 +102,13 @@ _init_auth_tables()
 def _init_niches_table():
     """Seed niches table with defaults if empty."""
     try:
-        session = SessionFactory()
-        try:
+        with session_scope() as session:
             count = session.query(Niche).count()
             if count == 0:
                 _nd = NicheDiscovery()
                 for niche_name, keywords in _nd.niche_map.items():
                     for kw in keywords:
                         insert_niche_if_not_exists(session, niche_name, kw)
-                session.commit()
-        finally:
-            session.close()
     except Exception as e:
         logger.warning(f"Could not seed niches table: {e}")
 
@@ -242,21 +238,16 @@ def request_otp(email: str = Query(...)):
     """Send an OTP code to a whitelisted email via Resend."""
     # Test account bypass: auto-create user and skip email
     if TEST_ACCOUNT_EMAIL and email == TEST_ACCOUNT_EMAIL:
-        session = SessionFactory()
-        try:
+        with session_scope() as session:
             user = session.query(User).filter(User.email == email).first()
             if not user:
                 user = User(email=email, role="admin")
                 session.add(user)
                 session.flush()
             session.add(OtpCode(user_id=user.id, code=TEST_ACCOUNT_OTP))
-            session.commit()
-        finally:
-            session.close()
         return {"message": "OTP sent", "email": email}
 
-    session = SessionFactory()
-    try:
+    with session_scope() as session:
         user = session.query(User).filter(User.email == email).first()
         if not user:
             raise HTTPException(status_code=403, detail="Email not whitelisted")
@@ -264,9 +255,6 @@ def request_otp(email: str = Query(...)):
         user_id = user.id
         code = secrets.token_hex(3).upper()  # 6-char hex code
         session.add(OtpCode(user_id=user_id, code=code))
-        session.commit()
-    finally:
-        session.close()
 
     try:
         resend.Emails.send({
@@ -286,8 +274,7 @@ def request_otp(email: str = Query(...)):
 @app.post("/auth/verify_otp")
 def verify_otp_endpoint(email: str = Query(...), code: str = Query(...)):
     """Verify an OTP code and return the user's role."""
-    session = SessionFactory()
-    try:
+    with session_scope() as session:
         user = session.query(User).filter(User.email == email).first()
         if not user:
             raise HTTPException(status_code=401, detail="Invalid or expired OTP")
@@ -299,7 +286,6 @@ def verify_otp_endpoint(email: str = Query(...), code: str = Query(...)):
             token = secrets.token_hex(32)
             expires_at = datetime.utcnow() + timedelta(hours=12)
             session.add(AuthToken(token=token, user_id=user_id, expires_at=expires_at))
-            session.commit()
             return {"message": "Authenticated", "email": email, "role": user_role, "token": token}
 
         otp = verify_otp(session, user_id, code.upper())
@@ -312,9 +298,6 @@ def verify_otp_endpoint(email: str = Query(...), code: str = Query(...)):
         token = secrets.token_hex(32)
         expires_at = datetime.utcnow() + timedelta(hours=12)
         session.add(AuthToken(token=token, user_id=user_id, expires_at=expires_at))
-        session.commit()
-    finally:
-        session.close()
 
     return {"message": "Authenticated", "email": email, "role": user_role, "token": token}
 
@@ -322,16 +305,13 @@ def verify_otp_endpoint(email: str = Query(...), code: str = Query(...)):
 @app.get("/auth/validate_token")
 def validate_token(token: str = Query(...)):
     """Validate an auth token and return user info if still valid."""
-    session = SessionFactory()
-    try:
+    with session_scope() as session:
         row = session.query(User.email, User.role).join(
             AuthToken, AuthToken.user_id == User.id
         ).filter(
             AuthToken.token == token,
             AuthToken.expires_at > datetime.utcnow(),
         ).first()
-    finally:
-        session.close()
     if not row:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
     return {"email": row.email, "role": row.role}
@@ -340,11 +320,8 @@ def validate_token(token: str = Query(...)):
 @app.get("/auth/users")
 def list_users():
     """List all whitelisted users."""
-    session = SessionFactory()
-    try:
+    with session_scope() as session:
         rows = session.query(User.email, User.role, User.created_at).order_by(User.created_at).all()
-    finally:
-        session.close()
     return [{"email": r.email, "role": r.role, "created_at": r.created_at} for r in rows]
 
 
@@ -353,15 +330,11 @@ def add_user(user: UserCreate):
     """Add a whitelisted user."""
     if user.role not in ("admin", "trends"):
         raise HTTPException(status_code=400, detail="Role must be 'admin' or 'trends'")
-    session = SessionFactory()
     try:
-        session.add(User(email=user.email, role=user.role))
-        session.commit()
+        with session_scope() as session:
+            session.add(User(email=user.email, role=user.role))
     except IntegrityError:
-        session.rollback()
         raise HTTPException(status_code=409, detail="User already exists")
-    finally:
-        session.close()
     return {"message": "User added", "email": user.email, "role": user.role}
 
 
@@ -370,30 +343,22 @@ def update_user_role(email: str = Query(...), role: str = Query(...)):
     """Update a user's role."""
     if role not in ("admin", "trends"):
         raise HTTPException(status_code=400, detail="Role must be 'admin' or 'trends'")
-    session = SessionFactory()
-    try:
+    with session_scope() as session:
         user = session.query(User).filter(User.email == email).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         user.role = role
-        session.commit()
-    finally:
-        session.close()
     return {"message": "Role updated", "email": email, "role": role}
 
 
 @app.delete("/auth/users")
 def delete_user(email: str = Query(...)):
     """Remove a whitelisted user."""
-    session = SessionFactory()
-    try:
+    with session_scope() as session:
         user = session.query(User).filter(User.email == email).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         session.delete(user)
-        session.commit()
-    finally:
-        session.close()
     return {"message": "User removed", "email": email}
 
 
@@ -406,11 +371,8 @@ def root():
 def get_niches():
     """Return distinct niche names from the DB."""
     try:
-        session = SessionFactory()
-        try:
+        with session_scope() as session:
             rows = session.query(Niche.niche_name).distinct().order_by(Niche.niche_name).all()
-        finally:
-            session.close()
         return [r.niche_name for r in rows]
     except Exception:
         return niche.get_available_niches()
@@ -420,13 +382,10 @@ def get_niches():
 def get_niche_keywords(niche_name: str):
     """Return keywords for a niche from the DB."""
     try:
-        session = SessionFactory()
-        try:
+        with session_scope() as session:
             rows = session.query(Niche.keyword).filter(
                 Niche.niche_name == niche_name
             ).order_by(Niche.keyword).all()
-        finally:
-            session.close()
         keywords = [r.keyword for r in rows]
         return {"niche": niche_name, "keywords": keywords if keywords else [niche_name]}
     except Exception:
@@ -450,22 +409,13 @@ def create_niche(body: NicheCreate):
         raise HTTPException(status_code=400, detail="Niche name cannot be empty")
     keywords = body.keywords if body.keywords else [body.niche_name.strip()]
     added = 0
-    session = SessionFactory()
-    try:
+    with session_scope() as session:
         for kw in keywords:
             kw = kw.strip()
             if not kw:
                 continue
-            existing = session.query(Niche).filter(
-                Niche.niche_name == body.niche_name.strip(),
-                Niche.keyword == kw,
-            ).first()
-            if not existing:
-                session.add(Niche(niche_name=body.niche_name.strip(), keyword=kw))
-                added += 1
-        session.commit()
-    finally:
-        session.close()
+            insert_niche_if_not_exists(session, body.niche_name.strip(), kw)
+            added += 1
     return {"message": f"Niche '{body.niche_name}' created with {added} keyword(s)"}
 
 
@@ -473,64 +423,43 @@ def create_niche(body: NicheCreate):
 def add_keywords(niche_name: str, body: KeywordAdd):
     """Add keywords to an existing niche."""
     added = 0
-    session = SessionFactory()
-    try:
+    with session_scope() as session:
         for kw in body.keywords:
             kw = kw.strip()
             if not kw:
                 continue
-            existing = session.query(Niche).filter(
-                Niche.niche_name == niche_name,
-                Niche.keyword == kw,
-            ).first()
-            if not existing:
-                session.add(Niche(niche_name=niche_name, keyword=kw))
-                added += 1
-        session.commit()
-    finally:
-        session.close()
+            insert_niche_if_not_exists(session, niche_name, kw)
+            added += 1
     return {"message": f"Added {added} keyword(s) to '{niche_name}'"}
 
 
 @app.delete("/niches/{niche_name}")
 def delete_niche(niche_name: str):
     """Delete an entire niche and all its keywords."""
-    session = SessionFactory()
-    try:
+    with session_scope() as session:
         count = session.query(Niche).filter(Niche.niche_name == niche_name).delete()
-        session.commit()
         if count == 0:
             raise HTTPException(status_code=404, detail="Niche not found")
-    finally:
-        session.close()
     return {"message": f"Niche '{niche_name}' deleted"}
 
 
 @app.delete("/niches/{niche_name}/keywords/{keyword}")
 def delete_keyword(niche_name: str, keyword: str):
     """Remove a single keyword from a niche."""
-    session = SessionFactory()
-    try:
+    with session_scope() as session:
         count = session.query(Niche).filter(
             Niche.niche_name == niche_name,
             Niche.keyword == keyword,
         ).delete()
-        session.commit()
         if count == 0:
             raise HTTPException(status_code=404, detail="Keyword not found")
-    finally:
-        session.close()
     return {"message": f"Keyword '{keyword}' removed from '{niche_name}'"}
 
 def _log_token_usage(platform: str, keyword: str = None, units: float = 1.0, geo: str = None):
     """Record an API / scrape usage entry."""
     try:
-        session = SessionFactory()
-        try:
+        with session_scope() as session:
             session.add(TokenUsage(platform=platform, keyword=keyword, units_charged=units, geo=geo))
-            session.commit()
-        finally:
-            session.close()
     except Exception as e:
         logger.error(f"Failed to log token usage: {e}")
 
@@ -553,11 +482,8 @@ def _run_and_log(func, log_platform, log_keywords, log_geo, **kwargs):
 def _get_niche_keywords_from_db(niche_name: str) -> list:
     """Fetch keywords for a niche from the DB, falling back to NicheDiscovery."""
     try:
-        session = SessionFactory()
-        try:
+        with session_scope() as session:
             rows = session.query(Niche.keyword).filter(Niche.niche_name == niche_name).all()
-        finally:
-            session.close()
         keywords = [r.keyword for r in rows]
         if keywords:
             return keywords
@@ -891,7 +817,6 @@ def get_table_filters(
     try:
         model = _TABLE_MODEL_MAP.get(table_name)
         if not model:
-            # Fallback: try to find model by tablename
             for m in Base.registry.mappers:
                 if m.class_.__tablename__ == table_name:
                     model = m.class_
@@ -902,8 +827,7 @@ def get_table_filters(
         geo_attr = getattr(model, geo_col, None)
         kw_attr = getattr(model, keyword_col, None)
 
-        session = SessionFactory()
-        try:
+        with session_scope() as session:
             if geo_attr is not None:
                 rows = session.query(geo_attr).filter(
                     geo_attr.isnot(None), geo_attr != ""
@@ -919,8 +843,6 @@ def get_table_filters(
                 kw_raw = sorted(set(r[0] for r in rows if r[0]))
                 if kw_raw:
                     keywords = ["All"] + kw_raw
-        finally:
-            session.close()
     except HTTPException:
         raise
     except Exception:
@@ -934,8 +856,7 @@ def get_table_filters(
 
 def _content_query(platform_name: str, niche_name, geo, limit, order_attr=None):
     """Query the normalized content/authors/metrics tables via ORM."""
-    session = SessionFactory()
-    try:
+    with session_scope() as session:
         query = session.query(
             Content.external_id, Content.text_content, Content.keyword, Content.geo,
             Content.media_type, Content.url, Content.created_at,
@@ -955,8 +876,9 @@ def _content_query(platform_name: str, niche_name, geo, limit, order_attr=None):
         )
 
         if geo and geo != "Global":
+            geo_upper = geo.strip().upper()
             query = query.filter(
-                (func.upper(Content.geo) == func.upper(geo)) |
+                (func.upper(Content.geo) == geo_upper) |
                 (Content.geo == "") |
                 (func.upper(Content.geo) == "GLOBAL") |
                 (Content.geo.is_(None))
@@ -973,8 +895,6 @@ def _content_query(platform_name: str, niche_name, geo, limit, order_attr=None):
 
         query = query.limit(limit)
         rows = query.all()
-    finally:
-        session.close()
 
     columns = [
         "external_id", "text_content", "keyword", "geo",
@@ -1186,8 +1106,7 @@ def get_ads_insight(
     geo: Optional[str] = Query(None),
     limit: int = Query(500),
 ):
-    session = SessionFactory()
-    try:
+    with session_scope() as session:
         q = session.query(
             AdsInsight.hookd_id, AdsInsight.external_id, AdsInsight.search_keyword,
             AdsInsight.platform, AdsInsight.display_format, AdsInsight.title, AdsInsight.body,
@@ -1205,8 +1124,6 @@ def get_ads_insight(
                 q = q.filter(AdsInsight.search_keyword.in_(kws))
         q = q.order_by(AdsInsight.extracted_at.desc()).limit(limit)
         rows = q.all()
-    finally:
-        session.close()
 
     columns = [
         "hookd_id", "external_id", "search_keyword",
@@ -1281,12 +1198,8 @@ def scrape_brand_ads_endpoint(
 @app.delete("/scrape_errors")
 def clear_scrape_errors():
     try:
-        session = SessionFactory()
-        try:
+        with session_scope() as session:
             session.query(ScrapeErrorModel).delete()
-            session.commit()
-        finally:
-            session.close()
         return {"ok": True}
     except Exception as e:
         logger.error(f"Failed to clear scrape_errors: {e}")
@@ -1315,8 +1228,7 @@ def _provider_label(platform: str) -> str:
 def get_token_usage():
     """Return token/units consumption for ensembledata and gethookedai only."""
     try:
-        session = SessionFactory()
-        try:
+        with session_scope() as session:
             # Recent usage rows (limit 1000)
             rows = session.query(
                 TokenUsage.platform, TokenUsage.keyword,
@@ -1351,17 +1263,15 @@ def get_token_usage():
                     "provider": _provider_label(r.platform),
                 })
 
-            # Provider-level summary (computed in Python from summary_data)
-            provider_agg = {}
-            for s in summary_data:
-                prov = s["provider"]
-                if prov not in provider_agg:
-                    provider_agg[prov] = {"provider": prov, "total_units": 0, "request_count": 0}
-                provider_agg[prov]["total_units"] += s["total_units"] or 0
-                provider_agg[prov]["request_count"] += s["request_count"] or 0
-            provider_data = sorted(provider_agg.values(), key=lambda x: x["total_units"], reverse=True)
-        finally:
-            session.close()
+        # Provider-level summary (computed in Python from summary_data)
+        provider_agg = {}
+        for s in summary_data:
+            prov = s["provider"]
+            if prov not in provider_agg:
+                provider_agg[prov] = {"provider": prov, "total_units": 0, "request_count": 0}
+            provider_agg[prov]["total_units"] += s["total_units"] or 0
+            provider_agg[prov]["request_count"] += s["request_count"] or 0
+        provider_data = sorted(provider_agg.values(), key=lambda x: x["total_units"], reverse=True)
 
         return {"data": data, "summary": summary_data, "provider_summary": provider_data}
     except Exception as e:
@@ -1392,13 +1302,12 @@ def azure_status():
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1")).scalar()
-        from sqlalchemy.orm import Session as _Ses
         counts = {}
-        with _Ses(bind=engine) as az_session:
+        with session_scope() as session:
             for mapper in Base.registry.mappers:
                 tname = mapper.class_.__tablename__
                 try:
-                    n = az_session.query(func.count()).select_from(mapper.class_).scalar()
+                    n = session.query(func.count()).select_from(mapper.class_).scalar()
                     counts[tname] = n
                 except Exception:
                     counts[tname] = "N/A"
