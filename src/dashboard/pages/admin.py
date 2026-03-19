@@ -694,32 +694,80 @@ def admin_main():
     # ---- Tab: Azure DB ----
     with tab_azure:
         st.subheader("☁️ Azure SQL Server")
-        st.caption("Manage the Azure SQL database: create schema, populate data, and check status.")
+        st.caption("Manage the Azure SQL database: check connection health, run diagnostics, create schema, and migrate.")
+
+        # ---- Connection Status Banner ----
+        if st.button("🔍 Check Connection", key="admin_azure_status", type="primary"):
+            with st.spinner("Checking Azure SQL connection…"):
+                result = api._request("GET", "/admin/azure/status")
+            if result and result.get("connected"):
+                st.success("✅ Connected to Azure SQL")
+                # Show diagnostic summary if available
+                diag = result.get("diagnostic")
+                if diag:
+                    dcol1, dcol2, dcol3 = st.columns(3)
+                    dcol1.metric("Strategy", diag.get("strategy", "—"))
+                    dcol2.metric("Auth Method", diag.get("auth_method", "—")[:30])
+                    dcol3.metric("ODBC Driver", diag.get("driver", "—")[:30])
+                # Show table row counts
+                tables = result.get("tables", {})
+                if tables:
+                    rows_data = [{"Table": t, "Rows": str(c)} for t, c in tables.items()]
+                    st.dataframe(pd.DataFrame(rows_data), hide_index=True, use_container_width=True)
+            elif result:
+                st.error(f"❌ Connection failed: {result.get('error', 'Unknown error')}")
+                diag = result.get("diagnostic")
+                if diag:
+                    with st.expander("🔎 Diagnostic Details", expanded=True):
+                        if diag.get("strategy"):
+                            st.info(f"**Strategy:** {diag['strategy']}  |  **Auth:** {diag.get('auth_method', '—')}")
+                        if diag.get("warnings"):
+                            st.warning("**Warnings:**")
+                            for w in diag["warnings"]:
+                                st.markdown(f"- {w}")
+                        if diag.get("steps"):
+                            st.caption("**Steps taken:**")
+                            for s in diag["steps"]:
+                                st.markdown(f"  {s}")
+            else:
+                st.error("❌ Could not reach API")
+
+        st.divider()
 
         az_col1, az_col2, az_col3 = st.columns(3)
 
+        # ---- Full Diagnostic ----
         with az_col1:
             with st.container(border=True):
-                st.markdown("**🔍 Connection Status**")
-                if st.button("Check Connection", key="admin_azure_status", width="stretch"):
-                    with st.spinner("Checking Azure SQL connection…"):
-                        result = api._request("GET", "/admin/azure/status")
-                    if result and result.get("connected"):
-                        st.success("✅ Connected to Azure SQL")
-                        tables = result.get("tables", {})
-                        if tables:
-                            rows_data = [{"Table": t, "Rows": str(c)} for t, c in tables.items()]
-                            st.dataframe(pd.DataFrame(rows_data), hide_index=True, use_container_width=True)
-                    elif result:
-                        st.error(f"❌ Connection failed: {result.get('error', 'Unknown error')}")
+                st.markdown("**🩺 Full Diagnostic**")
+                st.caption("Resets the connection and runs a complete diagnostic: env vars, ODBC driver, network, auth, and connectivity.")
+                if st.button("Run Full Diagnostic", key="admin_azure_diagnose", width="stretch"):
+                    with st.spinner("Running full diagnostic (this resets the connection)…"):
+                        result = api._request("GET", "/admin/azure/diagnose")
+                    if result:
+                        if result.get("connected"):
+                            st.success("✅ All checks passed!")
+                        else:
+                            st.error(f"❌ Diagnostic failed: {result.get('error', 'Unknown')}")
+                        # Show steps
+                        with st.expander("Diagnostic Steps", expanded=True):
+                            for i, step in enumerate(result.get("steps", []), 1):
+                                st.markdown(f"{i}. {step}")
+                        # Show warnings
+                        warnings = result.get("warnings", [])
+                        if warnings:
+                            with st.expander("⚠️ Warnings", expanded=True):
+                                for w in warnings:
+                                    st.warning(w)
                     else:
                         st.error("❌ Could not reach API")
 
+        # ---- Schema Setup ----
         with az_col2:
             with st.container(border=True):
                 st.markdown("**🏗️ Setup Schema**")
-                st.caption("Create all tables and indexes in Azure SQL (idempotent).")
-                if st.button("🏗️ Run Schema Setup", key="admin_azure_schema", width="stretch", type="primary"):
+                st.caption("Create all tables and indexes in Azure SQL (idempotent — safe to run multiple times).")
+                if st.button("🏗️ Run Schema Setup", key="admin_azure_schema", width="stretch"):
                     with st.spinner("Running schema setup…"):
                         result = api._request("POST", "/admin/azure/setup_schema")
                     if result and "message" in result:
@@ -727,6 +775,44 @@ def admin_main():
                         st.info(result["message"])
                     else:
                         st.error("❌ Schema setup failed")
+
+        # ---- Migration ----
+        with az_col3:
+            with st.container(border=True):
+                st.markdown("**🔄 Run Migration**")
+                st.caption("Add missing indexes and tables to match the latest code. Run after code updates.")
+                dry_run = st.checkbox("Dry run (preview only)", key="admin_migrate_dry", value=True)
+                if st.button("🔄 Run Migration", key="admin_azure_migrate", width="stretch"):
+                    with st.spinner("Running migration…"):
+                        result = api._request("POST", f"/admin/azure/migrate?dry_run={str(dry_run).lower()}")
+                    if result and "summary" in result:
+                        st.info(result["summary"])
+                    elif result and "message" in result:
+                        st.info(result["message"])
+                    else:
+                        st.error("❌ Migration failed")
+
+        # ---- CLI Hint ----
+        st.divider()
+        with st.expander("💡 CLI Tools", expanded=False):
+            st.markdown("""
+**Database Doctor** — Run from your terminal for a full diagnostic:
+```bash
+python -m src.db.doctor
+python -m src.db.doctor --quick
+```
+
+**Setup Wizard** — Interactive guided setup:
+```bash
+python -m src.db.connection --setup
+```
+
+**Run Migration** — Apply schema changes:
+```bash
+python -m src.db.migrate
+python -m src.db.migrate --dry   # preview only
+```
+""")
 
 
 

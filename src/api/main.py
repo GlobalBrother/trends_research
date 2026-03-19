@@ -29,7 +29,7 @@ from src.config import CORS_ORIGINS, CACHE_TTL_SECONDS, PROJECT_ROOT
 from src.collector.trend_collector import TrendCollector
 from src.analytics.analytics_engine import AnalyticsEngine
 from src.niche.niche_discovery import NicheDiscovery
-from src.db.connection import get_engine, get_session, session_scope, get_session_factory
+from src.db.connection import get_engine, get_session, session_scope, get_session_factory, get_last_diagnostic, diagnose as run_connection_diagnose
 from src.db.sql_compat import get_platform_id, get_platform_name, insert_niche_if_not_exists, verify_otp
 from src.db.models import (
     Base, User, OtpCode, AuthToken, Niche, TokenUsage, ScrapeError as ScrapeErrorModel,
@@ -1390,9 +1390,25 @@ def azure_status():
                     counts[tname] = n
                 except Exception:
                     counts[tname] = "N/A"
-        return {"connected": True, "tables": counts}
+
+        # Include last diagnostic info if available
+        diag = get_last_diagnostic()
+        diag_info = diag.summary_dict() if diag else None
+        return {"connected": True, "tables": counts, "diagnostic": diag_info}
     except Exception as e:
-        return {"connected": False, "error": str(e)}
+        diag = get_last_diagnostic()
+        diag_info = diag.summary_dict() if diag else None
+        return {"connected": False, "error": str(e), "diagnostic": diag_info}
+
+
+@app.get("/admin/azure/diagnose")
+def azure_diagnose():
+    """Run a full connection diagnostic (resets engine and retests everything)."""
+    try:
+        diag = run_connection_diagnose()
+        return diag.summary_dict()
+    except Exception as e:
+        return {"connected": False, "error": str(e), "strategy": "unknown"}
 
 
 
