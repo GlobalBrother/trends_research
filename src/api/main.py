@@ -45,7 +45,20 @@ try:
 except ImportError:
     HAS_GETHOOKEDAI = False
 
-engine = get_engine()
+# Engine initialization — get_engine() now retries and never crashes,
+# but we still wrap in try/except for extra safety.
+try:
+    engine = get_engine()
+except Exception as _eng_err:
+    logging.basicConfig(level=logging.INFO)
+    logging.getLogger(__name__).warning(
+        "Could not create database engine on startup: %s. "
+        "The app will start, but DB-dependent endpoints will fail until "
+        "Azure SQL becomes reachable.",
+        _eng_err,
+    )
+    engine = None
+
 SessionFactory = get_session  # backward-compat alias
 
 # Resend API config
@@ -91,7 +104,11 @@ def _init_schema():
 
     Runs the idempotent migration which creates any missing tables
     and adds any missing indexes without touching existing data.
+    Skips gracefully if the database is unreachable.
     """
+    if engine is None:
+        logger.warning("Skipping startup migration — no database engine available.")
+        return
     try:
         from src.db.migrate import run_migration
         result = run_migration(dry_run=False)
