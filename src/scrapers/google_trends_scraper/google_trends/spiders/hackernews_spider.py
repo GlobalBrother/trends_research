@@ -1,12 +1,15 @@
 import scrapy
-from ..items import GoogleTrendItem
+try:
+    from ..items import HackerNewsItem
+except ImportError:
+    from google_trends.items import HackerNewsItem
 
 class HackerNewsSpider(scrapy.Spider):
     name = "hackernews"
     allowed_domains = ["hacker-news.firebaseio.com", "hn.algolia.com"]
     
     TOP_STORIES_URL = "https://hacker-news.firebaseio.com/v0/topstories.json"
-    ITEM_URL = "https://hacker-news.firebaseio.com/v0/item/{}.json"
+    ITEM_URL = "https://hacker-news.firebaseio.com/v0/item/{}.md.json"
     SEARCH_URL = "https://hn.algolia.com/api/v1/search?query={}&tags=story"
 
     def __init__(self, keywords=None, *args, **kwargs):
@@ -34,7 +37,7 @@ class HackerNewsSpider(scrapy.Spider):
         hits = data.get('hits', [])
         # Limit to top 10 as requested
         for hit in hits[:10]:
-            yield GoogleTrendItem(
+            yield HackerNewsItem(
                 keyword=response.meta.get('keyword', "HackerNews Search"),
                 geo="Global",
                 time_range="current",
@@ -56,7 +59,7 @@ class HackerNewsSpider(scrapy.Spider):
 
         # Map HN story to GoogleTrendItem for compatibility
         # We'll use score as a proxy for growth/engagement
-        yield GoogleTrendItem(
+        yield HackerNewsItem(
             keyword="HackerNews Top",
             geo="Global",
             time_range="current",
@@ -70,3 +73,8 @@ class HackerNewsSpider(scrapy.Spider):
                 'descendants': story.get('descendants', 0) # number of comments
             }]
         )
+
+
+if __name__ == "__main__":
+    from run_spider import run
+    run(HackerNewsSpider)

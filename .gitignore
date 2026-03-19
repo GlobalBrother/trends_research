@@ -1,1 +1,13 @@
 *.json
+*.db
+/src/collector/trends.db-shm
+/src/collector/trends.db-wal
+*.env
+
+
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/*.tfvars
+terraform/.terraform.lock.hcl

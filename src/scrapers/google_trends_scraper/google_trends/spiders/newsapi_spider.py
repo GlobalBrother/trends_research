@@ -1,7 +1,10 @@
 import os
 import scrapy
 from datetime import datetime
-from ..items import GoogleTrendItem, ScrapeErrorItem
+try:
+    from ..items import NewsItem, ScrapeErrorItem
+except ImportError:
+    from google_trends.items import NewsItem, ScrapeErrorItem
 
 class NewsApiSpider(scrapy.Spider):
     name = "newsapi"
@@ -25,7 +28,7 @@ class NewsApiSpider(scrapy.Spider):
         if self.api_key == "YOUR_NEWSAPI_KEY":
             self.logger.warning("No NewsAPI key provided. Using simulated data for demonstration.")
             # Yield a dummy item instead of making a real request that will fail
-            yield GoogleTrendItem(
+            yield NewsItem(
                 keyword=self.q,
                 geo="Global",
                 time_range="now",
@@ -47,7 +50,7 @@ class NewsApiSpider(scrapy.Spider):
                         'popularity': 80
                     }
                 ],
-                extracted_at=datetime.now().isoformat()
+                extracted_at=datetime.now()
             )
         else:
             yield scrapy.Request(self.url, callback=self.parse, errback=self.handle_error)
@@ -63,7 +66,7 @@ class NewsApiSpider(scrapy.Spider):
             url=request.url if request else self.url,
             status=status,
             reason=failure.getErrorMessage(),
-            extracted_at=datetime.now().isoformat()
+            extracted_at=datetime.now()
         )
 
     def parse(self, response):
@@ -74,7 +77,7 @@ class NewsApiSpider(scrapy.Spider):
                 url=response.url,
                 status=response.status,
                 reason=f"HTTP {response.status}",
-                extracted_at=datetime.now().isoformat()
+                extracted_at=datetime.now()
             )
             return
 
@@ -86,7 +89,7 @@ class NewsApiSpider(scrapy.Spider):
                 url=response.url,
                 status=response.status,
                 reason=data.get('message', 'Unknown API error'),
-                extracted_at=datetime.now().isoformat()
+                extracted_at=datetime.now()
             )
             self.logger.error(f"NewsAPI error: {data.get('message')}")
             return
@@ -103,12 +106,17 @@ class NewsApiSpider(scrapy.Spider):
                 'popularity': 50 # Default popularity since NewsAPI everything doesn't give a score directly
             })
 
-        yield GoogleTrendItem(
+        yield NewsItem(
             keyword=self.q,
             geo="Global",
             time_range="now",
             category=0,
             data_type="news_trends",
             results=results,
-            extracted_at=datetime.now().isoformat()
+            extracted_at=datetime.now()
         )
+
+
+if __name__ == "__main__":
+    from run_spider import run
+    run(NewsApiSpider)

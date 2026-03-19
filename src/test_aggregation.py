@@ -18,7 +18,7 @@ def main():
     data = [
         {"platform": "Reddit", "topic": "AI girlfriend apps are exploding", "growth": 1000},
         {"platform": "YouTube", "topic": "Why AI Girlfriend Apps are the Future", "growth": 5000},
-        {"platform": "X (Twitter)", "topic": "AI girlfriend app trend", "growth": 200},
+        {"platform": "Threads", "topic": "AI girlfriend app trend", "growth": 200},
         {"platform": "HackerNews", "topic": "Show HN: My AI girlfriend bot", "growth": 300},
         {"platform": "News", "topic": "The rise of AI companions and virtual relationships", "growth": 100},
         {"platform": "Reddit", "topic": "Survival kits for 2026", "growth": 800},

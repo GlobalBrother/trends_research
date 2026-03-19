@@ -11,3 +11,11 @@ openpyxl
 python-dotenv
 matplotlib
 scrapy
+ensembledata
+resend
+fastapi
+uvicorn
+gunicorn
+psycopg2-binary
+sqlalchemy
+pyodbc

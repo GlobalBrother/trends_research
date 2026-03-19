@@ -1,0 +1,32 @@
+version: "3.9"
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - AZURE_SQL_SERVER=${AZURE_SQL_SERVER}
+      - AZURE_SQL_DB=${AZURE_SQL_DB}
+      - AZURE_SQL_USER=${AZURE_SQL_USER}
+      - AZURE_SQL_PASS=${AZURE_SQL_PASS}
+      - AZURE_SQL_DRIVER=ODBC Driver 18 for SQL Server
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    environment:
+      - BACKEND_URL=http://api:8000
+    depends_on:
+      - api
+    restart: unless-stopped
