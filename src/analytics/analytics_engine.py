@@ -1,274 +1,274 @@
-import pandas as pd
-from textblob import TextBlob
-from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-import numpy as np
-import nltk
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+"""
+AnalyticsEngine — sentiment analysis, virality scoring, and topic clustering.
+
+Key responsibilities:
+  1. Compute VADER-based sentiment for each topic.
+  2. Calculate a composite Virality Score (1-100 scale).
+  3. Group similar topics across platforms using Union-Find keyword overlap.
+  4. Aggregate per-topic metrics for a unified view.
+"""
+
+import logging
 import re
+from typing import Optional
+
+import nltk
+import numpy as np
+import pandas as pd
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
+from src.config import PLATFORM_WEIGHTS
+
+logger = logging.getLogger(__name__)
+
+# Common stop words used in topic keyword extraction
+_STOP_WORDS = frozenset({
+    "the", "a", "an", "and", "or", "but", "in", "on", "at", "with",
+    "for", "is", "are", "was", "were", "why", "how", "what", "to",
+    "of", "my", "your", "our", "show", "hn", "app", "apps",
+})
+
 
 class AnalyticsEngine:
-    def __init__(self, cluster_threshold=0.7):
+    """Processes raw trend DataFrames into scored, clustered, aggregated results."""
+
+    def __init__(self, cluster_threshold: float = 0.7):
+        self.cluster_threshold = cluster_threshold
+        self._init_sentiment_analyzer()
+
+    # ------------------------------------------------------------------
+    # Initialization helpers
+    # ------------------------------------------------------------------
+
+    def _init_sentiment_analyzer(self) -> None:
         try:
-            # Ensure VADER lexicon is available if using nltk version, 
-            # though vaderSentiment package usually includes it.
-            # Using vaderSentiment package directly here as in original code.
             self.analyzer = SentimentIntensityAnalyzer()
         except Exception:
-            # Fallback/Initialization if needed
-            nltk.download('vader_lexicon', quiet=True)
+            nltk.download("vader_lexicon", quiet=True)
             self.analyzer = SentimentIntensityAnalyzer()
-        self.cluster_threshold = cluster_threshold
 
-    def analyze_sentiment(self, text):
-        """Analyzes sentiment using VADER."""
-        scores = self.analyzer.polarity_scores(str(text))
-        return scores['compound']
+    # ------------------------------------------------------------------
+    # Sentiment
+    # ------------------------------------------------------------------
 
-    def calculate_virality_score(self, growth_rate, engagement=1.0, platform_weight=1.0, sentiment=0.0, spread=0, source_diversity=1, volume=1):
-        """Calculates a custom Virality Score based on growth, engagement, platform weight, sentiment and geographical spread.
-        
-        Formula from plan: ViralScore = log(mentions) + 2 * growth_rate + engagement_weight + source_diversity
-        Simplified implementation for robust scaling.
+    def analyze_sentiment(self, text: str) -> float:
+        """Return the VADER compound sentiment score for *text*."""
+        return self.analyzer.polarity_scores(str(text))["compound"]
+
+    # ------------------------------------------------------------------
+    # Virality Score
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _sigmoid(x: float) -> float:
+        return 1.0 / (1.0 + np.exp(-0.25 * (x - 12)))
+
+    def calculate_virality_score(
+        self,
+        growth_rate: float,
+        engagement: float = 1.0,
+        platform_weight: float = 1.0,
+        sentiment: float = 0.0,
+        spread: int = 0,
+        source_diversity: int = 1,
+        volume: int = 1,
+    ) -> float:
         """
-        # Handle invalid growth_rate (NaN or negative)
+        Composite virality score scaled to 1-100.
+
+        Formula:
+            base = log(volume) + 2*norm_growth + engagement_weight
+                   + diversity_boost + platform_boost + sentiment_bonus + spread_bonus
+            score = 1 + sigmoid(base) * 99
+        """
         if pd.isna(growth_rate) or growth_rate <= -1:
-            growth_rate = 0
-            
-        # log(mentions) - We use 'volume' (number of occurrences across platforms) or 'engagement'
+            growth_rate = 0.0
+
         log_mentions = np.log1p(volume)
-        
-        # growth_rate component (normalized 0-1)
-        # Assuming growth_rate is provided in a scale where 100% is 1.0
-        # If it's a raw number from scrapers, we normalize it.
-        norm_growth = min(10, growth_rate / 500) 
-        
-        # engagement_weight (log(engagement))
-        engagement_weight = np.log1p(max(0, engagement)) / 2.0
-        
-        # source_diversity - Number of platforms (already a count, but we can log it)
+        norm_growth = min(10.0, growth_rate / 500.0)
+        engagement_weight = np.log1p(max(0.0, engagement)) / 2.0
         diversity_weight = source_diversity * 1.5
-        
-        # ViralScore = log(mentions) + 2 * growth_rate + engagement_weight + source_diversity
-        base_score = log_mentions + (2 * norm_growth) + engagement_weight + diversity_weight + (platform_weight * 2)
-        
-        # Sentiment impact (bonus)
-        sentiment_bonus = abs(sentiment) * 0.5 
-        base_score += sentiment_bonus
-        
-        # Spread impact
+
+        base_score = (
+            log_mentions
+            + 2.0 * norm_growth
+            + engagement_weight
+            + diversity_weight
+            + platform_weight * 2.0
+        )
+
+        # Sentiment bonus (absolute value — both strong positive and negative are viral)
+        base_score += abs(sentiment) * 0.5
+
+        # Geographic spread bonus
         if spread > 0:
-            spread_bonus = np.log1p(spread) * 0.5
-            base_score += spread_bonus
-        
-        # Final scaling: Mapping the expected range to 1-100 range using sigmoid.
-        def sigmoid(x):
-            return 1 / (1 + np.exp(-0.25 * (x - 12)))
-        
-        scaled_score = 1 + (sigmoid(base_score) * 99)
-        return round(scaled_score, 2)
+            base_score += np.log1p(spread) * 0.5
 
-    def group_topics(self, df):
-        """Groups similar topics across platforms using keyword overlap and fuzzy matching."""
+        return round(1.0 + self._sigmoid(base_score) * 99.0, 2)
+
+    # ------------------------------------------------------------------
+    # Topic grouping (Union-Find)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_keywords(text: str) -> set[str]:
+        """Lowercase, strip punctuation, remove stop words, keep tokens len > 2."""
+        cleaned = re.sub(r"[^\w\s]", "", text.lower())
+        return {w for w in cleaned.split() if w not in _STOP_WORDS and len(w) > 2}
+
+    def group_topics(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Cluster similar topics using keyword overlap + Union-Find."""
         if df.empty or len(df) < 2:
-            df['aggregated_topic'] = df['topic']
+            df["aggregated_topic"] = df["topic"]
             return df
-            
-        # Create a copy to work on
-        df = df.copy()
-        topics = df['topic'].tolist()
-        
-        # Clean topics: lowercase, remove punctuation, split into words
-        def get_keywords(text):
-            text = re.sub(r'[^\w\s]', '', text.lower())
-            words = set(text.split())
-            # Remove common stop words (manual list for robustness if nltk is missing)
-            stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'with', 'for', 'is', 'are', 'was', 'were', 'why', 'how', 'what', 'to', 'of', 'my', 'your', 'our', 'show', 'hn', 'app', 'apps'}
-            return {w for w in words if w not in stop_words and len(w) > 2}
 
-        topic_keywords = [get_keywords(t) for t in topics]
+        df = df.copy()
+        topics = df["topic"].tolist()
+        topic_keywords = [self._extract_keywords(t) for t in topics]
         topic_lower = [t.strip().lower() for t in topics]
-        is_meta = [df.iloc[i]['platform'] in ['Google Interest', 'Google Regions'] for i in range(len(topics))]
-        
-        # Union-Find with rank for balanced trees
-        parent = list(range(len(topics)))
-        rank = [0] * len(topics)
-        
-        def find(i):
+        is_meta = [
+            df.iloc[i]["platform"] in ("Google Interest", "Google Regions")
+            for i in range(len(topics))
+        ]
+
+        n = len(topics)
+        parent = list(range(n))
+        rank = [0] * n
+
+        def find(i: int) -> int:
             root = i
             while parent[root] != root:
                 root = parent[root]
             while parent[i] != root:
-                next_node = parent[i]
-                parent[i] = root
-                i = next_node
+                parent[i], i = root, parent[i]
             return root
-            
-        def union(i, j):
-            root_i = find(i)
-            root_j = find(j)
-            if root_i != root_j:
-                if rank[root_i] < rank[root_j]:
-                    parent[root_i] = root_j
-                elif rank[root_i] > rank[root_j]:
-                    parent[root_j] = root_i
-                else:
-                    parent[root_i] = root_j
-                    rank[root_j] += 1
-        
-        # Build inverted index: keyword -> list of topic indices (for non-meta topics)
-        keyword_to_indices = {}
-        for i, kws in enumerate(topic_keywords):
-            if not is_meta[i]:
-                for kw in kws:
-                    if kw not in keyword_to_indices:
-                        keyword_to_indices[kw] = []
-                    keyword_to_indices[kw].append(i)
-        
-        # Group exact-match meta topics using a hash map
-        exact_groups = {}
-        for i in range(len(topics)):
+
+        def union(i: int, j: int) -> None:
+            ri, rj = find(i), find(j)
+            if ri == rj:
+                return
+            if rank[ri] < rank[rj]:
+                parent[ri] = rj
+            elif rank[ri] > rank[rj]:
+                parent[rj] = ri
+            else:
+                parent[ri] = rj
+                rank[rj] += 1
+
+        # Exact-match grouping for meta-platform rows
+        exact_groups: dict[str, int] = {}
+        for i in range(n):
             if is_meta[i]:
                 key = topic_lower[i]
                 if key in exact_groups:
                     union(i, exact_groups[key])
                 else:
                     exact_groups[key] = i
-        
-        # For non-meta topics, use inverted index to find candidates sharing keywords
-        # This avoids O(n²) by only comparing topics that share at least one keyword
-        checked_pairs = set()
-        for kw, indices in keyword_to_indices.items():
-            for idx_a in range(len(indices)):
-                i = indices[idx_a]
-                for idx_b in range(idx_a + 1, len(indices)):
-                    j = indices[idx_b]
+
+        # Inverted index for non-meta topics
+        keyword_to_indices: dict[str, list[int]] = {}
+        for i, kws in enumerate(topic_keywords):
+            if not is_meta[i]:
+                for kw in kws:
+                    keyword_to_indices.setdefault(kw, []).append(i)
+
+        checked_pairs: set[tuple[int, int]] = set()
+        for indices in keyword_to_indices.values():
+            for a_idx in range(len(indices)):
+                i = indices[a_idx]
+                for b_idx in range(a_idx + 1, len(indices)):
+                    j = indices[b_idx]
                     pair = (min(i, j), max(i, j))
                     if pair in checked_pairs:
                         continue
                     checked_pairs.add(pair)
-                    
-                    intersection = topic_keywords[i].intersection(topic_keywords[j])
-                    min_len = min(len(topic_keywords[i]), len(topic_keywords[j]))
-                    
+
+                    intersection = topic_keywords[i] & topic_keywords[j]
                     if not intersection:
                         continue
-                        
-                    match = False
-                    if len(intersection) >= 2:
-                        match = True
-                    elif len(intersection) >= 1 and min_len <= 2:
-                        if topic_lower[i] == topic_lower[j]:
-                            match = True
-                    
-                    if match:
-                        union(i, j)
-        
-        # Build mapping from original index to representative topic
-        group_to_indices = {}
-        for i in range(len(topics)):
-            root = find(i)
-            if root not in group_to_indices:
-                group_to_indices[root] = []
-            group_to_indices[root].append(i)
-            
-        aggregated_map = {}
-        for root, indices in group_to_indices.items():
-            # Pick the shortest/cleanest title as the representative for the group
-            rep_idx = min(indices, key=lambda x: len(topics[x]))
-            rep_topic = topics[rep_idx]
-            for idx in indices:
-                aggregated_map[idx] = rep_topic
+                    min_len = min(len(topic_keywords[i]), len(topic_keywords[j]))
 
-        df['aggregated_topic'] = [aggregated_map.get(i, topics[i]) for i in range(len(topics))]
+                    if len(intersection) >= 2:
+                        union(i, j)
+                    elif len(intersection) >= 1 and min_len <= 2 and topic_lower[i] == topic_lower[j]:
+                        union(i, j)
+
+        # Build representative mapping (shortest title per group)
+        group_to_indices: dict[int, list[int]] = {}
+        for i in range(n):
+            group_to_indices.setdefault(find(i), []).append(i)
+
+        aggregated_map: dict[int, str] = {}
+        for root, idxs in group_to_indices.items():
+            rep_idx = min(idxs, key=lambda x: len(topics[x]))
+            for idx in idxs:
+                aggregated_map[idx] = topics[rep_idx]
+
+        df["aggregated_topic"] = [aggregated_map.get(i, topics[i]) for i in range(n)]
         return df
 
-    def process_trends(self, df):
-        """Applies analytics to a DataFrame of collected trends."""
+    # ------------------------------------------------------------------
+    # Full pipeline
+    # ------------------------------------------------------------------
+
+    def process_trends(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Run the complete analytics pipeline on a raw trends DataFrame."""
         if df.empty:
             return df
-        
-        # 1. Topic Aggregation (Clustering)
-        df = self.group_topics(df)
-        
-        # 2. Add sentiment
-        df.loc[:, 'sentiment'] = df['topic'].apply(self.analyze_sentiment)
-        
-        # 3. Engagement handling
-        if 'engagement' not in df.columns:
-            df.loc[:, 'engagement'] = 1000 
-            df.loc[:, 'engagement'] = df['engagement'] + (df['growth'].fillna(0) * 2)
-        
-        # 4. Source diversity and aggregation
-        # Count unique platforms per aggregated topic
-        diversity_map = df.groupby('aggregated_topic')['platform'].nunique().to_dict()
-        df.loc[:, 'source_diversity'] = df['aggregated_topic'].map(diversity_map)
-        
-        # Count volume (total mentions across platforms)
-        volume_map = df.groupby('aggregated_topic')['topic'].count().to_dict()
-        df.loc[:, 'volume'] = df['aggregated_topic'].map(volume_map)
-        
-        # 5. Define platform weights
-        platform_weights = {
-            "Google Trends": 1.0,
-            "Google Related Queries": 1.1,
-            "Google Related Topics": 1.1,
-            "Google Interest": 1.0,
-            "Google Regions": 1.2,
-            "YouTube": 1.3,
-            "X (Twitter)": 1.2,
-            "Reddit": 1.4,
-            "HackerNews": 1.3,
-            "News": 1.1
-        }
-        
-        # Ensure 'spread' column exists
-        if 'spread' not in df.columns:
-            df.loc[:, 'spread'] = 0
 
-        # 6. Calculate Virality Score
-        df.loc[:, 'virality_score'] = df.apply(lambda row: self.calculate_virality_score(
-            row.get('growth', 0), 
-            row.get('engagement', 0), 
-            platform_weights.get(row.get('platform'), 1.0),
-            row.get('sentiment', 0),
-            row.get('spread', 0),
-            row.get('source_diversity', 1),
-            row.get('volume', 1)
-        ), axis=1)
-        
-        # 7. Aggregate results to unique 'aggregated_topic'
-        # Group by platform AND aggregated_topic to avoid losing information from different platforms
-        # BUT the user wants a unified view of the trend across platforms.
-        # If we group only by aggregated_topic, we lose platform-specific details if multiple platforms share the same topic.
-        
-        # Let's keep one entry per (aggregated_topic, platform) to show breadth, 
-        # or aggregate them but keep the platform list (which we do).
-        
-        agg_dict = {
-            'virality_score': 'max',
-            'growth': 'max',
-            'engagement': 'max', # Changed from sum to max to avoid inflated numbers
-            'sentiment': 'mean',
-            'platform': lambda x: list(set(x)),
-            'source_diversity': 'first',
-            'volume': 'first',
-            'topic': 'first',
-            'geo': lambda x: list(set(str(v) for v in x if v)), # Preserve geos
-            'keyword': 'first',
-            'extracted_at': 'max'
+        # 1. Topic clustering
+        df = self.group_topics(df)
+
+        # 2. Sentiment
+        df.loc[:, "sentiment"] = df["topic"].apply(self.analyze_sentiment)
+
+        # 3. Engagement fallback
+        if "engagement" not in df.columns:
+            df.loc[:, "engagement"] = 1000.0 + df["growth"].fillna(0) * 2
+
+        # 4. Source diversity & volume
+        diversity_map = df.groupby("aggregated_topic")["platform"].nunique().to_dict()
+        volume_map = df.groupby("aggregated_topic")["topic"].count().to_dict()
+        df.loc[:, "source_diversity"] = df["aggregated_topic"].map(diversity_map)
+        df.loc[:, "volume"] = df["aggregated_topic"].map(volume_map)
+
+        # 5. Spread fallback
+        if "spread" not in df.columns:
+            df.loc[:, "spread"] = 0
+
+        # 6. Virality score
+        df.loc[:, "virality_score"] = df.apply(
+            lambda row: self.calculate_virality_score(
+                growth_rate=row.get("growth", 0),
+                engagement=row.get("engagement", 0),
+                platform_weight=PLATFORM_WEIGHTS.get(row.get("platform"), 1.0),
+                sentiment=row.get("sentiment", 0),
+                spread=row.get("spread", 0),
+                source_diversity=row.get("source_diversity", 1),
+                volume=row.get("volume", 1),
+            ),
+            axis=1,
+        )
+
+        # 7. Aggregate to one row per aggregated_topic
+        agg_dict: dict = {
+            "virality_score": "max",
+            "growth": "max",
+            "engagement": "max",
+            "sentiment": "mean",
+            "platform": lambda x: list(set(x)),
+            "source_diversity": "first",
+            "volume": "first",
+            "topic": "first",
+            "geo": lambda x: list({str(v) for v in x if v}),
+            "keyword": "first",
+            "extracted_at": "max",
         }
-        
-        # Add source-specific columns if they exist in the dataframe
-        optional_cols = ['url', 'published', 'posts', 'replies', 'subreddit', 'source', 'author']
+
+        optional_cols = ["url", "published", "posts", "replies", "subreddit", "source", "author"]
         for col in optional_cols:
             if col in df.columns:
-                # Instead of 'first', try to get the first non-null/non-empty value
-                agg_dict[col] = lambda x: next((v for v in x if v and v != 'N/A'), x.iloc[0])
-                
-        aggregated_results = df.groupby('aggregated_topic').agg(agg_dict).reset_index()
-        
-        # Sort by Virality Score
-        aggregated_results = aggregated_results.sort_values(by='virality_score', ascending=False)
-        
-        return aggregated_results
+                agg_dict[col] = lambda x: next((v for v in x if v and v != "N/A"), x.iloc[0])
+
+        aggregated = df.groupby("aggregated_topic").agg(agg_dict).reset_index()
+        return aggregated.sort_values("virality_score", ascending=False)

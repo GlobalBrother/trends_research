@@ -1,148 +1,129 @@
-import requests
-import pandas as pd
-import streamlit as st
+"""
+APIClient — typed HTTP wrapper around the FastAPI backend.
+
+Used exclusively by the Streamlit dashboard. Handles caching, error display,
+and DataFrame conversion so that dashboard code stays presentation-focused.
+"""
+
+import logging
 import os
+from typing import Optional
+
+import pandas as pd
+import requests
+import streamlit as st
+
+logger = logging.getLogger(__name__)
+
+_BASE_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
+
 
 class APIClient:
-    def __init__(self):
-        self.base_url = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
+    """Thin HTTP client for the Trends Research API."""
 
-    def get_niches(self):
-        try:
-            response = requests.get(f"{self.base_url}/niches")
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            st.error(f"Failed to fetch niches: {e}")
-            return ["Survival", "Health", "Preppers", "Sustainability", "Homesteading"]
+    def __init__(self, base_url: str = _BASE_URL):
+        self.base_url = base_url
 
-    def get_niche_keywords(self, niche_name):
-        try:
-            response = requests.get(f"{self.base_url}/niche_keywords/{niche_name}")
-            response.raise_for_status()
-            return response.json().get("keywords", [])
-        except Exception as e:
-            st.error(f"Failed to fetch keywords for {niche_name}: {e}")
-            return []
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
-    def trigger_scrape(self, niche_name, geo="US", timeframe="today 12-m", category=0):
+    def _get(self, path: str, params: Optional[dict] = None, timeout: int = 30) -> dict:
+        """Perform a GET request and return the parsed JSON body."""
         try:
-            payload = {
-                "niche": niche_name,
-                "geo": geo,
-                "timeframe": timeframe,
-                "category": category
-            }
-            response = requests.post(f"{self.base_url}/scrape", json=payload)
-            response.raise_for_status()
+            resp = requests.get(f"{self.base_url}{path}", params=params, timeout=timeout)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.RequestException as exc:
+            logger.error("GET %s failed: %s", path, exc)
+            st.error(f"API request failed: {exc}")
+            return {}
+
+    def _post(self, path: str, payload: dict, timeout: int = 30) -> bool:
+        try:
+            resp = requests.post(f"{self.base_url}{path}", json=payload, timeout=timeout)
+            resp.raise_for_status()
             return True
-        except Exception as e:
-            st.error(f"Scrape request failed: {e}")
+        except requests.RequestException as exc:
+            logger.error("POST %s failed: %s", path, exc)
+            st.error(f"API request failed: {exc}")
             return False
 
-    @st.cache_data(ttl=600)
-    def get_trends(_self, geo="US", niche_name=None):
-        try:
-            params = {"geo": geo}
-            if niche_name:
-                params["niche_name"] = niche_name
-            
-            response = requests.get(f"{_self.base_url}/trends", params=params)
-            response.raise_for_status()
-            data = response.json().get("data", [])
-            return pd.DataFrame(data)
-        except Exception as e:
-            st.error(f"Failed to fetch trends: {e}")
-            return pd.DataFrame()
+    @staticmethod
+    def _to_df(data: dict, key: str = "data") -> pd.DataFrame:
+        rows = data.get(key, [])
+        return pd.DataFrame(rows) if rows else pd.DataFrame()
 
-    @st.cache_data(ttl=3600) # Longer cache for trending now
-    def get_trending_now(_self, geo="US", trend_type="daily"):
-        try:
-            params = {"geo": geo, "trend_type": trend_type}
-            response = requests.get(f"{_self.base_url}/trending_now", params=params)
-            response.raise_for_status()
-            data = response.json().get("data", [])
-            return pd.DataFrame(data)
-        except Exception as e:
-            st.error(f"Failed to fetch trending now: {e}")
-            return pd.DataFrame()
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def get_niches(self) -> list[str]:
+        data = self._get("/niches")
+        if isinstance(data, list):
+            return data
+        return ["Survival", "Health", "Preppers", "Sustainability", "Homesteading"]
+
+    def get_niche_keywords(self, niche_name: str) -> list[str]:
+        data = self._get(f"/niche_keywords/{niche_name}")
+        return data.get("keywords", [])
+
+    def trigger_scrape(self, niche_name: str, geo: str = "US",
+                       timeframe: str = "today 12-m", category: int = 0) -> bool:
+        return self._post("/scrape", {
+            "niche": niche_name, "geo": geo,
+            "timeframe": timeframe, "category": category,
+        })
+
+    # Cached data fetchers -------------------------------------------------
+
+    @st.cache_data(ttl=600)
+    def get_trends(_self, geo: str = "US", niche_name: Optional[str] = None) -> pd.DataFrame:
+        params = {"geo": geo}
+        if niche_name:
+            params["niche_name"] = niche_name
+        return _self._to_df(_self._get("/trends", params))
 
     @st.cache_data(ttl=3600)
-    def get_youtube_trends(_self, niche_name, geo="US"):
-        try:
-            params = {"niche_name": niche_name, "geo": geo}
-            response = requests.get(f"{_self.base_url}/youtube_trends", params=params)
-            response.raise_for_status()
-            data = response.json().get("data", [])
-            return pd.DataFrame(data)
-        except Exception as e:
-            st.error(f"Failed to fetch YouTube trends: {e}")
-            return pd.DataFrame()
+    def get_trending_now(_self, geo: str = "US", trend_type: str = "daily") -> pd.DataFrame:
+        return _self._to_df(_self._get("/trending_now", {"geo": geo, "trend_type": trend_type}))
 
     @st.cache_data(ttl=3600)
-    def get_social_trends(_self, platform, niche_name, geo="US"):
-        try:
-            params = {"platform": platform, "niche_name": niche_name, "geo": geo}
-            response = requests.get(f"{_self.base_url}/social_trends", params=params)
-            response.raise_for_status()
-            data = response.json().get("data", [])
-            return pd.DataFrame(data)
-        except Exception as e:
-            st.error(f"Failed to fetch {platform} trends: {e}")
-            return pd.DataFrame()
+    def get_youtube_trends(_self, niche_name: str, geo: str = "US") -> pd.DataFrame:
+        return _self._to_df(_self._get("/youtube_trends", {"niche_name": niche_name, "geo": geo}))
+
+    @st.cache_data(ttl=3600)
+    def get_social_trends(_self, platform: str, niche_name: str, geo: str = "US") -> pd.DataFrame:
+        return _self._to_df(_self._get("/social_trends", {
+            "platform": platform, "niche_name": niche_name, "geo": geo,
+        }))
 
     @st.cache_data(ttl=600)
-    def get_hackernews_trends(_self, niche_name=None, geo="US"):
-        try:
-            params = {"geo": geo}
-            if niche_name:
-                params["niche_name"] = niche_name
-            response = requests.get(f"{_self.base_url}/hackernews_trends", params=params)
-            response.raise_for_status()
-            data = response.json().get("data", [])
-            return pd.DataFrame(data)
-        except Exception as e:
-            st.error(f"Failed to fetch HackerNews trends: {e}")
-            return pd.DataFrame()
+    def get_hackernews_trends(_self, niche_name: Optional[str] = None, geo: str = "US") -> pd.DataFrame:
+        params: dict = {"geo": geo}
+        if niche_name:
+            params["niche_name"] = niche_name
+        return _self._to_df(_self._get("/hackernews_trends", params))
 
     @st.cache_data(ttl=600)
-    def get_reddit_trends(_self, subreddit='all', trend_type='hot', niche_name=None, geo="US"):
-        try:
-            params = {'subreddit': subreddit, 'trend_type': trend_type, 'geo': geo}
-            if niche_name:
-                params["niche_name"] = niche_name
-            response = requests.get(f"{_self.base_url}/reddit_trends", params=params)
-            response.raise_for_status()
-            data = response.json().get("data", [])
-            return pd.DataFrame(data)
-        except Exception as e:
-            st.error(f"Failed to fetch Reddit trends: {e}")
-            return pd.DataFrame()
+    def get_reddit_trends(_self, subreddit: str = "all", trend_type: str = "hot",
+                          niche_name: Optional[str] = None, geo: str = "US") -> pd.DataFrame:
+        params: dict = {"subreddit": subreddit, "trend_type": trend_type, "geo": geo}
+        if niche_name:
+            params["niche_name"] = niche_name
+        return _self._to_df(_self._get("/reddit_trends", params))
 
     @st.cache_data(ttl=600)
-    def get_news_trends(_self, query='niche', niche_name=None, geo="US"):
-        try:
-            params = {'query': query, 'geo': geo}
-            if niche_name:
-                params["niche_name"] = niche_name
-            response = requests.get(f"{_self.base_url}/news_trends", params=params)
-            response.raise_for_status()
-            data = response.json().get("data", [])
-            return pd.DataFrame(data)
-        except Exception as e:
-            st.error(f"Failed to fetch News trends: {e}")
-            return pd.DataFrame()
+    def get_news_trends(_self, query: str = "niche", niche_name: Optional[str] = None,
+                        geo: str = "US") -> pd.DataFrame:
+        params: dict = {"query": query, "geo": geo}
+        if niche_name:
+            params["niche_name"] = niche_name
+        return _self._to_df(_self._get("/news_trends", params))
 
     @st.cache_data(ttl=60)
-    def get_scrape_errors(_self, platform=None):
-        try:
-            params = {}
-            if platform:
-                params['platform'] = platform
-            response = requests.get(f"{_self.base_url}/scrape_errors", params=params)
-            response.raise_for_status()
-            data = response.json().get("data", [])
-            return pd.DataFrame(data)
-        except Exception as e:
-            st.error(f"Failed to fetch scrape errors: {e}")
-            return pd.DataFrame()
+    def get_scrape_errors(_self, platform: Optional[str] = None) -> pd.DataFrame:
+        params: dict = {}
+        if platform:
+            params["platform"] = platform
+        return _self._to_df(_self._get("/scrape_errors", params))

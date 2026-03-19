@@ -1,218 +1,226 @@
-import os
-import pandas as pd
+"""
+TrendCollector — orchestrates data collection from scrapers and the SQLite database.
+
+Responsibilities:
+  1. Read aggregated trend data from the database.
+  2. Invoke individual Scrapy spiders via subprocess.
+  3. Provide a convenience method for comprehensive niche scrapes.
+"""
+
 import json
+import logging
+import os
+import sqlite3
 import subprocess
 import sys
-import re
+from typing import Optional
+
+import pandas as pd
+
+from src.config import (
+    ALWAYS_INCLUDED_PLATFORMS,
+    DB_PATH,
+    SCRAPER_DIR,
+)
+
+logger = logging.getLogger(__name__)
+
 
 class TrendCollector:
-    def __init__(self):
-        # Define the path to SQLite database relative to project root
-        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-        self.db_path = os.path.join(base_dir, "src", "collector", "trends.db")
-        
-    def get_db_trends(self, geo=None, include_trending_now=False, include_youtube=False, include_social=False, include_hackernews=False, include_reddit=False, include_news=False):
-        """Reads trends from SQLite database."""
-        import sqlite3
-        import json
+    """Central data-collection facade used by the API and dashboard."""
+
+    def __init__(self, db_path: str = DB_PATH):
+        self.db_path = db_path
+
+    # ------------------------------------------------------------------
+    # Database helpers
+    # ------------------------------------------------------------------
+
+    def _get_connection(self) -> sqlite3.Connection:
+        """Return a WAL-mode SQLite connection with performance pragmas."""
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA cache_size=-8000")
+        conn.execute("PRAGMA mmap_size=67108864")
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    # ------------------------------------------------------------------
+    # Read trends
+    # ------------------------------------------------------------------
+
+    def get_db_trends(
+        self,
+        geo: Optional[str] = None,
+        include_trending_now: bool = False,
+        include_youtube: bool = False,
+        include_social: bool = False,
+        include_hackernews: bool = False,
+        include_reddit: bool = False,
+        include_news: bool = False,
+    ) -> list[dict]:
+        """Fetch trend rows from the database, filtered by platform flags and geo."""
 
         if not os.path.exists(self.db_path):
-            print(f"Database not found at {self.db_path}. No trends available.")
+            logger.warning("Database not found at %s", self.db_path)
             return []
 
+        # Build the list of platforms to include
+        included_platforms: list[str] = list(ALWAYS_INCLUDED_PLATFORMS)
+        _flag_map = {
+            include_trending_now: ["Google Trends"],
+            include_youtube: ["YouTube"],
+            include_social: ["X (Twitter)", "Threads", "Instagram"],
+            include_hackernews: ["HackerNews"],
+            include_reddit: ["Reddit"],
+            include_news: ["News"],
+        }
+        for flag, platforms in _flag_map.items():
+            if flag:
+                included_platforms.extend(platforms)
+
         try:
-            conn = sqlite3.connect(self.db_path)
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA cache_size=-8000")  # 8MB cache
-            conn.execute("PRAGMA mmap_size=67108864")  # 64MB memory-mapped I/O
-            conn.row_factory = sqlite3.Row
+            conn = self._get_connection()
             cursor = conn.cursor()
 
-            query = "SELECT platform, topic, growth, keyword, geo, url, extracted_at, extra_data FROM trends WHERE 1=1"
-            params = []
-
-            # Platform filtering - use IN for included platforms (faster with index)
-            included_platforms = []
-            if include_trending_now:
-                included_platforms.append('Google Trends')
-            if include_youtube:
-                included_platforms.append('YouTube')
-            if include_social:
-                included_platforms.extend(['X (Twitter)', 'Threads', 'Instagram'])
-            if include_hackernews:
-                included_platforms.append('HackerNews')
-            if include_reddit:
-                included_platforms.append('Reddit')
-            if include_news:
-                included_platforms.append('News')
-            
-            # Always include Google niche platforms
-            always_included = ['Google Interest', 'Google Regions', 'Google Related Queries', 'Google Related Topics']
-            included_platforms.extend(always_included)
-            
-            placeholders = ', '.join(['?'] * len(included_platforms))
-            query += f" AND platform IN ({placeholders})"
-            params.extend(included_platforms)
+            placeholders = ", ".join(["?"] * len(included_platforms))
+            query = (
+                "SELECT platform, topic, growth, keyword, geo, url, "
+                "extracted_at, extra_data FROM trends "
+                f"WHERE platform IN ({placeholders})"
+            )
+            params: list = list(included_platforms)
 
             # Geo filtering
-            if geo is not None and geo != "Global":
-                query += " AND (UPPER(geo) = UPPER(?) OR geo = '' OR UPPER(geo) = 'GLOBAL' OR geo IS NULL)"
+            if geo and geo != "Global":
+                query += (
+                    " AND (UPPER(geo) = UPPER(?) OR geo = '' "
+                    "OR UPPER(geo) = 'GLOBAL' OR geo IS NULL)"
+                )
                 params.append(geo)
             elif geo == "Global":
                 query += " AND (UPPER(geo) = 'GLOBAL' OR geo = '' OR geo IS NULL)"
 
             query += " ORDER BY extracted_at DESC"
-            
             cursor.execute(query, params)
             rows = cursor.fetchall()
             conn.close()
 
-            trends = []
+            trends: list[dict] = []
             for row in rows:
-                item = {
-                    "platform": row['platform'],
-                    "topic": row['topic'],
-                    "growth": row['growth'],
-                    "keyword": row['keyword'],
-                    "geo": row['geo'],
-                    "url": row['url'],
-                    "extracted_at": row['extracted_at']
-                }
-                
-                # Expand extra_data
-                extra_data = row['extra_data']
+                item = dict(row)
+                extra_data = item.pop("extra_data", None)
                 if extra_data:
                     try:
-                        extra = json.loads(extra_data)
-                        item.update(extra)
-                    except:
+                        item.update(json.loads(extra_data))
+                    except (json.JSONDecodeError, TypeError):
                         pass
-                
                 trends.append(item)
-                
+
             return trends
-        except Exception as e:
-            print(f"Error reading trends from DB: {e}")
+
+        except Exception:
+            logger.exception("Error reading trends from DB")
             return []
 
-    def run_google_trends_scraper(self, keywords, geo="US", timeframe="today 12-m", category=0):
-        """Runs the Scrapy Google Trends spider for specific keywords."""
-        return self._run_scraper("google_trends", keywords=keywords, geo=geo, timeframe=timeframe, category=category)
+    # ------------------------------------------------------------------
+    # Scraper invocation
+    # ------------------------------------------------------------------
 
-    def run_trending_now_scraper(self, geo="US", trend_type="daily"):
-        """Runs the Scrapy Trending Now spider."""
-        return self._run_scraper("trending_now", geo=geo, type=trend_type)
-
-    def _run_scraper(self, spider_name, **kwargs):
-        """Helper to run a Scrapy spider with given arguments."""
-        # Use absolute path for the scraper directory
-        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-        project_dir = os.path.join(base_dir, "src", "scrapers", "google_trends_scraper")
-        
+    def _run_scraper(self, spider_name: str, **kwargs) -> bool:
+        """Run a Scrapy spider as a subprocess and return success status."""
         cmd = [sys.executable, "-m", "scrapy", "crawl", spider_name]
-        
         for key, value in kwargs.items():
             if key == "keywords" and isinstance(value, list):
                 value = ",".join(value)
             cmd.extend(["-a", f"{key}={value}"])
 
+        logger.info("Running scraper: %s in %s", " ".join(cmd), SCRAPER_DIR)
         try:
-            print(f"Running scraper command: {' '.join(cmd)} in {project_dir}")
-            
-            result = subprocess.run(
-                cmd,
-                cwd=project_dir,
-                capture_output=False,
-                text=True
-            )
-            
+            result = subprocess.run(cmd, cwd=SCRAPER_DIR, capture_output=False, text=True)
             if result.returncode != 0:
-                print(f"Scraper {spider_name} failed with return code {result.returncode}")
+                logger.error("Scraper %s exited with code %d", spider_name, result.returncode)
                 return False
-            
-            print(f"Scraper {spider_name} completed successfully.")
+            logger.info("Scraper %s completed successfully", spider_name)
             return True
-        except Exception as e:
-            print(f"Failed to run Scrapy scraper {spider_name}: {e}")
+        except Exception:
+            logger.exception("Failed to run scraper %s", spider_name)
             return False
 
+    # Convenience wrappers for each spider
+    def run_google_trends_scraper(self, keywords, geo="US", timeframe="today 12-m", category=0):
+        return self._run_scraper("google_trends", keywords=keywords, geo=geo, timeframe=timeframe, category=category)
+
+    def run_trending_now_scraper(self, geo="US", trend_type="daily"):
+        return self._run_scraper("trending_now", geo=geo, type=trend_type)
+
     def run_youtube_trends_scraper(self, keywords, geo="Global"):
-        """Runs the Scrapy YouTube Trends spider for specific keywords."""
         return self._run_scraper("youtube_trends", keywords=keywords, geo=geo)
 
     def run_social_trends_scraper(self, platform, keywords, geo="Global"):
-        """Runs the Scrapy Social Trends spider for a specific platform."""
         return self._run_scraper("social_trends", platform=platform, keywords=keywords, geo=geo)
 
     def run_hackernews_scraper(self, keywords=None, geo="Global"):
-        """Runs the Scrapy HackerNews spider."""
         return self._run_scraper("hackernews", keywords=keywords, geo=geo)
 
-    def run_reddit_scraper(self, subreddit='all', trend_type='hot', keywords=None, geo="Global"):
-        """Runs the Scrapy Reddit spider."""
+    def run_reddit_scraper(self, subreddit="all", trend_type="hot", keywords=None, geo="Global"):
         return self._run_scraper("reddit", subreddit=subreddit, trend_type=trend_type, keywords=keywords, geo=geo)
 
-    def run_news_scraper(self, query='niche', api_key=None, geo="Global"):
-        """Runs the Scrapy NewsAPI spider."""
+    def run_news_scraper(self, query="niche", api_key=None, geo="Global"):
         return self._run_scraper("newsapi", q=query, api_key=api_key, geo=geo)
 
-    def run_niche_comprehensive_scrape(self, niche_name, keywords, geo="US", timeframe="today 12-m", category=0):
-        """Triggers all scrapers for a specific niche in sequence."""
-        print(f"Starting comprehensive scrape for niche: {niche_name}")
-        
-        # 1. Google Trends (the core scraper) - Use ALL keywords
+    # ------------------------------------------------------------------
+    # Comprehensive niche scrape
+    # ------------------------------------------------------------------
+
+    def run_niche_comprehensive_scrape(
+        self, niche_name: str, keywords: list[str],
+        geo: str = "US", timeframe: str = "today 12-m", category: int = 0,
+    ) -> bool:
+        """Run all scrapers sequentially for a given niche."""
+        logger.info("Starting comprehensive scrape for niche: %s", niche_name)
+
         self.run_google_trends_scraper(keywords, geo=geo, timeframe=timeframe, category=category)
-        
-        # 2. YouTube - Use ALL keywords
         self.run_youtube_trends_scraper(keywords, geo=geo)
-        
-        # 3. Social - Use ALL keywords
-        self.run_social_trends_scraper("X", keywords, geo=geo)
-        self.run_social_trends_scraper("Threads", keywords, geo=geo)
-        self.run_social_trends_scraper("Instagram", keywords, geo=geo)
-        
-        # 4. Reddit - Use ALL keywords
+
+        for social_platform in ("X", "Threads", "Instagram"):
+            self.run_social_trends_scraper(social_platform, keywords, geo=geo)
+
         self.run_reddit_scraper(keywords=keywords, geo=geo)
-        
-        # 5. HackerNews - Use ALL keywords
         self.run_hackernews_scraper(keywords=keywords, geo=geo)
-        
-        # 6. NewsAPI (just use the niche name for NewsAPI)
         self.run_news_scraper(query=niche_name, geo=geo)
-        
-        print(f"Comprehensive scrape for {niche_name} finished.")
+
+        logger.info("Comprehensive scrape for %s finished", niche_name)
         return True
 
-    def collect_all(self, geo=None, include_trending_now=False, include_youtube=False, include_social=False, include_hackernews=False, include_reddit=False, include_news=False):
-        all_trends = []
-        # Prefer DB over JSONL
-        all_trends.extend(self.get_db_trends(geo=geo, include_trending_now=include_trending_now, include_youtube=include_youtube, include_social=include_social, include_hackernews=include_hackernews, include_reddit=include_reddit, include_news=include_news))
-        
-        if all_trends:
-            return pd.DataFrame(all_trends)
-        else:
-            # Return empty DataFrame with expected columns
-            return pd.DataFrame(columns=['platform', 'topic', 'growth', 'keyword', 'extracted_at'])
+    # ------------------------------------------------------------------
+    # Aggregation
+    # ------------------------------------------------------------------
 
-    def get_scrape_errors(self, platform=None):
-        """Reads scrape errors from SQLite database."""
-        import sqlite3
-        import pandas as pd
-        
+    def collect_all(self, **kwargs) -> pd.DataFrame:
+        """Return a DataFrame of all matching trends from the DB."""
+        trends = self.get_db_trends(**kwargs)
+        if trends:
+            return pd.DataFrame(trends)
+        return pd.DataFrame(columns=["platform", "topic", "growth", "keyword", "extracted_at"])
+
+    # ------------------------------------------------------------------
+    # Errors
+    # ------------------------------------------------------------------
+
+    def get_scrape_errors(self, platform: Optional[str] = None) -> pd.DataFrame:
+        """Read scrape errors from the database."""
         try:
             conn = sqlite3.connect(self.db_path)
             query = "SELECT platform, keyword, url, status, reason, extracted_at FROM scrape_errors"
-            params = []
-            
+            params: list = []
             if platform:
                 query += " WHERE platform = ?"
                 params.append(platform)
-            
             query += " ORDER BY extracted_at DESC"
-            
             df = pd.read_sql_query(query, conn, params=params)
             conn.close()
             return df
-        except Exception as e:
-            print(f"Error reading scrape errors from DB: {e}")
-            return pd.DataFrame(columns=['platform', 'keyword', 'url', 'status', 'reason', 'extracted_at'])
+        except Exception:
+            logger.exception("Error reading scrape errors from DB")
+            return pd.DataFrame(columns=["platform", "keyword", "url", "status", "reason", "extracted_at"])
