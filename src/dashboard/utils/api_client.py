@@ -5,16 +5,15 @@ Used exclusively by the Streamlit dashboard. Handles caching, error display,
 and DataFrame conversion so that dashboard code stays presentation-focused.
 """
 
+import json
 import logging
 import os
+import sys
 from typing import Optional
 
 import pandas as pd
 import requests
 import streamlit as st
-import os
-import sys
-import json
 
 # Ensure project root is in path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
@@ -225,7 +224,7 @@ class APIClient:
             response.raise_for_status()
             return True
         except requests.RequestException as exc:
-            logger.error("POST %s failed: %s", path, exc)
+            logger.error("POST /scrape failed: %s", exc)
             st.error(f"API request failed: {exc}")
             return False
 
@@ -233,27 +232,6 @@ class APIClient:
     def _to_df(data: dict, key: str = "data") -> pd.DataFrame:
         rows = data.get(key, [])
         return pd.DataFrame(rows) if rows else pd.DataFrame()
-
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
-
-    def get_niches(self) -> list[str]:
-        data = self._get("/niches")
-        if isinstance(data, list):
-            return data
-        return ["Survival", "Health", "Preppers", "Sustainability", "Homesteading"]
-
-    def get_niche_keywords(self, niche_name: str) -> list[str]:
-        data = self._get(f"/niche_keywords/{niche_name}")
-        return data.get("keywords", [])
-
-    def trigger_scrape(self, niche_name: str, geo: str = "US",
-                       timeframe: str = "today 12-m", category: int = 0) -> bool:
-        return self._post("/scrape", {
-            "niche": niche_name, "geo": geo,
-            "timeframe": timeframe, "category": category,
-        })
 
     # Cached data fetchers -------------------------------------------------
 

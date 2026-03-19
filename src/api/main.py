@@ -20,12 +20,7 @@ from sqlalchemy.exc import IntegrityError
 
 load_dotenv()
 
-import pandas as pd
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-
-from src.config import CORS_ORIGINS, CACHE_TTL_SECONDS
+from src.config import CORS_ORIGINS, CACHE_TTL_SECONDS, PROJECT_ROOT
 from src.collector.trend_collector import TrendCollector
 from src.analytics.analytics_engine import AnalyticsEngine
 from src.niche.niche_discovery import NicheDiscovery
@@ -38,7 +33,7 @@ from src.db.models import (
 
 # Try to import GetHookdAI ads scraper
 try:
-    _gha_dir = os.path.join(project_root, "src", "scrapers", "gethookedai")
+    _gha_dir = os.path.join(PROJECT_ROOT, "src", "scrapers", "gethookedai")
     if _gha_dir not in sys.path:
         sys.path.insert(0, _gha_dir)
     from ads_insight import (
@@ -704,43 +699,6 @@ async def import_tokens(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Simple in-memory cache for processed trends
-_trends_cache: dict = {}
-_CACHE_TTL_SECONDS = 300  # 5 minutes
-
-def _get_cached_or_compute(cache_key, compute_fn):
-    """Returns cached result if fresh, otherwise computes and caches."""
-    now = time.time()
-    if cache_key in _trends_cache:
-        cached_time, cached_data = _trends_cache[cache_key]
-        if now - cached_time < _CACHE_TTL_SECONDS:
-            logger.info(f"Cache hit for {cache_key}")
-            return cached_data
-    result = compute_fn()
-    _trends_cache[cache_key] = (now, result)
-    return result
-
-class JSONEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if hasattr(obj, 'tolist'):
-            return obj.tolist()
-        if isinstance(obj, (datetime, pd.Timestamp)):
-            return obj.isoformat()
-        if isinstance(obj, set):
-            return list(obj)
-        try:
-            return super().default(obj)
-        except TypeError:
-            return str(obj)
-
-def _sanitize_and_serialize(processed_data):
-    """Replace NaN/Inf values and serialize DataFrame to JSON-compatible records."""
-    processed_data = processed_data.copy()
-    processed_data = processed_data.fillna("")
-    processed_data = processed_data.replace([float('inf'), float('-inf')], None)
-    records = processed_data.to_dict(orient="records")
-    return json.loads(json.dumps(records, cls=JSONEncoder))
-
 @app.get("/trends")
 def get_trends(geo: Optional[str] = Query(None), niche_name: Optional[str] = Query(None)):
     try:
@@ -838,85 +796,39 @@ def get_youtube_trends(niche_name: str = Query(...), geo: Optional[str] = Query(
             processed_data = niche.filter_by_niche(yt_data, niche_name)
             if not processed_data.empty:
                 processed_data = analytics.process_trends(processed_data)
-                return {"data": _sanitize_and_serialize(processed_data)}
-                
+                return {"data": _sanitize(processed_data)}
+
     return {"data": []}
+
 
 @app.get("/hackernews_trends")
 def get_hackernews_trends(niche_name: Optional[str] = Query(None), geo: Optional[str] = Query(None)):
-    # Check if we have recent data
-    raw_data = collector.collect_all(geo=geo, include_hackernews=True)
-    
-    needs_scrape = True
-    if not raw_data.empty and 'platform' in raw_data.columns:
-        hn_data = raw_data[raw_data['platform'] == "HackerNews"]
-        if not hn_data.empty:
-            if niche_name:
-                niche_keywords = _get_niche_keywords_from_db(niche_name)
-                niche_hn_data = hn_data[hn_data['keyword'].isin(niche_keywords)]
-                if not niche_hn_data.empty:
-                    last_extracted = pd.to_datetime(niche_hn_data['extracted_at']).max()
-                    if datetime.now() - last_extracted.to_pydatetime() < timedelta(hours=24):
-                        needs_scrape = False
-            else:
-                last_extracted = pd.to_datetime(hn_data['extracted_at']).max()
-                if datetime.now() - last_extracted.to_pydatetime() < timedelta(hours=1):
-                    needs_scrape = False
-    
-    if needs_scrape:
-        keywords = _get_niche_keywords_from_db(niche_name) if niche_name else None
-        success = collector.run_hackernews_scraper(keywords=keywords)
-        if success:
-            raw_data = collector.collect_all(include_hackernews=True)
+    return _platform_endpoint(
+        "HackerNews",
+        {"include_hackernews": True},
+        niche_name, geo,
+        scrape_fn=lambda: collector.run_hackernews_scraper(
+            keywords=_get_niche_keywords_from_db(niche_name) if niche_name else None,
+        ),
+    )
 
-    if not raw_data.empty:
-        hn_data = raw_data[raw_data['platform'] == "HackerNews"].copy()
-        if not hn_data.empty:
-            if niche_name:
-                hn_data = niche.filter_by_niche(hn_data, niche_name)
-            if not hn_data.empty:
-                processed_data = analytics.process_trends(hn_data)
-                return {"data": _sanitize_and_serialize(processed_data)}
-                
-    return {"data": []}
 
 @app.get("/reddit_trends")
-def get_reddit_trends(subreddit: str = Query("all"), trend_type: str = Query("hot"), niche_name: Optional[str] = Query(None), geo: Optional[str] = Query(None)):
-    # Check if we have recent data
-    raw_data = collector.collect_all(geo=geo, include_reddit=True)
-    
-    needs_scrape = True
-    if not raw_data.empty and 'platform' in raw_data.columns:
-        reddit_data = raw_data[raw_data['platform'] == "Reddit"]
-        if not reddit_data.empty:
-            if niche_name:
-                niche_keywords = _get_niche_keywords_from_db(niche_name)
-                niche_reddit_data = reddit_data[reddit_data['keyword'].isin(niche_keywords)]
-                if not niche_reddit_data.empty:
-                    last_extracted = pd.to_datetime(niche_reddit_data['extracted_at']).max()
-                    if datetime.now() - last_extracted.to_pydatetime() < timedelta(hours=24):
-                        needs_scrape = False
-            else:
-                last_extracted = pd.to_datetime(reddit_data['extracted_at']).max()
-                if datetime.now() - last_extracted.to_pydatetime() < timedelta(hours=1):
-                    needs_scrape = False
-    
-    if needs_scrape:
-        keywords = _get_niche_keywords_from_db(niche_name) if niche_name else None
-        success = collector.run_reddit_scraper(subreddit=subreddit, trend_type=trend_type, keywords=keywords)
-        if success:
-            raw_data = collector.collect_all(include_reddit=True)
-
-    if not raw_data.empty:
-        reddit_data = raw_data[raw_data['platform'] == "Reddit"].copy()
-        if not reddit_data.empty:
-            if niche_name:
-                reddit_data = niche.filter_by_niche(reddit_data, niche_name)
-            if not reddit_data.empty:
-                processed_data = analytics.process_trends(reddit_data)
-                return {"data": _sanitize_and_serialize(processed_data)}
-                
-    return {"data": []}
+def get_reddit_trends(
+    subreddit: str = Query("all"),
+    trend_type: str = Query("hot"),
+    niche_name: Optional[str] = Query(None),
+    geo: Optional[str] = Query(None),
+):
+    return _platform_endpoint(
+        "Reddit",
+        {"include_reddit": True},
+        niche_name, geo,
+        scrape_fn=lambda: collector.run_reddit_scraper(
+            subreddit=subreddit, trend_type=trend_type,
+            keywords=_get_niche_keywords_from_db(niche_name) if niche_name else None,
+        ),
+    )
 
 @app.get("/news_trends")
 def get_news_trends(query: str = Query("niche"), niche_name: Optional[str] = Query(None), geo: Optional[str] = Query(None)):
@@ -1074,7 +986,7 @@ def _content_query(platform_name: str, niche_name, geo, limit, order_attr=None):
     if not rows:
         return []
     df = pd.DataFrame(rows, columns=columns)
-    return _sanitize_and_serialize(df)
+    return _sanitize(df)
 
 
 # ---------------------------------------------------------------------------
@@ -1309,7 +1221,7 @@ def get_ads_insight(
     if not rows:
         return {"data": []}
     df = pd.DataFrame(rows, columns=columns)
-    return {"data": _sanitize_and_serialize(df)}
+    return {"data": _sanitize(df)}
 
 
 # ---------------------------------------------------------------------------
