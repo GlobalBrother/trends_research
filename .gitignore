@@ -40,9 +40,17 @@ terraform/*.tfstate.backup
 terraform/*.tfvars
 terraform/.terraform.lock.hcl
 
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
 # OS
 .DS_Store
 Thumbs.db
 
 # Logs
 *.log
+
+# Streamlit (legacy)
+.streamlit/

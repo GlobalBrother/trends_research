@@ -14,6 +14,8 @@ import resend
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Query, BackgroundTasks, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import text, func
 from sqlalchemy.exc import IntegrityError
@@ -92,6 +94,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------------------------------------------------------------------------
+# Serve React frontend (production build)
+# ---------------------------------------------------------------------------
+_frontend_dist = os.path.join(PROJECT_ROOT, "frontend", "dist")
+if os.path.isdir(_frontend_dist):
+    app.mount("/assets", StaticFiles(directory=os.path.join(_frontend_dist, "assets")), name="static-assets")
 
 # ---------------------------------------------------------------------------
 # Shared instances
@@ -1411,6 +1420,18 @@ def azure_diagnose():
         return {"connected": False, "error": str(e), "strategy": "unknown"}
 
 
+
+
+# ---------------------------------------------------------------------------
+# SPA catch-all: serve React index.html for any route not matched by the API
+# ---------------------------------------------------------------------------
+@app.get("/{full_path:path}", include_in_schema=False)
+async def serve_spa(full_path: str):
+    """Serve the React SPA for any non-API route."""
+    _index = os.path.join(_frontend_dist, "index.html")
+    if os.path.isdir(_frontend_dist) and os.path.isfile(_index):
+        return FileResponse(_index)
+    raise HTTPException(status_code=404, detail="Frontend not built. Run: cd frontend && pnpm build")
 
 
 if __name__ == "__main__":

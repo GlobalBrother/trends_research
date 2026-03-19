@@ -1,17 +1,53 @@
-.env
-*.env
+# Git
 .git
 .gitignore
+
+# Environment & secrets
+.env
+*.env
+!.env.example
+
+# Python artifacts
 __pycache__
 *.pyc
 *.pyo
+*.egg-info
 .venv
 venv
+
+# IDE
 .idea
 .vscode
+
+# Database files
 *.db
 *.db-shm
 *.db-wal
+
+# Docker (avoid recursive copy)
 Dockerfile*
 docker-compose.yml
+
+# Frontend build cache (source is needed for multi-stage build)
+frontend/node_modules
+frontend/dist
+frontend/.vite
+
+# Terraform
+terraform/.terraform
+terraform/*.tfstate
+terraform/*.tfstate.backup
+
+# Documentation (not needed in image)
 README.md
+LICENSE.txt
+DATABASE_MIGRATION.md
+AGENTS.md
+
+# Tests (not needed in production image)
+tests/
+
+# OS
+.DS_Store
+Thumbs.db
+*.log
