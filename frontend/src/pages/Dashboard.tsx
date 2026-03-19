@@ -50,7 +50,7 @@ function groupByMonth(rows: TrendRow[]) {
     if (isNaN(dt.getTime())) continue;
     const key = dt.toLocaleString("en", { month: "short", year: "2-digit" });
     if (!buckets[key]) buckets[key] = {};
-    const platform = (r.platform || "other").toLowerCase();
+    const platform = String(r.platform || "other").toLowerCase();
     buckets[key][platform] = (buckets[key][platform] || 0) + 1;
   }
   return Object.entries(buckets)
@@ -64,7 +64,7 @@ function topTrends(rows: TrendRow[], n = 8) {
     .map((r) => ({
       name: r.title || r.keyword || "—",
       score: r.virality_score ?? r.search_volume ?? 0,
-      platform: r.platform || "—",
+      platform: String(r.platform || "—"),
       geo: r.geo || "—",
     }));
   scored.sort((a, b) => (b.score as number) - (a.score as number));
@@ -100,7 +100,7 @@ export default function Dashboard() {
   const platforms = useMemo(() => {
     const set = new Set<string>();
     for (const r of allTrends) {
-      if (r.platform) set.add(r.platform.toLowerCase());
+      if (r.platform) set.add(String(r.platform).toLowerCase());
     }
     return Array.from(set).slice(0, 6);
   }, [allTrends]);
