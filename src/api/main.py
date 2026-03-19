@@ -20,6 +20,11 @@ from sqlalchemy.exc import IntegrityError
 
 load_dotenv()
 
+# Ensure project root is on sys.path so `src.*` imports work in any environment (e.g. WSL).
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 from src.config import CORS_ORIGINS, CACHE_TTL_SECONDS, PROJECT_ROOT
 from src.collector.trend_collector import TrendCollector
 from src.analytics.analytics_engine import AnalyticsEngine
