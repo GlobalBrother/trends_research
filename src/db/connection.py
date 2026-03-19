@@ -1,22 +1,18 @@
 """
 Database connection management.
 
-Supports two backends:
-- SQLite (local development, default)
-- Azure SQL Server (production via ODBC)
-
-The active backend is determined by environment variables and can be
-switched at runtime via :func:`switch_backend`.
+Uses Azure SQL Server (MSSQL) via ODBC as the sole database backend.
 """
 
 import logging
 import os
 import re
+import struct
 import sys
 from urllib.parse import quote_plus
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, event, text
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -33,84 +29,27 @@ if project_root not in sys.path:
 # ---------------------------------------------------------------------------
 
 _engine: Engine | None = None
-_backend: str | None = None  # "sqlite" or "mssql"
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-VALID_BACKENDS = ("sqlite", "mssql")
-DEFAULT_SQLITE_PATH = os.path.join(project_root, "src", "collector", "trends.db")
 DEFAULT_ODBC_DRIVER = "ODBC Driver 18 for SQL Server"
 POOL_RECYCLE_SECONDS = 300
-SQLITE_BUSY_TIMEOUT_MS = 10000
 
 
 # ---------------------------------------------------------------------------
-# Backend detection
+# Backend helpers (kept for backward compatibility)
 # ---------------------------------------------------------------------------
-
-def _detect_backend() -> str:
-    """Determine which database backend to use based on env vars."""
-    explicit = os.getenv("DB_BACKEND", "").lower()
-    if explicit in VALID_BACKENDS:
-        return explicit
-    if os.getenv("AZURE_SQL_CONNECTIONSTRING") or os.getenv("AZURE_SQL_SERVER"):
-        return "mssql"
-    return "sqlite"
-
 
 def get_backend() -> str:
-    """Return the active backend name: ``'sqlite'`` or ``'mssql'``."""
-    global _backend
-    if _backend is None:
-        _backend = _detect_backend()
-    return _backend
+    """Return the active backend name. Always ``'mssql'``."""
+    return "mssql"
 
 
 def is_sqlite() -> bool:
-    """Return ``True`` if the active backend is SQLite."""
-    return get_backend() == "sqlite"
-
-
-# ---------------------------------------------------------------------------
-# Backend switching
-# ---------------------------------------------------------------------------
-
-def switch_backend(backend: str) -> str:
-    """Switch the database backend at runtime.
-
-    Parameters
-    ----------
-    backend : str
-        Either ``"sqlite"`` or ``"mssql"``.
-
-    Returns
-    -------
-    str
-        The newly active backend name.
-
-    Raises
-    ------
-    ValueError
-        If *backend* is not a valid backend name.
-    """
-    global _engine, _backend
-    backend = backend.lower()
-    if backend not in VALID_BACKENDS:
-        raise ValueError(f"Invalid backend: {backend!r}. Must be one of {VALID_BACKENDS}.")
-
-    if _engine is not None:
-        try:
-            _engine.dispose()
-        except Exception:
-            pass
-        _engine = None
-
-    _backend = backend
-    os.environ["DB_BACKEND"] = backend
-    get_engine()
-    return _backend
+    """Return ``False``. SQLite is no longer supported."""
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -130,10 +69,6 @@ def test_connection() -> tuple[bool, str]:
         with engine.connect() as conn:
             row = conn.execute(text("SELECT 1")).fetchone()
             if row:
-                backend = get_backend()
-                if backend == "sqlite":
-                    db_path = os.getenv("DB_PATH", DEFAULT_SQLITE_PATH)
-                    return True, f"Connected to SQLite: {db_path}"
                 server = os.getenv("AZURE_SQL_SERVER", "Azure SQL")
                 db = os.getenv("AZURE_SQL_DB", os.getenv("AZURE_SQL_DATABASE", ""))
                 return True, f"Connected to Azure SQL: {server}/{db}"
@@ -147,65 +82,17 @@ def test_connection() -> tuple[bool, str]:
 # ---------------------------------------------------------------------------
 
 def get_engine() -> Engine:
-    """Return a SQLAlchemy engine (singleton).
-
-    Supports two backends:
-    1. **SQLite** — local development (default when no Azure env vars).
-    2. **Azure SQL Server** — production, via ODBC connection string or
-       individual ``AZURE_SQL_*`` env vars.
-
-    If the Azure SQL connection fails, automatically falls back to SQLite.
-    """
-    global _engine, _backend
+    """Return a SQLAlchemy engine (singleton) connected to Azure SQL Server."""
+    global _engine
     if _engine is not None:
         return _engine
 
-    _backend = _detect_backend()
-
-    if _backend == "sqlite":
-        _engine = _create_sqlite_engine()
-    else:
-        try:
-            engine = _create_mssql_engine()
-            # Verify the connection actually works
-            with engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
-            _engine = engine
-        except Exception as e:
-            logger.warning(
-                "Azure SQL connection failed, falling back to SQLite: %s", e
-            )
-            _backend = "sqlite"
-            _engine = _create_sqlite_engine()
-
+    engine = _create_mssql_engine()
+    # Verify the connection actually works
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+    _engine = engine
     return _engine
-
-
-def _create_sqlite_engine() -> Engine:
-    """Create and configure a SQLite engine."""
-    from sqlalchemy.pool import StaticPool
-
-    db_path = os.getenv("DB_PATH", DEFAULT_SQLITE_PATH)
-    if not os.path.isabs(db_path):
-        db_path = os.path.join(project_root, db_path)
-    db_path = os.path.abspath(db_path)
-
-    engine = create_engine(
-        f"sqlite:///{db_path}",
-        connect_args={"check_same_thread": False, "timeout": 30},
-        pool_pre_ping=True,
-        poolclass=StaticPool,
-    )
-
-    @event.listens_for(engine, "connect")
-    def _set_sqlite_pragmas(dbapi_conn, connection_record):
-        cursor = dbapi_conn.cursor()
-        cursor.execute("PRAGMA journal_mode=WAL")
-        cursor.execute("PRAGMA synchronous=NORMAL")
-        cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
-        cursor.close()
-
-    return engine
 
 
 def _detect_odbc_driver() -> str:
@@ -222,19 +109,62 @@ def _detect_odbc_driver() -> str:
         return DEFAULT_ODBC_DRIVER
 
 
+def _uses_ad_auth(conn_str: str) -> bool:
+    """Return True if the connection string uses Active Directory authentication."""
+    return "Active Directory" in conn_str or "ActiveDirectory" in conn_str
+
+
 def _create_mssql_engine() -> Engine:
     """Create and configure an Azure SQL / MSSQL engine."""
     driver = _detect_odbc_driver()
     has_modern_driver = "ODBC Driver" in driver
-    conn_str = os.getenv("AZURE_SQL_CONNECTIONSTRING", "")
+    raw_conn_str = os.getenv("AZURE_SQL_CONNECTIONSTRING", "")
 
-    if conn_str:
-        conn_str = _normalise_connection_string(conn_str, driver, has_modern_driver)
+    if raw_conn_str:
+        conn_str = _normalise_connection_string(raw_conn_str, driver, has_modern_driver)
     else:
         conn_str = _build_connection_string(driver, has_modern_driver)
 
+    # If using Azure AD auth, use token-based approach via azure-identity
+    if _uses_ad_auth(raw_conn_str or conn_str):
+        return _create_mssql_engine_with_token(conn_str, driver)
+
     return create_engine(
         f"mssql+pyodbc:///?odbc_connect={quote_plus(conn_str)}",
+        pool_pre_ping=True,
+        pool_recycle=POOL_RECYCLE_SECONDS,
+    )
+
+
+def _get_azure_token() -> bytes:
+    """Obtain an Azure AD access token and encode it for ODBC."""
+    from azure.identity import DefaultAzureCredential
+
+    credential = DefaultAzureCredential()
+    token = credential.get_token("https://database.windows.net/.default")
+    token_bytes = token.token.encode("UTF-16-LE")
+    return struct.pack(f"<I{len(token_bytes)}s", len(token_bytes), token_bytes)
+
+
+def _create_mssql_engine_with_token(conn_str: str, driver: str) -> Engine:
+    """Create an MSSQL engine using Azure AD token authentication."""
+    # Strip any Authentication= attribute from the ODBC string
+    conn_str = re.sub(r'Authentication="[^"]*";?\s*', "", conn_str)
+    conn_str = re.sub(r'Authentication=[^;]*;?\s*', "", conn_str)
+
+    if "DRIVER=" not in conn_str.upper():
+        conn_str = f"DRIVER={{{driver}}};{conn_str}"
+
+    SQL_COPT_SS_ACCESS_TOKEN = 1256
+
+    def creator():
+        import pyodbc
+        token_struct = _get_azure_token()
+        return pyodbc.connect(conn_str, attrs_before={SQL_COPT_SS_ACCESS_TOKEN: token_struct})
+
+    return create_engine(
+        "mssql+pyodbc://",
+        creator=creator,
         pool_pre_ping=True,
         pool_recycle=POOL_RECYCLE_SECONDS,
     )
@@ -254,6 +184,12 @@ def _normalise_connection_string(conn_str: str, driver: str, has_modern_driver: 
     }
     for old, new in replacements.items():
         conn_str = conn_str.replace(old, new)
+
+    # Map ADO.NET boolean values to ODBC equivalents
+    conn_str = conn_str.replace("Encrypt=True", "Encrypt=yes")
+    conn_str = conn_str.replace("Encrypt=False", "Encrypt=no")
+    conn_str = conn_str.replace("TrustServerCertificate=True", "TrustServerCertificate=yes")
+    conn_str = conn_str.replace("TrustServerCertificate=False", "TrustServerCertificate=no")
 
     # Strip ADO.NET-only keys unsupported by ODBC
     conn_str = re.sub(r"Persist Security Info=[^;]*;?\s*", "", conn_str)

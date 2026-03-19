@@ -10,11 +10,11 @@ services:
     env_file:
       - .env
     environment:
-      - AZURE_SQL_SERVER=${AZURE_SQL_SERVER}
-      - AZURE_SQL_DB=${AZURE_SQL_DB}
-      - AZURE_SQL_USER=${AZURE_SQL_USER}
-      - AZURE_SQL_PASS=${AZURE_SQL_PASS}
+      - AZURE_SQL_CONNECTION_STRING=${AZURE_SQL_CONNECTION_STRING}
       - AZURE_SQL_DRIVER=ODBC Driver 18 for SQL Server
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
+      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID}
     restart: unless-stopped
 
   dashboard:
@@ -27,6 +27,11 @@ services:
       - .env
     environment:
       - BACKEND_URL=http://api:8000
+      - AZURE_SQL_CONNECTION_STRING=${AZURE_SQL_CONNECTION_STRING}
+      - AZURE_SQL_DRIVER=ODBC Driver 18 for SQL Server
+      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
+      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
+      - AZURE_TENANT_ID=${AZURE_TENANT_ID}
     depends_on:
       - api
     restart: unless-stopped

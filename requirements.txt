@@ -16,6 +16,6 @@ resend
 fastapi
 uvicorn
 gunicorn
-psycopg2-binary
 sqlalchemy
 pyodbc
+azure-identity

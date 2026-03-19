@@ -32,7 +32,7 @@ if project_root not in sys.path:
 from src.collector.trend_collector import TrendCollector
 from src.analytics.analytics_engine import AnalyticsEngine
 from src.niche.niche_discovery import NicheDiscovery
-from src.db.connection import get_engine, get_session, is_sqlite
+from src.db.connection import get_engine, get_session
 from src.db.sql_compat import get_platform_id, get_platform_name, insert_niche_if_not_exists, verify_otp
 from src.db.models import (
     Base, User, OtpCode, AuthToken, Niche, TokenUsage, ScrapeError as ScrapeErrorModel,
@@ -53,14 +53,6 @@ try:
 except ImportError:
     HAS_GETHOOKEDAI = False
 
-# To force SQLite backend, set the environment variable DB_BACKEND=sqlite
-# before starting the server.  Examples:
-#   $env:DB_BACKEND="sqlite"; python -m uvicorn src.api.main:app --reload
-#   python src/api/main.py --sqlite          (convenience shortcut)
-if "--sqlite" in sys.argv:
-    os.environ["DB_BACKEND"] = "sqlite"
-    sys.argv.remove("--sqlite")
-
 engine = get_engine()
 SessionFactory = get_session
 
@@ -69,20 +61,8 @@ resend.api_key = os.getenv("RESEND_API_KEY", "")
 RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "noreply@yourdomain.com")
 
 # Test account that bypasses OTP (for development/testing).
-# In SQLite mode, a default test account is enabled automatically so you can
-# log in without a real email provider.
-_is_sqlite = os.getenv("DB_BACKEND", "").lower() == "sqlite"
-TEST_ACCOUNT_EMAIL = os.getenv(
-    "TEST_ACCOUNT_EMAIL",
-    "test@localhost" if _is_sqlite else "",
-).strip()
+TEST_ACCOUNT_EMAIL = os.getenv("TEST_ACCOUNT_EMAIL", "").strip()
 TEST_ACCOUNT_OTP = os.getenv("TEST_ACCOUNT_OTP", "000000").strip()
-if _is_sqlite and TEST_ACCOUNT_EMAIL:
-    logger.info(
-        "SQLite mode: test account enabled — email=%s, OTP=%s",
-        TEST_ACCOUNT_EMAIL,
-        TEST_ACCOUNT_OTP,
-    )
 
 app = FastAPI(title="Trends Research API")
 
@@ -183,13 +163,7 @@ def request_otp(email: str = Query(...)):
     try:
         user = session.query(User).filter(User.email == email).first()
         if not user:
-            # In SQLite (local dev) mode, auto-whitelist any email
-            if os.getenv("DB_BACKEND") == "sqlite":
-                user = User(email=email, role="admin")
-                session.add(user)
-                session.flush()
-            else:
-                raise HTTPException(status_code=403, detail="Email not whitelisted")
+            raise HTTPException(status_code=403, detail="Email not whitelisted")
 
         user_id = user.id
         code = secrets.token_hex(3).upper()  # 6-char hex code
@@ -1457,24 +1431,15 @@ def setup_azure_schema(background_tasks: BackgroundTasks):
         raise HTTPException(status_code=500, detail=f"setup_azure module not found: {e}")
 
 
-@app.post("/admin/azure/populate")
-def populate_azure_db(background_tasks: BackgroundTasks):
-    """Copy all data from local SQLite to Azure SQL Server."""
-    background_tasks.add_task(_populate_azure_task)
-    return {"message": "Azure DB population started in background"}
-
-
 @app.get("/admin/azure/status")
 def azure_status():
     """Check Azure SQL connectivity and return table row counts."""
     try:
-        azure_engine = _get_azure_engine()
-        with azure_engine.connect() as conn:
+        with engine.connect() as conn:
             conn.execute(text("SELECT 1")).scalar()
-        # Get row counts via ORM metadata inspection
         from sqlalchemy.orm import Session as _Ses
         counts = {}
-        with _Ses(bind=azure_engine) as az_session:
+        with _Ses(bind=engine) as az_session:
             for mapper in Base.registry.mappers:
                 tname = mapper.class_.__tablename__
                 try:
@@ -1487,91 +1452,15 @@ def azure_status():
         return {"connected": False, "error": str(e)}
 
 
-def _get_azure_engine():
-    """Create a separate mssql engine for Azure (regardless of current DB_BACKEND)."""
-    from urllib.parse import quote_plus as _qp
-    conn_str = os.getenv("AZURE_SQL_CONNECTIONSTRING")
-    if not conn_str:
-        server = os.getenv("AZURE_SQL_SERVER")
-        db = os.getenv("AZURE_SQL_DB", os.getenv("AZURE_SQL_DATABASE"))
-        user = os.getenv("AZURE_SQL_USER")
-        pwd = os.getenv("AZURE_SQL_PASS")
-        driver = os.getenv("AZURE_SQL_DRIVER", "ODBC Driver 18 for SQL Server")
-        conn_str = (
-            f"DRIVER={{{driver}}};SERVER={server};DATABASE={db};"
-            f"UID={user};PWD={pwd};Encrypt=yes;TrustServerCertificate=no;"
-        )
-    from sqlalchemy import create_engine as _ce
-    return _ce(f"mssql+pyodbc:///?odbc_connect={_qp(conn_str)}", pool_pre_ping=True)
-
-
-def _populate_azure_task():
-    """Background task: read each table from SQLite and bulk-insert into Azure via ORM."""
-    from sqlalchemy.orm import Session as _Ses
-    try:
-        azure_engine = _get_azure_engine()
-    except Exception as e:
-        logger.error("Cannot create Azure engine: %s", e)
-        return
-
-    # Build a local SQLite session
-    sqlite_engine = get_engine()  # current engine (should be sqlite)
-    local_session = _Ses(bind=sqlite_engine)
-    az_session = _Ses(bind=azure_engine)
-
-    try:
-        for mapper in Base.registry.mappers:
-            model = mapper.class_
-            tname = model.__tablename__
-            try:
-                rows = local_session.query(model).all()
-                if not rows:
-                    logger.info("Table %s is empty in SQLite — skipping.", tname)
-                    continue
-
-                inserted = 0
-                for row in rows:
-                    # Create a detached copy for the Azure session
-                    data = {c.key: getattr(row, c.key) for c in mapper.column_attrs if c.key != "id"}
-                    az_session.add(model(**data))
-                    inserted += 1
-                    if inserted % 500 == 0:
-                        try:
-                            az_session.commit()
-                        except Exception as e:
-                            logger.warning("Batch commit for %s failed: %s", tname, e)
-                            az_session.rollback()
-                try:
-                    az_session.commit()
-                except Exception as e:
-                    logger.warning("Final commit for %s failed: %s", tname, e)
-                    az_session.rollback()
-                logger.info("Populated %s: %d rows inserted.", tname, inserted)
-            except Exception as e:
-                logger.error("Failed to populate table %s: %s", tname, e)
-                az_session.rollback()
-    finally:
-        local_session.close()
-        az_session.close()
-    logger.info("Azure DB population complete.")
 
 
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Trends Research API")
-    parser.add_argument(
-        "--sqlite",
-        action="store_true",
-        help="Force SQLite backend instead of auto-detecting Azure SQL.",
-    )
     parser.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8000, help="Bind port (default: 8000)")
     args = parser.parse_args()
-
-    if args.sqlite:
-        os.environ["DB_BACKEND"] = "sqlite"
-        logger.info("Forced SQLite backend via --sqlite flag.")
 
     import uvicorn
     uvicorn.run(app, host=args.host, port=args.port)

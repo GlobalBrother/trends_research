@@ -219,7 +219,7 @@ def tab_niche_research(api):
     metric_cards([
         {"label": "Total Trends", "value": format_number(total), "icon": "📊"},
         {"label": "Platforms", "value": str(platforms), "icon": "🔗"},
-        {"label": "Avg Virality", "value": f"{avg_virality:.1f}", "icon": "🔥"},
+        {"label": "Avg Virality", "value": format_number(avg_virality), "icon": "🔥"},
         {"label": "Top Growth", "value": format_number(top_growth), "icon": "📈"},
     ])
 
@@ -230,12 +230,19 @@ def tab_niche_research(api):
     for opt in ('geo', 'keyword', 'url'):
         if opt in work.columns:
             cols.append(opt)
+
+    num_cols = ['growth', 'virality_score']
+    display_work = flatten_platform(work)
+    for nc in num_cols:
+        if nc in display_work.columns:
+            display_work[nc] = display_work[nc].apply(format_number)
+
     render_dataframe(
-        flatten_platform(work), cols,
+        display_work, cols,
         col_config={
             "url": st.column_config.LinkColumn("Source"),
-            "growth": st.column_config.NumberColumn("Growth", format="%.1f"),
-            "virality_score": st.column_config.NumberColumn("Virality", format="%.2f"),
+            "growth": "Growth",
+            "virality_score": "Virality",
         },
         height=380,
         search_key="search_niche",
@@ -301,11 +308,16 @@ def tab_daily_trends(api):
     metric_cards([
         {"label": "Trends", "value": format_number(len(df)), "icon": "🔥"},
         {"label": "Top Traffic", "value": format_number(df['growth'].max()) if 'growth' in df.columns else "—", "icon": "📈"},
-        {"label": "Avg Virality", "value": f"{df['virality_score'].mean():.1f}" if 'virality_score' in df.columns else "—", "icon": "⚡"},
+        {"label": "Avg Virality", "value": format_number(df['virality_score'].mean()) if 'virality_score' in df.columns else "—", "icon": "⚡"},
     ])
 
+    daily_display = df.copy()
+    for nc in ['growth', 'virality_score']:
+        if nc in daily_display.columns:
+            daily_display[nc] = daily_display[nc].apply(format_number)
+
     render_dataframe(
-        df, ['topic', 'growth', 'virality_score', 'url'],
+        daily_display, ['topic', 'growth', 'virality_score', 'url'],
         col_config={"url": st.column_config.LinkColumn("Link"), "growth": "Traffic"},
         height=380,
         search_key="search_daily",
@@ -510,6 +522,21 @@ def tab_tiktok(api):
                       labels={'author_unique_id': 'Creator', 'play_count': 'Total Plays'})
         _apply_modern_layout(fig2, xaxis_tickangle=-40, bargap=0.15)
         st.plotly_chart(fig2, use_container_width=True)
+
+    # --- Top audio / sounds bar chart ---
+    if 'music_title' in df.columns and 'play_count' in df.columns:
+        section_header("🎵", "Top Audio by Plays")
+        audio_df = df[df['music_title'].notna() & (df['music_title'] != '')].copy()
+        if not audio_df.empty:
+            audio_agg = audio_df.groupby('music_title', as_index=False)['play_count'].sum() \
+                                .sort_values('play_count', ascending=False).head(15)
+            fig_audio = px.bar(
+                audio_agg, x='music_title', y='play_count',
+                color='play_count', color_continuous_scale=GRADIENT_PURPLE,
+                labels={'music_title': 'Sound', 'play_count': 'Total Plays'},
+            )
+            _apply_modern_layout(fig_audio, xaxis_tickangle=-40, bargap=0.15)
+            st.plotly_chart(fig_audio, use_container_width=True)
 
 
 def tab_instagram(api):
@@ -744,8 +771,13 @@ def tab_community_news(api):
             {"label": "Top Points", "value": format_number(df['growth'].max()) if 'growth' in df.columns else "—", "icon": "⬆️"},
         ])
 
+        hn_display = df.copy()
+        for nc in ['growth', 'engagement', 'virality_score']:
+            if nc in hn_display.columns:
+                hn_display[nc] = hn_display[nc].apply(format_number)
+
         render_dataframe(
-            df, ['topic', 'author', 'growth', 'engagement', 'virality_score', 'url'],
+            hn_display, ['topic', 'author', 'growth', 'engagement', 'virality_score', 'url'],
             col_config={"url": st.column_config.LinkColumn("Link"), "growth": "Points",
                         "engagement": "Comments", "author": "By"},
             height=380,
@@ -776,8 +808,12 @@ def tab_community_news(api):
             {"label": "Articles", "value": format_number(len(df)), "icon": "📰"},
         ])
 
+        news_display = df.copy()
+        if 'virality_score' in news_display.columns:
+            news_display['virality_score'] = news_display['virality_score'].apply(format_number)
+
         render_dataframe(
-            df, ['topic', 'source', 'virality_score', 'url'],
+            news_display, ['topic', 'source', 'virality_score', 'url'],
             col_config={"url": st.column_config.LinkColumn("Article"), "source": "Source"},
             height=380,
             search_key="search_news",

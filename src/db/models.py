@@ -1,8 +1,8 @@
 """
 SQLAlchemy ORM models for the trends_research database.
 
-Mirrors the schema defined in sqlite_schema.sql / azure_schema.sql.
-Works with both SQLite and Azure SQL Server backends.
+Mirrors the schema defined in azure_schema.sql.
+Works with Azure SQL Server backend.
 """
 
 import os

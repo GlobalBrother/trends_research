@@ -38,8 +38,8 @@ Navigate to the `src/scrapers/google_trends_scraper` directory.
 scrapy crawl google_trends -a keywords="Bitcoin,Ethereum" -a geo="US" -a timeframe="today 12-m"
 ```
 
-### Save to SQLite
-The results are automatically saved to `src/collector/trends.db` via the SQLite pipeline. JSON output is disabled by default to reduce redundancy.
+### Save to Database
+The results are automatically saved to Azure SQL via the database pipeline. JSON output is disabled by default to reduce redundancy.
 
 ### Advanced Usage
 - **Categories**: Use `-a category=7` (7 is Finance).

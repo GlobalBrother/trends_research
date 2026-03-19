@@ -1,8 +1,6 @@
 """
-SQL compatibility layer for SQLite and Azure SQL Server.
+SQL compatibility layer for Azure SQL Server.
 Uses SQLAlchemy ORM models exclusively — no raw SQL.
-Provides helper functions so the rest of the codebase
-can work with both backends without inline if/else blocks.
 """
 
 import os
@@ -13,10 +11,9 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from sqlalchemy import func, and_, or_
+from sqlalchemy import func, and_, or_, text
 from sqlalchemy.orm import Session
 
-from src.db.connection import is_sqlite
 from src.db.models import (
     Platform, User, Author, Content, ContentMetric,
     Hashtag, ContentHashtag, Trend, ScrapeError, ScrapeLog,
@@ -110,13 +107,17 @@ def insert_niche_if_not_exists(session: Session, niche_name, keyword):
 # ---------------------------------------------------------------------------
 
 def verify_otp(session: Session, user_id, code):
-    """Find a valid (unused, unexpired) OTP. Returns OtpCode or None."""
-    cutoff = datetime.now() - timedelta(minutes=10)
+    """Find a valid (unused, unexpired) OTP. Returns OtpCode or None.
+
+    Uses ``func.getutcdate()`` so the 10-minute window is evaluated
+    server-side in UTC, matching the ``server_default=func.now()`` on
+    ``OtpCode.created_at`` (which is UTC on Azure SQL).
+    """
     return session.query(OtpCode).filter(
         OtpCode.user_id == user_id,
         OtpCode.code == code,
         OtpCode.used == 0,
-        OtpCode.created_at > cutoff,
+        OtpCode.created_at > func.dateadd(text("minute"), -10, func.getutcdate()),
     ).order_by(OtpCode.created_at.desc()).first()
 
 

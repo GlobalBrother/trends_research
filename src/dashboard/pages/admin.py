@@ -728,19 +728,6 @@ def admin_main():
                     else:
                         st.error("❌ Schema setup failed")
 
-        with az_col3:
-            with st.container(border=True):
-                st.markdown("**📤 Populate Data**")
-                st.caption("Copy all data from local SQLite to Azure SQL.")
-                st.warning("⚠️ This may take a while for large datasets.")
-                if st.button("📤 Populate Azure DB", key="admin_azure_populate", width="stretch", type="primary"):
-                    with st.spinner("Starting data population…"):
-                        result = api._request("POST", "/admin/azure/populate")
-                    if result and "message" in result:
-                        st.toast("✅ Population started!", icon="📤")
-                        st.info(result["message"])
-                    else:
-                        st.error("❌ Population failed")
 
 
 admin_main()

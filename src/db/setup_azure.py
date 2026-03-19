@@ -24,12 +24,11 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(project_root, ".env"))
 
 from src.db.models import Base
-from src.db.connection import get_engine, switch_backend
+from src.db.connection import get_engine
 
 
 def run_schema() -> None:
-    """Switch to MSSQL backend and create all tables from ORM metadata."""
-    switch_backend("mssql")
+    """Create all tables from ORM metadata on Azure SQL."""
     engine = get_engine()
 
     db_url = str(engine.url)

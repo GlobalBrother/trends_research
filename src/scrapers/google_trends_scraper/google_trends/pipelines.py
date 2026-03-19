@@ -36,7 +36,7 @@ class JSONLPipeline:
         self.file.write(line)
         return item
 
-class SQLitePipeline:
+class DatabasePipeline:
     """Pipeline that writes to the database via SQLAlchemy ORM."""
 
     @classmethod

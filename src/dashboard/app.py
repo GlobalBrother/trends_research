@@ -16,7 +16,7 @@ from src.dashboard.tabs import (
     format_number, tab_niche_research, tab_daily_trends, tab_youtube,
     tab_tiktok, tab_instagram, tab_threads, tab_reddit, tab_community_news,
 )
-from src.db.connection import get_backend, switch_backend, test_connection
+from src.db.connection import test_connection
 
 
 def inject_custom_css():
@@ -128,7 +128,7 @@ def login_page(api):
     email = st.text_input("Email address", key="login_email", placeholder="you@company.com")
 
     if not st.session_state.otp_sent:
-        if st.button("Send One-Time Code", disabled=not email, use_container_width=True, type="primary"):
+        if st.button("Send One-Time Code", disabled=not email, width='stretch', type="primary"):
             res = api.request_otp(email)
             if "error" in res:
                 st.error(res["error"])
@@ -141,7 +141,7 @@ def login_page(api):
         code = st.text_input("Enter verification code", key="login_code", placeholder="6-digit code")
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("✓ Verify", use_container_width=True, type="primary"):
+            if st.button("✓ Verify", width='stretch', type="primary"):
                 res = api.verify_otp(st.session_state.user_email, code)
                 if "error" in res:
                     st.error(res["error"])
@@ -152,7 +152,7 @@ def login_page(api):
                     _save_auth_cookies(res["token"])
                     st.rerun()
         with col2:
-            if st.button("← Back", use_container_width=True):
+            if st.button("← Back", width='content'):
                 st.session_state.otp_sent = False
                 st.rerun()
 
@@ -227,7 +227,7 @@ def render_sidebar(api):
         else:
             st.markdown('<span class="status-badge status-warn">🌐 API mode</span>', unsafe_allow_html=True)
 
-        # --- Database connection switcher ---
+        # --- Database connection status ---
         st.divider()
         st.markdown(
             '<div style="font-size:0.75rem;font-weight:600;color:#8b949e;'
@@ -236,29 +236,12 @@ def render_sidebar(api):
             unsafe_allow_html=True,
         )
 
-        current_backend = get_backend()
-
-        # Initialise session state for DB
-        if "db_backend" not in st.session_state:
-            st.session_state.db_backend = current_backend
         if "db_status" not in st.session_state:
             st.session_state.db_status = None
 
-        backend_choice = st.radio(
-            "Backend",
-            options=["sqlite", "mssql"],
-            index=0 if st.session_state.db_backend == "sqlite" else 1,
-            format_func=lambda x: "🏠 Local (SQLite)" if x == "sqlite" else "☁️ Azure SQL",
-            key="db_backend_radio",
-            horizontal=True,
-            label_visibility="collapsed",
-        )
-
-        if st.button("🔌 Connect to DB", key="db_connect_btn", use_container_width=True):
+        if st.button("🔌 Check Connection", key="db_connect_btn", width='stretch'):
             try:
-                switch_backend(backend_choice)
                 ok, msg = test_connection()
-                st.session_state.db_backend = backend_choice
                 if ok:
                     st.session_state.db_status = ("success", msg)
                 else:
@@ -267,7 +250,6 @@ def render_sidebar(api):
                 st.session_state.db_status = ("error", str(e))
             st.rerun()
 
-        # Show connection status
         if st.session_state.db_status:
             level, msg = st.session_state.db_status
             if level == "success":
@@ -284,11 +266,11 @@ def render_sidebar(api):
                 '🔀 Switch App</div>',
                 unsafe_allow_html=True,
             )
-            st.page_link("pages/admin.py", label="🛠️ Admin Panel", use_container_width=True)
-            st.page_link("pages/ads_insight.py", label="📢 Ads Insight", use_container_width=True)
+            st.page_link("pages/admin.py", label="🛠️ Admin Panel", width='stretch')
+            st.page_link("pages/ads_insight.py", label="📢 Ads Insight", width='stretch')
 
         st.divider()
-        if st.button("🚪 Logout", key="logout_btn", use_container_width=True):
+        if st.button("🚪 Logout", key="logout_btn", width='stretch'):
             logout()
             st.rerun()
 
