@@ -2,6 +2,7 @@
 
 from src.db.connection import get_engine, get_session, session_scope, get_session_factory
 from src.db.models import Base
+from src.db.migrate import run_migration
 
 __all__ = [
     "get_engine",
@@ -9,4 +10,5 @@ __all__ = [
     "get_session_factory",
     "session_scope",
     "Base",
+    "run_migration",
 ]

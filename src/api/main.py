@@ -86,15 +86,34 @@ niche = NicheDiscovery()
 # Auth: users & OTP tables
 # ---------------------------------------------------------------------------
 
-def _init_auth_tables():
-    """Ensure all tables exist using ORM metadata."""
-    try:
-        Base.metadata.create_all(engine)
-        logger.info("Database tables verified via ORM metadata.")
-    except Exception as e:
-        logger.warning("Could not create tables via ORM: %s", e)
+def _init_schema():
+    """Ensure all tables and indexes exist on startup.
 
-_init_auth_tables()
+    Runs the idempotent migration which creates any missing tables
+    and adds any missing indexes without touching existing data.
+    """
+    try:
+        from src.db.migrate import run_migration
+        result = run_migration(dry_run=False)
+        s = result.summary()
+        if s["tables_created_count"] or s["indexes_created_count"]:
+            logger.info(
+                "Startup migration: %d tables created, %d indexes created.",
+                s["tables_created_count"], s["indexes_created_count"],
+            )
+        else:
+            logger.info("Startup migration: schema is up to date.")
+        if s["error_count"]:
+            logger.warning("Startup migration had %d errors: %s", s["error_count"], s["errors"])
+    except Exception as e:
+        # Fallback: at minimum create tables via ORM metadata
+        logger.warning("Migration failed, falling back to create_all: %s", e)
+        try:
+            Base.metadata.create_all(engine)
+        except Exception as e2:
+            logger.warning("Could not create tables via ORM: %s", e2)
+
+_init_schema()
 
 
 
@@ -1294,6 +1313,44 @@ def setup_azure_schema(background_tasks: BackgroundTasks):
         return {"message": "Azure schema setup started in background"}
     except ImportError as e:
         raise HTTPException(status_code=500, detail=f"setup_azure module not found: {e}")
+
+
+@app.post("/admin/azure/migrate")
+def run_azure_migration(
+    background_tasks: BackgroundTasks,
+    dry_run: bool = Query(False, description="Preview changes without executing"),
+):
+    """Run the database migration to sync Azure SQL with the latest models.
+
+    This is **idempotent** — it only creates tables and indexes that do not
+    already exist.  Safe to run multiple times.
+
+    Set ``dry_run=true`` to preview the SQL without executing.
+    """
+    try:
+        from src.db.migrate import run_migration
+
+        if dry_run:
+            # Dry run is fast — execute synchronously and return the preview
+            result = run_migration(dry_run=True)
+            return {"mode": "dry_run", **result.summary()}
+
+        # Real migration runs in background to avoid HTTP timeout
+        def _run():
+            res = run_migration(dry_run=False)
+            s = res.summary()
+            logger.info(
+                "Migration finished: %d tables, %d indexes, %d errors",
+                s["tables_created_count"], s["indexes_created_count"], s["error_count"],
+            )
+
+        background_tasks.add_task(_run)
+        return {"message": "Migration started in background. Check /admin/azure/status for results."}
+    except ImportError as e:
+        raise HTTPException(status_code=500, detail=f"migrate module not found: {e}")
+    except Exception as e:
+        logger.error("Migration failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/admin/azure/status")
