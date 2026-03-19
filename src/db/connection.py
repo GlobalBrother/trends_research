@@ -4,6 +4,16 @@ Database connection management.
 Uses Azure SQL Server (MSSQL) via ODBC as the sole database backend.
 Provides a singleton engine with tuned connection pooling, a reusable
 session factory, and a context-manager helper for clean session lifecycle.
+
+Resilience
+----------
+- ``get_engine()`` no longer crashes on first call if Azure SQL is
+  unreachable.  The engine is created (lazy) and the health check is
+  deferred to the first actual query via ``pool_pre_ping``.
+- An explicit ``Connection Timeout`` is injected into the ODBC string
+  (default 15 s) to avoid the 30 s ODBC default that causes long hangs.
+- ``get_engine()`` retries engine creation up to 3 times with exponential
+  back-off for transient network errors.
 """
 
 import contextlib
@@ -12,6 +22,7 @@ import os
 import re
 import struct
 import sys
+import time
 from typing import Generator
 from urllib.parse import quote_plus
 
@@ -52,6 +63,14 @@ POOL_MAX_OVERFLOW = int(os.getenv("DB_POOL_MAX_OVERFLOW", "20"))
 POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", "30"))
 POOL_RECYCLE_SECONDS = int(os.getenv("DB_POOL_RECYCLE", "300"))
 
+# ODBC-level connection timeout (seconds).  This controls how long the
+# driver waits to establish a TCP connection to the server.  The default
+# ODBC value is 30 s which is too long for a startup health check.
+CONNECT_TIMEOUT = int(os.getenv("DB_CONNECT_TIMEOUT", "15"))
+
+# Number of retries when the initial connection fails (transient errors).
+ENGINE_RETRIES = int(os.getenv("DB_ENGINE_RETRIES", "3"))
+
 
 # ---------------------------------------------------------------------------
 # Engine creation
@@ -61,22 +80,49 @@ def get_engine() -> Engine:
     """Return a SQLAlchemy engine (singleton) connected to Azure SQL Server.
 
     The engine is created once and reused for the lifetime of the process.
-    Connection health is validated on first creation and on every checkout
-    via ``pool_pre_ping``.
+    Connection health is validated via ``pool_pre_ping`` on every checkout
+    rather than blocking startup with a mandatory health check.
+
+    If the initial connection attempt fails (e.g. Azure SQL is temporarily
+    unreachable), the engine is still returned so the app can start.  The
+    first actual query will retry via ``pool_pre_ping``.
     """
     global _engine
     if _engine is not None:
         return _engine
 
     engine = _create_mssql_engine()
-    # Verify the connection actually works
-    with engine.connect() as conn:
-        conn.execute(text("SELECT 1"))
+
+    # Attempt a lightweight health check, but do NOT crash if it fails.
+    # pool_pre_ping will handle reconnection on the first real query.
+    for attempt in range(1, ENGINE_RETRIES + 1):
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            logger.info(
+                "Database engine created and verified "
+                "(pool_size=%d, max_overflow=%d, recycle=%ds, connect_timeout=%ds)",
+                POOL_SIZE, POOL_MAX_OVERFLOW, POOL_RECYCLE_SECONDS, CONNECT_TIMEOUT,
+            )
+            break
+        except Exception as e:
+            if attempt < ENGINE_RETRIES:
+                wait = 2 ** attempt  # 2s, 4s
+                logger.warning(
+                    "Database connection attempt %d/%d failed: %s. "
+                    "Retrying in %ds...",
+                    attempt, ENGINE_RETRIES, e, wait,
+                )
+                time.sleep(wait)
+            else:
+                logger.warning(
+                    "Database connection failed after %d attempts: %s. "
+                    "The engine will be returned anyway — pool_pre_ping will "
+                    "retry on the first real query.",
+                    ENGINE_RETRIES, e,
+                )
+
     _engine = engine
-    logger.info(
-        "Database engine created (pool_size=%d, max_overflow=%d, recycle=%ds)",
-        POOL_SIZE, POOL_MAX_OVERFLOW, POOL_RECYCLE_SECONDS,
-    )
     return _engine
 
 
@@ -186,6 +232,18 @@ def _uses_ad_auth(conn_str: str) -> bool:
     return "Active Directory" in conn_str or "ActiveDirectory" in conn_str
 
 
+def _ensure_connect_timeout(conn_str: str, timeout: int) -> str:
+    """Inject a ``Connection Timeout`` into the ODBC string if not already set.
+
+    This prevents the default 30 s ODBC timeout from causing long startup
+    hangs when Azure SQL is unreachable.
+    """
+    if "Connection Timeout" in conn_str or "ConnectTimeout" in conn_str:
+        return conn_str
+    # Append the timeout — works for both MSSQL ODBC and ADO.NET strings
+    return conn_str.rstrip(";") + f";Connection Timeout={timeout};"
+
+
 def _create_mssql_engine() -> Engine:
     """Create and configure an Azure SQL / MSSQL engine with tuned pooling."""
     driver = _detect_odbc_driver()
@@ -196,6 +254,9 @@ def _create_mssql_engine() -> Engine:
         conn_str = _normalise_connection_string(raw_conn_str, driver, has_modern_driver)
     else:
         conn_str = _build_connection_string(driver, has_modern_driver)
+
+    # Inject connection timeout to prevent long hangs
+    conn_str = _ensure_connect_timeout(conn_str, CONNECT_TIMEOUT)
 
     pool_kwargs = dict(
         pool_pre_ping=True,
@@ -239,7 +300,11 @@ def _create_mssql_engine_with_token(conn_str: str, driver: str, pool_kwargs: dic
     def creator():
         import pyodbc
         token_struct = _get_azure_token()
-        return pyodbc.connect(conn_str, attrs_before={SQL_COPT_SS_ACCESS_TOKEN: token_struct})
+        return pyodbc.connect(
+            conn_str,
+            attrs_before={SQL_COPT_SS_ACCESS_TOKEN: token_struct},
+            timeout=CONNECT_TIMEOUT,
+        )
 
     return create_engine(
         "mssql+pyodbc://",
