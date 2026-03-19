@@ -318,7 +318,12 @@ def _create_mssql_engine_with_token(conn_str: str, driver: str, pool_kwargs: dic
 # ---------------------------------------------------------------------------
 
 def _normalise_connection_string(conn_str: str, driver: str, has_modern_driver: bool) -> str:
-    """Normalise an ADO.NET / ODBC connection string."""
+    """Normalise an ADO.NET / ODBC connection string.
+
+    Handles the common differences between ADO.NET connection strings
+    (as provided by the Azure Portal) and ODBC connection strings
+    (as required by pyodbc / ODBC Driver 18).
+    """
     if "DRIVER=" not in conn_str.upper():
         conn_str = f"DRIVER={{{driver}}};{conn_str}"
 
@@ -328,9 +333,17 @@ def _normalise_connection_string(conn_str: str, driver: str, has_modern_driver: 
         "User ID=": "UID=",
         "User Id=": "UID=",
         "Password=": "PWD=",
+        "Data Source=": "SERVER=",
     }
     for old, new in replacements.items():
         conn_str = conn_str.replace(old, new)
+
+    # Map ADO.NET "Server=" to ODBC "SERVER=" (case-sensitive for some drivers)
+    conn_str = re.sub(r'(?i)\bServer=', 'SERVER=', conn_str)
+
+    # Strip the ADO.NET "tcp:" prefix from the server value.
+    # ADO.NET uses "Server=tcp:host,port" but ODBC expects "SERVER=host,port".
+    conn_str = re.sub(r'SERVER=tcp:', 'SERVER=', conn_str)
 
     # Map ADO.NET boolean values to ODBC equivalents
     conn_str = conn_str.replace("Encrypt=True", "Encrypt=yes")
