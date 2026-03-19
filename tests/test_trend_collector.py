@@ -1,8 +1,13 @@
-"""Tests for src/collector/trend_collector.py — TrendCollector class."""
+"""Tests for src/collector/trend_collector.py — TrendCollector class.
+
+Note: These tests use a temporary SQLite database to test the ORM layer
+in isolation. The production app uses Azure SQL, but SQLAlchemy's ORM
+abstraction allows us to validate logic against SQLite for speed and
+simplicity. The `get_session` function is patched to use the temp DB.
+"""
 
 import json
 import os
-import sqlite3
 import tempfile
 from datetime import datetime
 

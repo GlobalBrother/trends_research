@@ -1,9 +1,37 @@
-*.json
-*.db
-/src/collector/trends.db-shm
-/src/collector/trends.db-wal
-*.env
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
 
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment & secrets
+*.env
+.env.*
+!.env.example
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
+# Scraped data (JSON outputs from scrapers)
+src/collector/*.json
+src/scrapers/**/*.json
 
 # Terraform
 terraform/.terraform/
@@ -11,3 +39,10 @@ terraform/*.tfstate
 terraform/*.tfstate.backup
 terraform/*.tfvars
 terraform/.terraform.lock.hcl
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

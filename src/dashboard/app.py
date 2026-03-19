@@ -12,11 +12,6 @@ import plotly.express as px
 import streamlit.components.v1 as components
 from datetime import datetime, timedelta
 
-# Ensure the project root (the directory containing 'src') is in sys.path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
 from src.dashboard.utils.api_client import APIClient
 from src.dashboard.tabs import (
     format_number, tab_niche_research, tab_daily_trends, tab_youtube,

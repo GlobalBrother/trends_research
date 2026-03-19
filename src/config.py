@@ -16,7 +16,6 @@ load_dotenv(os.path.join(_PROJECT_ROOT, ".env"))
 # Paths
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = _PROJECT_ROOT
-DB_PATH = os.path.join(PROJECT_ROOT, "src", "collector", "trends.db")
 SCRAPER_DIR = os.path.join(PROJECT_ROOT, "src", "scrapers", "google_trends_scraper")
 
 # ---------------------------------------------------------------------------
@@ -52,7 +51,6 @@ PLATFORM_WEIGHTS: dict[str, float] = {
     "Google Interest": 1.0,
     "Google Regions": 1.2,
     "YouTube": 1.3,
-    "X (Twitter)": 1.2,
     "Threads": 1.2,
     "Instagram": 1.2,
     "HackerNews": 1.3,
