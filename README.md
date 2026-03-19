@@ -47,6 +47,9 @@ Environment configuration
 ```text
 NEWS_API_KEY=your_key_here
 BACKEND_URL=http://127.0.0.1:8000
+BACKEND_PORT=8000
+
+# Scraper tunables (optional)
 SCRAPY_CONCURRENT_REQUESTS=1
 SCRAPY_DOWNLOAD_DELAY=10
 DB_PATH=src/collector/trends.db

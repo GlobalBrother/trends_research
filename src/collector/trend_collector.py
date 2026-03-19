@@ -180,6 +180,7 @@ class TrendCollector:
                 value = ",".join(value)
             cmd.extend(["-a", f"{key}={value}"])
 
+        logger.info("Running scraper: %s in %s", " ".join(cmd), SCRAPER_DIR)
         try:
             logger.info("Running scraper: %s in %s", " ".join(cmd), project_dir)
             result = subprocess.run(cmd, cwd=project_dir, capture_output=False, text=True)
