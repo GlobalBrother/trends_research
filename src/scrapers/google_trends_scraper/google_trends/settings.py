@@ -23,7 +23,7 @@ COOKIES_ENABLED = True
 
 # Default headers
 DEFAULT_REQUEST_HEADERS = {
-    'Accept': 'application/json, text/plain, */*',
+    'Accept': 'application/md.json, text/plain, */*',
     'Accept-Language': 'en-US,en;q=0.9',
     'Referer': 'https://trends.google.com/',
     'Sec-Fetch-Site': 'same-origin',
@@ -52,7 +52,7 @@ AUTOTHROTTLE_DEBUG = False
 ITEM_PIPELINES = {
     'google_trends.pipelines.GoogleTrendsPipeline': 300,
     # 'google_trends.pipelines.JSONLPipeline': 400,
-    'google_trends.pipelines.SQLitePipeline': 500,
+    'google_trends.pipelines.DatabasePipeline': 500,
 }
 
 # Retry settings

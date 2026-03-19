@@ -1,52 +1,78 @@
 """
-TrendCollector — orchestrates data collection from scrapers and the SQLite database.
+Trend collector — orchestrates data collection from all scraper sources.
 
-Responsibilities:
-  1. Read aggregated trend data from the database.
-  2. Invoke individual Scrapy spiders via subprocess.
-  3. Provide a convenience method for comprehensive niche scrapes.
+Reads stored trends from the database and dispatches scraping jobs
+to Google Trends (Scrapy), EnsembleData social scrapers, and NewsAPI.
 """
 
 import json
 import logging
 import os
-import sqlite3
 import subprocess
 import sys
 from typing import Optional
 
 import pandas as pd
 
-from src.config import (
-    ALWAYS_INCLUDED_PLATFORMS,
-    DB_PATH,
-    SCRAPER_DIR,
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# EnsembleData scraper imports (optional dependency)
+# ---------------------------------------------------------------------------
+
+try:
+    _ensembledata_dir = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "scrapers", "ensembledata"),
+    )
+    if _ensembledata_dir not in sys.path:
+        sys.path.insert(0, _ensembledata_dir)
+    from tiktok_scraper import scrape_tiktok
+    from instagram_scraper import scrape_instagram
+    from youtube_scraper import scrape_youtube
+    from reddit_scraper import scrape_reddit
+    from threads_scraper import scrape_threads
+
+    HAS_ENSEMBLEDATA = True
+except ImportError:
+    HAS_ENSEMBLEDATA = False
+
+# Ensure project root is in sys.path
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from sqlalchemy import func
+
+from src.db.connection import get_session
+from src.db.models import Trend, Platform, ScrapeError
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+GOOGLE_NICHE_PLATFORMS = (
+    "Google Interest",
+    "Google Regions",
+    "Google Related Queries",
+    "Google Related Topics",
 )
 
-logger = logging.getLogger(__name__)
+SOCIAL_PLATFORMS = ("TikTok", "Instagram", "Threads")
+
+EXPECTED_COLUMNS = ("platform", "topic", "growth", "keyword", "extracted_at")
+
+_SOCIAL_SCRAPER_MAP = {
+    "TikTok": lambda kws, geo: scrape_tiktok(kws, geo=geo),
+    "Instagram": lambda kws, geo: scrape_instagram(kws, geo=geo),
+    "Threads": lambda kws, geo: scrape_threads(kws, geo=geo),
+}
 
 
 class TrendCollector:
-    """Central data-collection facade used by the API and dashboard."""
-
-    def __init__(self, db_path: str = DB_PATH):
-        self.db_path = db_path
+    """Orchestrates trend collection from multiple data sources."""
 
     # ------------------------------------------------------------------
-    # Database helpers
-    # ------------------------------------------------------------------
-
-    def _get_connection(self) -> sqlite3.Connection:
-        """Return a WAL-mode SQLite connection with performance pragmas."""
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA cache_size=-8000")
-        conn.execute("PRAGMA mmap_size=67108864")
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    # ------------------------------------------------------------------
-    # Read trends
+    # Database reads
     # ------------------------------------------------------------------
 
     def get_db_trends(
@@ -59,76 +85,95 @@ class TrendCollector:
         include_reddit: bool = False,
         include_news: bool = False,
     ) -> list[dict]:
-        """Fetch trend rows from the database, filtered by platform flags and geo."""
-
-        if not os.path.exists(self.db_path):
-            logger.warning("Database not found at %s", self.db_path)
-            return []
-
-        # Build the list of platforms to include
-        included_platforms: list[str] = list(ALWAYS_INCLUDED_PLATFORMS)
-        _flag_map = {
-            include_trending_now: ["Google Trends"],
-            include_youtube: ["YouTube"],
-            include_social: ["X (Twitter)", "Threads", "Instagram"],
-            include_hackernews: ["HackerNews"],
-            include_reddit: ["Reddit"],
-            include_news: ["News"],
-        }
-        for flag, platforms in _flag_map.items():
-            if flag:
-                included_platforms.extend(platforms)
-
+        """Read trends from the database, filtered by platform and geo."""
         try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
+            included_platforms = list(GOOGLE_NICHE_PLATFORMS)
+            if include_trending_now:
+                included_platforms.append("Google Trends")
+            if include_youtube:
+                included_platforms.append("YouTube")
+            if include_social:
+                included_platforms.extend(SOCIAL_PLATFORMS)
+            if include_hackernews:
+                included_platforms.append("HackerNews")
+            if include_reddit:
+                included_platforms.append("Reddit")
+            if include_news:
+                included_platforms.append("News")
 
-            placeholders = ", ".join(["?"] * len(included_platforms))
-            query = (
-                "SELECT platform, topic, growth, keyword, geo, url, "
-                "extracted_at, extra_data FROM trends "
-                f"WHERE platform IN ({placeholders})"
-            )
-            params: list = list(included_platforms)
-
-            # Geo filtering
-            if geo and geo != "Global":
-                query += (
-                    " AND (UPPER(geo) = UPPER(?) OR geo = '' "
-                    "OR UPPER(geo) = 'GLOBAL' OR geo IS NULL)"
+            session = get_session()
+            try:
+                query = (
+                    session.query(
+                        Platform.name.label("platform"),
+                        Trend.topic,
+                        Trend.growth,
+                        Trend.keyword,
+                        Trend.geo,
+                        Trend.extracted_at,
+                        Trend.extra_data,
+                    )
+                    .join(Platform, Platform.id == Trend.platform_id)
+                    .filter(Platform.name.in_(included_platforms))
                 )
-                params.append(geo)
-            elif geo == "Global":
-                query += " AND (UPPER(geo) = 'GLOBAL' OR geo = '' OR geo IS NULL)"
 
-            query += " ORDER BY extracted_at DESC"
-            cursor.execute(query, params)
-            rows = cursor.fetchall()
-            conn.close()
+                query = self._apply_geo_filter(query, geo)
+                query = query.order_by(Trend.extracted_at.desc())
+                rows = query.all()
+            finally:
+                session.close()
 
-            trends: list[dict] = []
-            for row in rows:
-                item = dict(row)
-                extra_data = item.pop("extra_data", None)
-                if extra_data:
-                    try:
-                        item.update(json.loads(extra_data))
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-                trends.append(item)
+            return [self._row_to_dict(row) for row in rows]
 
-            return trends
-
-        except Exception:
-            logger.exception("Error reading trends from DB")
+        except Exception as e:
+            logger.error("Error reading trends from DB: %s", e)
             return []
+
+    @staticmethod
+    def _apply_geo_filter(query, geo: Optional[str]):
+        """Apply geo filtering to a SQLAlchemy query."""
+        if geo is not None and geo != "Global":
+            return query.filter(
+                (func.upper(Trend.geo) == func.upper(geo))
+                | (Trend.geo == "")
+                | (func.upper(Trend.geo) == "GLOBAL")
+                | (Trend.geo.is_(None))
+            )
+        if geo == "Global":
+            return query.filter(
+                (func.upper(Trend.geo) == "GLOBAL")
+                | (Trend.geo == "")
+                | (Trend.geo.is_(None))
+            )
+        return query
+
+    @staticmethod
+    def _row_to_dict(row) -> dict:
+        """Convert a database row to a dictionary, expanding extra_data JSON."""
+        item = {
+            "platform": row.platform,
+            "topic": row.topic,
+            "growth": row.growth,
+            "keyword": row.keyword,
+            "geo": row.geo,
+            "extracted_at": row.extracted_at,
+        }
+        if row.extra_data:
+            try:
+                item.update(json.loads(row.extra_data))
+            except (json.JSONDecodeError, TypeError):
+                logger.debug("Failed to parse extra_data for topic: %s", row.topic)
+        return item
 
     # ------------------------------------------------------------------
-    # Scraper invocation
+    # Scrapy spider runner
     # ------------------------------------------------------------------
 
     def _run_scraper(self, spider_name: str, **kwargs) -> bool:
-        """Run a Scrapy spider as a subprocess and return success status."""
+        """Run a Scrapy spider with the given arguments."""
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        project_dir = os.path.join(base_dir, "src", "scrapers", "google_trends_scraper")
+
         cmd = [sys.executable, "-m", "scrapy", "crawl", spider_name]
         for key, value in kwargs.items():
             if key == "keywords" and isinstance(value, list):
@@ -137,90 +182,170 @@ class TrendCollector:
 
         logger.info("Running scraper: %s in %s", " ".join(cmd), SCRAPER_DIR)
         try:
-            result = subprocess.run(cmd, cwd=SCRAPER_DIR, capture_output=False, text=True)
+            logger.info("Running scraper: %s in %s", " ".join(cmd), project_dir)
+            result = subprocess.run(cmd, cwd=project_dir, capture_output=False, text=True)
+
             if result.returncode != 0:
-                logger.error("Scraper %s exited with code %d", spider_name, result.returncode)
+                logger.error("Scraper %s failed with return code %d", spider_name, result.returncode)
                 return False
-            logger.info("Scraper %s completed successfully", spider_name)
+
+            logger.info("Scraper %s completed successfully.", spider_name)
             return True
-        except Exception:
-            logger.exception("Failed to run scraper %s", spider_name)
+        except Exception as e:
+            logger.error("Failed to run Scrapy scraper %s: %s", spider_name, e)
             return False
 
-    # Convenience wrappers for each spider
-    def run_google_trends_scraper(self, keywords, geo="US", timeframe="today 12-m", category=0):
-        return self._run_scraper("google_trends", keywords=keywords, geo=geo, timeframe=timeframe, category=category)
+    # ------------------------------------------------------------------
+    # Individual scraper dispatchers
+    # ------------------------------------------------------------------
 
-    def run_trending_now_scraper(self, geo="US", trend_type="daily"):
+    def run_google_trends_scraper(
+        self,
+        keywords: list[str],
+        geo: str = "US",
+        timeframe: str = "today 12-m",
+        category: int = 0,
+    ) -> bool:
+        """Run the Scrapy Google Trends spider for specific keywords."""
+        return self._run_scraper(
+            "google_trends", keywords=keywords, geo=geo, timeframe=timeframe, category=category,
+        )
+
+    def run_trending_now_scraper(self, geo: str = "US", trend_type: str = "daily") -> bool:
+        """Run the Scrapy Trending Now spider."""
         return self._run_scraper("trending_now", geo=geo, type=trend_type)
 
-    def run_youtube_trends_scraper(self, keywords, geo="Global"):
-        return self._run_scraper("youtube_trends", keywords=keywords, geo=geo)
+    def run_youtube_trends_scraper(self, keywords, geo: str = "Global") -> bool:
+        """Run the YouTube scraper via EnsembleData."""
+        if not HAS_ENSEMBLEDATA or not os.getenv("ENSEMBLEDATA_TOKEN"):
+            logger.info("[youtube] EnsembleData not available — skipping.")
+            return False
+        kw_list = self._ensure_keyword_list(keywords)
+        scrape_youtube(kw_list, geo=geo)
+        return True
 
-    def run_social_trends_scraper(self, platform, keywords, geo="Global"):
-        return self._run_scraper("social_trends", platform=platform, keywords=keywords, geo=geo)
+    def run_social_trends_scraper(self, platform: str, keywords, geo: str = "Global") -> bool:
+        """Run a social media scraper via EnsembleData."""
+        kw_list = self._ensure_keyword_list(keywords)
 
-    def run_hackernews_scraper(self, keywords=None, geo="Global"):
+        if HAS_ENSEMBLEDATA and os.getenv("ENSEMBLEDATA_TOKEN"):
+            scraper_fn = _SOCIAL_SCRAPER_MAP.get(platform)
+            if scraper_fn:
+                scraper_fn(kw_list, geo)
+                return True
+
+        if platform in SOCIAL_PLATFORMS:
+            logger.info("[%s] EnsembleData not available — skipping.", platform.lower())
+            return False
+
+        logger.warning("Unknown social platform: %s", platform)
+        return False
+
+    def run_hackernews_scraper(self, keywords=None, geo: str = "Global") -> bool:
+        """Run the Scrapy HackerNews spider."""
         return self._run_scraper("hackernews", keywords=keywords, geo=geo)
 
-    def run_reddit_scraper(self, subreddit="all", trend_type="hot", keywords=None, geo="Global"):
-        return self._run_scraper("reddit", subreddit=subreddit, trend_type=trend_type, keywords=keywords, geo=geo)
+    def run_reddit_scraper(
+        self,
+        subreddit: str = "all",
+        trend_type: str = "hot",
+        keywords=None,
+        geo: str = "Global",
+    ) -> bool:
+        """Run the Reddit scraper via EnsembleData."""
+        if not HAS_ENSEMBLEDATA or not os.getenv("ENSEMBLEDATA_TOKEN"):
+            logger.info("[reddit] EnsembleData not available — skipping.")
+            return False
+        subs = [subreddit] if isinstance(subreddit, str) else subreddit
+        scrape_reddit(subs, geo=geo, sort=trend_type)
+        return True
 
-    def run_news_scraper(self, query="niche", api_key=None, geo="Global"):
+    def run_news_scraper(self, query: str = "niche", api_key: Optional[str] = None, geo: str = "Global") -> bool:
+        """Run the Scrapy NewsAPI spider."""
         return self._run_scraper("newsapi", q=query, api_key=api_key, geo=geo)
+
+    def run_token_import(self, widgets_json: str, geo: str = "US", keyword: str = "Unknown") -> bool:
+        """Run the token import spider with pre-parsed widget tokens."""
+        return self._run_scraper("token_import", widgets_json=widgets_json, geo=geo, keyword=keyword)
 
     # ------------------------------------------------------------------
     # Comprehensive niche scrape
     # ------------------------------------------------------------------
 
     def run_niche_comprehensive_scrape(
-        self, niche_name: str, keywords: list[str],
-        geo: str = "US", timeframe: str = "today 12-m", category: int = 0,
+        self,
+        niche_name: str,
+        keywords: list[str],
+        geo: str = "US",
+        timeframe: str = "today 12-m",
+        category: int = 0,
     ) -> bool:
-        """Run all scrapers sequentially for a given niche."""
+        """Trigger all scrapers for a specific niche in sequence."""
         logger.info("Starting comprehensive scrape for niche: %s", niche_name)
 
         self.run_google_trends_scraper(keywords, geo=geo, timeframe=timeframe, category=category)
         self.run_youtube_trends_scraper(keywords, geo=geo)
 
-        for social_platform in ("X", "Threads", "Instagram"):
-            self.run_social_trends_scraper(social_platform, keywords, geo=geo)
+        for platform in SOCIAL_PLATFORMS:
+            self.run_social_trends_scraper(platform, keywords, geo=geo)
 
         self.run_reddit_scraper(keywords=keywords, geo=geo)
         self.run_hackernews_scraper(keywords=keywords, geo=geo)
         self.run_news_scraper(query=niche_name, geo=geo)
 
-        logger.info("Comprehensive scrape for %s finished", niche_name)
+        logger.info("Comprehensive scrape for %s finished.", niche_name)
         return True
 
     # ------------------------------------------------------------------
-    # Aggregation
+    # Collect all trends
     # ------------------------------------------------------------------
 
     def collect_all(self, **kwargs) -> pd.DataFrame:
-        """Return a DataFrame of all matching trends from the DB."""
-        trends = self.get_db_trends(**kwargs)
-        if trends:
-            return pd.DataFrame(trends)
-        return pd.DataFrame(columns=["platform", "topic", "growth", "keyword", "extracted_at"])
+        """Collect all trends from the database and return as a DataFrame."""
+        all_trends = self.get_db_trends(**kwargs)
+        if all_trends:
+            return pd.DataFrame(all_trends)
+        return pd.DataFrame(columns=list(EXPECTED_COLUMNS))
 
     # ------------------------------------------------------------------
-    # Errors
+    # Scrape errors
     # ------------------------------------------------------------------
 
     def get_scrape_errors(self, platform: Optional[str] = None) -> pd.DataFrame:
         """Read scrape errors from the database."""
+        error_columns = ("platform", "keyword", "url", "status", "reason", "extracted_at")
         try:
-            conn = sqlite3.connect(self.db_path)
-            query = "SELECT platform, keyword, url, status, reason, extracted_at FROM scrape_errors"
-            params: list = []
-            if platform:
-                query += " WHERE platform = ?"
-                params.append(platform)
-            query += " ORDER BY extracted_at DESC"
-            df = pd.read_sql_query(query, conn, params=params)
-            conn.close()
-            return df
-        except Exception:
-            logger.exception("Error reading scrape errors from DB")
-            return pd.DataFrame(columns=["platform", "keyword", "url", "status", "reason", "extracted_at"])
+            session = get_session()
+            try:
+                query = session.query(
+                    ScrapeError.platform,
+                    ScrapeError.keyword,
+                    ScrapeError.url,
+                    ScrapeError.status,
+                    ScrapeError.reason,
+                    ScrapeError.extracted_at,
+                )
+                if platform:
+                    query = query.filter(ScrapeError.platform == platform)
+                query = query.order_by(ScrapeError.extracted_at.desc())
+                rows = query.all()
+            finally:
+                session.close()
+
+            if rows:
+                return pd.DataFrame(rows, columns=list(error_columns))
+            return pd.DataFrame(columns=list(error_columns))
+        except Exception as e:
+            logger.error("Error reading scrape errors from DB: %s", e)
+            return pd.DataFrame(columns=list(error_columns))
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _ensure_keyword_list(keywords) -> list[str]:
+        """Normalise keywords to a list of strings."""
+        if isinstance(keywords, list):
+            return keywords
+        return [k.strip() for k in str(keywords).split(",")]

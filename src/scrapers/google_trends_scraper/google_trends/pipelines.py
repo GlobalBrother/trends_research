@@ -1,12 +1,27 @@
 import json
-import sqlite3
 import os
+import sys
 import datetime
-from .items import ScrapeErrorItem
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+from src.db.connection import get_session
+from src.db.models import Trend, ScrapeError, ScrapeLog
+from src.db.sql_compat import (
+    is_duplicate_trend, upsert_scrape_log, get_platform_id,
+)
+
+from .items import (
+    BaseItem, GoogleTrendsItem, TrendingNowItem,
+    SocialMediaItem, HackerNewsItem,
+    NewsItem, TokenImportItem, ScrapeErrorItem,
+)
 
 class GoogleTrendsPipeline:
     def process_item(self, item, spider):
-        item['extracted_at'] = datetime.datetime.now().isoformat()
+        item['extracted_at'] = datetime.datetime.now()
         return item
 
 class JSONLPipeline:
@@ -21,83 +36,33 @@ class JSONLPipeline:
         self.file.write(line)
         return item
 
-class SQLitePipeline:
-    def __init__(self, db_path):
-        self.db_path = db_path
+class DatabasePipeline:
+    """Pipeline that writes to the database via SQLAlchemy ORM."""
 
     @classmethod
     def from_crawler(cls, crawler):
-        # Path relative to scrapy.cfg or project root
-        # Since we run from src/scrapers/google_trends_scraper, we go up to src/collector
-        db_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'collector', 'trends.db'))
-        return cls(db_path=db_path)
+        return cls()
 
     def open_spider(self, spider):
-        self.conn = sqlite3.connect(self.db_path)
-        self.cursor = self.conn.cursor()
-        self._create_table()
+        pass
 
-    def _create_table(self):
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS trends (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                platform TEXT,
-                topic TEXT,
-                growth REAL,
-                keyword TEXT,
-                geo TEXT,
-                url TEXT,
-                extracted_at DATETIME,
-                extra_data TEXT
-            )
-        """)
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS scrape_errors (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                platform TEXT,
-                keyword TEXT,
-                url TEXT,
-                status INTEGER,
-                reason TEXT,
-                extracted_at DATETIME
-            )
-        """)
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS scrape_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                platform TEXT,
-                identifier TEXT,
-                status INTEGER,
-                extracted_at DATETIME
-            )
-        """)
-        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_platform ON trends(platform)")
-        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_keyword ON trends(keyword)")
-        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_geo ON trends(geo)")
-        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_extracted_at ON trends(extracted_at)")
-        # Composite indexes for common query patterns
-        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_platform_geo ON trends(platform, geo)")
-        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_geo_platform_extracted ON trends(geo, platform, extracted_at DESC)")
-        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_error_platform ON scrape_errors(platform)")
-        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_error_extracted_at ON scrape_errors(extracted_at)")
-        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_log_platform_id ON scrape_log(platform, identifier)")
-        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_log_extracted ON scrape_log(platform, identifier, status, extracted_at)")
-        # Enable WAL mode for better concurrent read performance
-        self.cursor.execute("PRAGMA journal_mode=WAL")
-        self.conn.commit()
+    def close_spider(self, spider):
+        pass
 
     def is_recently_scraped(self, platform, identifier, hours=24):
         """Checks if the identifier was scraped for the platform in the last X hours."""
-        since = (datetime.datetime.now() - datetime.timedelta(hours=hours)).isoformat()
-        self.cursor.execute('''
-            SELECT 1 FROM scrape_log 
-            WHERE platform = ? AND identifier = ? AND status IN (200, 301) AND extracted_at > ?
-            LIMIT 1
-        ''', (platform, identifier, since))
-        return self.cursor.fetchone() is not None
-
-    def close_spider(self, spider):
-        self.conn.close()
+        since = datetime.datetime.now() - datetime.timedelta(hours=hours)
+        session = get_session()
+        try:
+            row = session.query(ScrapeLog).filter(
+                ScrapeLog.platform == platform,
+                ScrapeLog.identifier == identifier,
+                ScrapeLog.status.in_([200, 301]),
+                ScrapeLog.extracted_at > since,
+            ).first()
+            return row is not None
+        finally:
+            session.close()
 
     def _parse_traffic(self, traffic_str):
         if not traffic_str or not isinstance(traffic_str, str):
@@ -132,119 +97,133 @@ class SQLitePipeline:
             return None
 
     def process_item(self, item, spider):
-        if isinstance(item, ScrapeErrorItem):
-            self.cursor.execute('''
-                INSERT INTO scrape_errors (platform, keyword, url, status, reason, extracted_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (item.get('platform'), item.get('keyword'), item.get('url'), item.get('status'), item.get('reason'), item.get('extracted_at')))
-            self.conn.commit()
-            return item
+        session = get_session()
+        try:
+            if isinstance(item, ScrapeErrorItem):
+                session.add(ScrapeError(
+                    platform=item.get('platform'), keyword=item.get('keyword'),
+                    url=item.get('url'), status=item.get('status'),
+                    reason=item.get('reason'), extracted_at=item.get('extracted_at'),
+                ))
+                session.commit()
+                return item
 
-        data_type = item.get('data_type')
-        keyword = item.get('keyword', 'Unknown')
-        geo = item.get('geo', '')
-        extracted_at = item.get('extracted_at')
-        results = item.get('results', [])
+            data_type = item.get('data_type')
+            keyword = item.get('keyword', 'Unknown')
+            geo = item.get('geo', '')
+            extracted_at = item.get('extracted_at')
+            results = item.get('results', [])
 
-        for res in results:
-            platform = None
-            topic = None
-            growth = 0
-            url = res.get('url')
-            extra_data = {}
+            for res in results:
+                platform = None
+                topic = None
+                growth = 0
+                url = res.get('url')
+                extra_data = {}
 
-            if data_type == 'trending_searches':
-                platform = "Google Trends"
-                topic = res.get('query') or res.get('title')
-                growth = self._parse_traffic(res.get('traffic')) or 500
-            elif data_type in ['related_queries', 'related_topics']:
-                platform = f"Google {data_type.replace('_', ' ').title()}"
-                topic = res.get('query') or res.get('topic')
-                val = res.get('value')
-                if val == 'Breakout':
-                    growth = 5000
-                elif isinstance(val, (int, float)):
-                    growth = val * 10
-                else:
-                    growth = 250
-            elif data_type == 'youtube_trends':
-                platform = "YouTube"
-                topic = res.get('title')
-                growth = self._parse_views(res.get('views')) or 0
-                extra_data['published'] = res.get('published')
-                extra_data['video_id'] = res.get('video_id')
-            elif data_type in ['x_trends', 'threads_trends', 'instagram_trends']:
-                platform_map = {'x_trends': 'X (Twitter)', 'threads_trends': 'Threads', 'instagram_trends': 'Instagram'}
-                platform = platform_map.get(data_type)
-                topic = res.get('topic')
-                growth = res.get('engagement', 0)
-                extra_data['posts'] = res.get('posts')
-                extra_data['replies'] = res.get('replies')
-            elif data_type == 'hackernews_trends':
-                platform = "HackerNews"
-                topic = res.get('title')
-                growth = res.get('score', 0) * 10
-                extra_data['engagement'] = res.get('descendants', 0) * 5
-                extra_data['author'] = res.get('by')
-            elif data_type == 'reddit_trends':
-                platform = "Reddit"
-                topic = res.get('title')
-                growth = res.get('score', 0) * 5
-                extra_data['engagement'] = res.get('num_comments', 0) * 10
-                extra_data['subreddit'] = res.get('subreddit')
-            elif data_type == 'news_trends':
-                platform = "News"
-                topic = res.get('title')
-                growth = res.get('popularity', 50) * 10
-                extra_data['source'] = res.get('source')
-            elif data_type == 'interest_over_time':
-                platform = "Google Interest"
-                topic = item.get('keyword')
-                # For interest over time, we use the peak interest as growth
-                if results:
-                    growth = max([r.get('value', [0])[0] if isinstance(r.get('value'), list) else r.get('value', 0) for r in results])
-                else:
-                    growth = 0
-                extra_data['time_series'] = results
-            elif data_type == 'interest_by_region':
-                platform = "Google Regions"
-                topic = item.get('keyword')
-                regions = [r for r in results if (r.get('value', [0])[0] if isinstance(r.get('value'), list) else r.get('value', 0)) > 0]
-                for r in regions:
-                    reg_topic = f"{topic} in {r.get('geoName')}"
-                    reg_growth = r.get('value', [0])[0] if isinstance(r.get('value'), list) else r.get('value', 0)
-                    reg_extra = {
-                        'geoCode': r.get('geoCode'),
-                        'geoName': r.get('geoName'),
-                        'region_value': reg_growth
-                    }
-                    self.cursor.execute('''
-                        INSERT INTO trends (platform, topic, growth, keyword, geo, url, extracted_at, extra_data)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (platform, reg_topic, reg_growth, keyword, geo, url, extracted_at, json.dumps(reg_extra)))
-                
-                # We skip the default insert for Google Regions since we added per-region rows
-                continue
+                if data_type == 'trending_searches':
+                    platform = "Google Trends"
+                    topic = res.get('query') or res.get('title')
+                    growth = self._parse_traffic(res.get('traffic')) or 500
+                elif data_type in ['related_queries', 'related_topics']:
+                    platform = f"Google {data_type.replace('_', ' ').title()}"
+                    topic = res.get('query') or res.get('topic')
+                    val = res.get('value')
+                    if val == 'Breakout':
+                        growth = 5000
+                    elif isinstance(val, (int, float)):
+                        growth = val * 10
+                    else:
+                        growth = 250
+                elif data_type == 'youtube_trends':
+                    platform = "YouTube"
+                    topic = res.get('title')
+                    growth = self._parse_views(res.get('views')) or 0
+                    extra_data['published'] = res.get('published')
+                    extra_data['video_id'] = res.get('video_id')
+                    extra_data['channel'] = res.get('channel')
+                    extra_data['duration'] = res.get('duration')
+                    extra_data['description'] = res.get('description')
+                elif data_type in ['threads_trends', 'instagram_trends', 'tiktok_trends']:
+                    platform_map = {'threads_trends': 'Threads', 'instagram_trends': 'Instagram', 'tiktok_trends': 'TikTok'}
+                    platform = platform_map.get(data_type)
+                    topic = res.get('topic')
+                    growth = res.get('engagement', 0)
+                    extra_data['posts'] = res.get('posts')
+                    extra_data['replies'] = res.get('replies')
+                elif data_type == 'hackernews_trends':
+                    platform = "HackerNews"
+                    topic = res.get('title')
+                    growth = res.get('score', 0) * 10
+                    extra_data['engagement'] = res.get('descendants', 0) * 5
+                    extra_data['author'] = res.get('by')
+                elif data_type == 'reddit_trends':
+                    platform = "Reddit"
+                    topic = res.get('title')
+                    growth = res.get('score', 0) * 5
+                    extra_data['engagement'] = res.get('num_comments', 0) * 10
+                    extra_data['subreddit'] = res.get('subreddit')
+                elif data_type == 'news_trends':
+                    platform = "News"
+                    topic = res.get('title')
+                    growth = res.get('popularity', 50) * 10
+                    extra_data['source'] = res.get('source')
+                elif data_type == 'interest_over_time':
+                    platform = "Google Interest"
+                    topic = item.get('keyword')
+                    if results:
+                        growth = max([r.get('value', [0])[0] if isinstance(r.get('value'), list) else r.get('value', 0) for r in results])
+                    else:
+                        growth = 0
+                    extra_data['time_series'] = results
+                elif data_type == 'interest_by_region':
+                    platform = "Google Regions"
+                    topic = item.get('keyword')
+                    regions = [r for r in results if (r.get('value', [0])[0] if isinstance(r.get('value'), list) else r.get('value', 0)) > 0]
+                    for r in regions:
+                        reg_topic = f"{topic} in {r.get('geoName')}"
+                        reg_growth = r.get('value', [0])[0] if isinstance(r.get('value'), list) else r.get('value', 0)
+                        reg_extra = {
+                            'geoCode': r.get('geoCode'),
+                            'geoName': r.get('geoName'),
+                            'region_value': reg_growth
+                        }
+                        platform_id = get_platform_id(session, platform)
+                        if not is_duplicate_trend(session, platform_id, reg_topic, keyword, geo):
+                            session.add(Trend(
+                                platform_id=platform_id, topic=reg_topic, growth=reg_growth,
+                                keyword=keyword, geo=geo, extracted_at=extracted_at,
+                                extra_data=json.dumps(reg_extra),
+                            ))
+                    
+                    # We skip the default insert for Google Regions since we added per-region rows
+                    continue
 
-            if platform and topic:
-                self.cursor.execute('''
-                    INSERT INTO trends (platform, topic, growth, keyword, geo, url, extracted_at, extra_data)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (platform, topic, growth, keyword, geo, url, extracted_at, json.dumps(extra_data)))
-                
-                # Also log the successful scrape by URL if it exists
-                if url:
-                    self.cursor.execute('''
-                        INSERT OR REPLACE INTO scrape_log (platform, identifier, status, extracted_at)
-                        VALUES (?, ?, ?, ?)
-                    ''', (platform, url, 200, extracted_at))
+                if platform and topic:
+                    platform_id = get_platform_id(session, platform)
+                    if is_duplicate_trend(session, platform_id, topic, keyword, geo):
+                        continue
+                    # Merge url into extra_data (url column removed from trends table)
+                    if url:
+                        extra_data['url'] = url
+                    session.add(Trend(
+                        platform_id=platform_id, topic=topic, growth=growth,
+                        keyword=keyword, geo=geo, extracted_at=extracted_at,
+                        extra_data=json.dumps(extra_data),
+                    ))
+                    
+                    # Also log the successful scrape by URL if it exists
+                    if url:
+                        upsert_scrape_log(session, platform, url, 200, extracted_at)
 
-                # Also log the successful scrape by keyword_geo for broader skipping
-                identifier = f"{keyword}_{geo}" if geo else keyword
-                self.cursor.execute('''
-                    INSERT OR REPLACE INTO scrape_log (platform, identifier, status, extracted_at)
-                    VALUES (?, ?, ?, ?)
-                ''', (platform, identifier, 200, extracted_at))
-        
-        self.conn.commit()
+                    # Also log the successful scrape by keyword_geo for broader skipping
+                    identifier = f"{keyword}_{geo}" if geo else keyword
+                    upsert_scrape_log(session, platform, identifier, 200, extracted_at)
+            
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
         return item

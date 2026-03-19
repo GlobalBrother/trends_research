@@ -1,127 +1,144 @@
 # Niche Trend Discovery System
 
-A production-ready platform to collect, analyze, and visualize trending topics across multiple platforms. The system identifies emerging niches and calculates a custom **Virality Score** using cross-platform signals and advanced analytics.
+A production-ready platform to collect, analyze, and visualize trending topics across multiple platforms. The system discovers emerging micro-niches by aggregating cross-platform signals and computing a normalized "Virality Score" for each topic.
 
-## Features
+Key goals:
+- Quickly surface emerging topics with cross-platform signals
+- Provide an extensible backend API for integrations and a Streamlit dashboard for exploration
+- Make it easy to add new scrapers and scoring heuristics
 
-- **Multi-Source Data Collection** — Scrapy-based spiders for Google Trends, YouTube, Reddit, Hacker News, NewsAPI, and social platforms (X/Twitter, Threads, Instagram).
-- **Topic Aggregation** — Union-Find keyword-overlap algorithm clusters similar titles across platforms into a single "Aggregated Topic" for a unified view.
-- **Virality Scoring** — Composite formula incorporating volume, growth rate, engagement, source diversity, sentiment, and geographic spread, scaled to 1-100.
-- **Micro-Niche Discovery** — TF-IDF + KMeans clustering surfaces emerging sub-topics within a niche.
-- **Interactive Dashboard** — Streamlit-based UI with KPI cards, treemaps, scatter plots, and per-platform deep dives.
-- **FastAPI Backend** — REST API with in-memory caching, background scraping, and automatic freshness checks.
+---
 
-## Project Structure
+## Quick Start (Windows - PowerShell)
 
+1) Set PYTHONPATH and start the backend API (from project root):
+
+```powershell
+$env:PYTHONPATH = "."
+python src/api/main.py
 ```
-trends_research/
-├── src/
-│   ├── config.py                  # Centralized configuration (paths, env vars, constants)
-│   ├── api/
-│   │   └── main.py                # FastAPI backend (v2.0)
-│   ├── collector/
-│   │   ├── trend_collector.py     # Data orchestration & scraper invocation
-│   │   └── trends.db              # SQLite database (WAL mode)
-│   ├── analytics/
-│   │   └── analytics_engine.py    # Sentiment, virality scoring, topic clustering
-│   ├── niche/
-│   │   └── niche_discovery.py     # Niche keywords, filtering, micro-niche clustering
-│   ├── dashboard/
-│   │   ├── app.py                 # Streamlit frontend (v2.0)
-│   │   └── utils/
-│   │       └── api_client.py      # Typed HTTP client for the backend
-│   ├── scrapers/
-│   │   └── google_trends_scraper/ # Scrapy project with platform-specific spiders
-│   └── utils/
-├── requirements.txt
-└── README.md
+
+2) Start the Streamlit dashboard in a new terminal (from project root):
+
+```powershell
+$env:PYTHONPATH = "."
+streamlit run src/dashboard/app.py
 ```
+
+Notes:
+- The FastAPI backend defaults to http://127.0.0.1:8000.
+- The Streamlit dashboard defaults to http://localhost:8501.
+
+---
 
 ## Installation
 
-### 1. Clone and install dependencies
+Prerequisites: Python 3.10+ (check `pyproject.toml` or `requirements.txt`).
 
-```bash
-git clone https://github.com/GlobalBrother/trends_research.git
-cd trends_research
+Install dependencies:
+
+```powershell
 pip install -r requirements.txt
 ```
 
-### 2. Configure environment
+Environment configuration
+- Create a `.env` file in the repo root or set environment variables directly. Example variables used by the project:
 
-Create a `.env` file in the project root:
-
-```env
-NEWS_API_KEY=your_newsapi_key
+```text
+NEWS_API_KEY=your_key_here
 BACKEND_URL=http://127.0.0.1:8000
 BACKEND_PORT=8000
 
 # Scraper tunables (optional)
 SCRAPY_CONCURRENT_REQUESTS=1
 SCRAPY_DOWNLOAD_DELAY=10
-SCRAPE_FRESHNESS_HOURS=144
-
-# Cache (optional)
-CACHE_TTL_SECONDS=300
+DB_PATH=src/collector/trends.db
+RESEND_API_KEY=...
+RESEND_FROM_EMAIL=noreply@yourdomain.com
 ```
 
-## How to Run
+See `AGENTS.md` for additional developer conventions and architecture notes.
 
-### Step 1: Start the backend API
+---
 
-```bash
-PYTHONPATH=. python src/api/main.py
+## Project Structure (high level)
+
+- `src/api/main.py` — FastAPI application and public endpoints (`/trends`, `/aggregated-topics`, `/niches`).
+- `src/collector/trend_collector.py` — Orchestrates scraping, stores to SQLite and runs analysis.
+- `src/analytics/analytics_engine.py` — Virality scoring, sentiment, topic clustering (Union-Find).
+- `src/niche/niche_discovery.py` — Niche filters and keyword lists.
+- `src/dashboard/app.py` — Streamlit UI and tabs.
+- `src/scrapers/` — Platform-specific scrapers (EnsembleData, Google Trends, etc.).
+- `src/collector/trends.db` — Default SQLite database (development).
+
+---
+
+## Running with Docker
+
+Build and run the full stack with Docker Compose:
+
+```powershell
+docker-compose up --build
 ```
 
-The API will be available at `http://127.0.0.1:8000` with interactive docs at `/docs`.
+This builds the API and dashboard images and runs them together. Check `docker-compose.yml` for service ports.
 
-### Step 2: Start the dashboard
+---
 
-In a separate terminal:
+## Testing
 
-```bash
-PYTHONPATH=. streamlit run src/dashboard/app.py
+Run the test suite from the project root:
+
+```powershell
+python -m pytest tests/
 ```
 
-## Analytics Methodology
+If you want to run a single test file (example):
 
-### Virality Score
-
-The score (1-100) represents the "heat" of a topic:
-
-```
-base = log(volume) + 2 * norm_growth + engagement_weight
-       + diversity_boost + platform_boost + sentiment_bonus + spread_bonus
-score = 1 + sigmoid(base) * 99
+```powershell
+python -m pytest tests/test_analytics_engine.py -q
 ```
 
-A score above 90 indicates a topic exploding across multiple platforms with high engagement.
+---
 
-### Topic Clustering
+## Database & Data Model
 
-The Union-Find algorithm groups titles like "AI Girlfriend App" and "My AI Girlfriend Experience" into a single aggregated topic. This provides a unified view regardless of minor title variations across platforms.
+- Default SQLite: `src/collector/trends.db` (path controlled by `DB_PATH` env var).
+- Table: `trends` with fields including `title`, `source`, `viral_score`, `aggregated_topic`, `niche`, `keywords` (JSON), `raw_data` (JSON) and `timestamp`.
+- Indexes exist for `source`, `timestamp`, `viral_score`, `aggregated_topic`, and `niche` to speed queries.
 
-### Source Diversity
+---
 
-Topics appearing on multiple platforms (e.g., YouTube + Reddit + News) receive a significant boost, as cross-platform presence is a strong indicator of a mainstream trend.
+## Developer Conventions
 
-## API Reference
+- Every module adds the project root to `sys.path` so scripts can be run from the repo root. See `AGENTS.md` for the exact snippet.
+- Typical workflow from a REPL or script:
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/` | GET | Health check |
-| `/niches` | GET | List available niches |
-| `/niche_keywords/{name}` | GET | Get seed keywords for a niche |
-| `/scrape` | POST | Trigger background comprehensive scrape |
-| `/trends` | GET | Aggregated trends (with optional geo/niche filters) |
-| `/trending_now` | GET | Google daily/realtime trending searches |
-| `/youtube_trends` | GET | YouTube trends for a niche |
-| `/social_trends` | GET | X/Threads/Instagram trends |
-| `/hackernews_trends` | GET | Hacker News trends |
-| `/reddit_trends` | GET | Reddit trends |
-| `/news_trends` | GET | NewsAPI trends |
-| `/all_trends` | GET | All platforms combined |
-| `/scrape_errors` | GET | Scrape error log |
+```python
+from src.collector.trend_collector import TrendCollector
+collector = TrendCollector()
+collector.collect_all_trends(max_workers=4)
+collector.apply_analytics()
+collector.apply_niche_discovery()
+```
+
+---
+
+## Where to look next (key files)
+
+- `src/collector/trend_collector.py` — Orchestration and persistence
+- `src/analytics/analytics_engine.py` — Scoring & clustering
+- `src/niche/niche_discovery.py` — Niche filters
+- `src/api/main.py` — API endpoints
+- `src/dashboard/app.py` — UI
+
+---
+
+## Contributing
+
+Contributions are welcome. Please open issues for bugs or feature requests and submit PRs for changes. Run tests locally before submitting a PR.
+
+---
 
 ## License
 

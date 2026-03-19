@@ -1,15 +1,4 @@
-"""
-Streamlit Dashboard — Trends Research System v2.0
-
-Redesigned with:
-  - Cleaner visual hierarchy and consistent spacing
-  - KPI metric cards at the top of each view
-  - Improved chart defaults (color scales, labels)
-  - Consolidated helper functions to reduce repetition
-  - Custom CSS for a polished, professional look
-"""
-
-import sys
+﻿import sys
 import os
 
 # Ensure project root is on sys.path
@@ -20,148 +9,276 @@ if _PROJECT_ROOT not in sys.path:
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
+import streamlit.components.v1 as components
+from datetime import datetime, timedelta
+
+# Ensure the project root (the directory containing 'src') is in sys.path
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 from src.dashboard.utils.api_client import APIClient
-from src.config import COUNTRIES, TIMEFRAMES, CATEGORIES
-
-# ---------------------------------------------------------------------------
-# Page config & custom CSS
-# ---------------------------------------------------------------------------
-
-st.set_page_config(
-    page_title="Trends Research",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded",
+from src.dashboard.tabs import (
+    format_number, tab_niche_research, tab_daily_trends, tab_youtube,
+    tab_tiktok, tab_instagram, tab_threads, tab_reddit, tab_community_news,
 )
+from src.db.connection import test_connection
 
-st.markdown("""
-<style>
-    /* Tighten default Streamlit padding */
-    .block-container { padding-top: 1.5rem; padding-bottom: 1rem; }
-    /* Sidebar header */
-    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h2 {
-        font-size: 1.1rem; margin-bottom: 0.25rem;
-    }
-    /* Metric cards */
-    [data-testid="stMetric"] {
-        background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
-        border: 1px solid #dee2e6;
-        border-radius: 0.5rem;
-        padding: 0.75rem 1rem;
-    }
-    [data-testid="stMetric"] label { font-size: 0.8rem; color: #6c757d; }
-    [data-testid="stMetric"] [data-testid="stMetricValue"] { font-size: 1.4rem; font-weight: 700; }
-    /* Tab styling */
-    .stTabs [data-baseweb="tab-list"] { gap: 0.25rem; }
-    .stTabs [data-baseweb="tab"] {
-        padding: 0.5rem 1rem; border-radius: 0.375rem 0.375rem 0 0;
-    }
-    /* Dataframe tweaks */
-    .stDataFrame { border-radius: 0.375rem; }
-    /* Hide Streamlit branding */
-    #MainMenu { visibility: hidden; }
-    footer { visibility: hidden; }
-    /* Section dividers */
-    hr { margin: 0.5rem 0; border-color: #dee2e6; }
-</style>
-""", unsafe_allow_html=True)
+
+def inject_custom_css():
+    """Inject custom CSS from an external style.css file."""
+    css_path = os.path.join(os.path.dirname(__file__), "style.css")
+    with open(css_path, encoding="utf-8") as f:
+        css = f.read()
+    st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
+
 
 # ---------------------------------------------------------------------------
-# Shared helpers
+# Auth helpers
 # ---------------------------------------------------------------------------
 
-def _format_number(val) -> str:
-    """Human-readable number formatting (1.2K, 3.4M, etc.)."""
+def _set_cookie_js(name, value, max_age_seconds=43200):
+    """Set a browser cookie via injected JavaScript (immediate, no render cycle needed)."""
+    js = f"""
+    <script>
+    try {{
+        window.top.document.cookie = "{name}={value}; path=/; max-age={max_age_seconds}; SameSite=Lax";
+    }} catch(e) {{
+        try {{ parent.document.cookie = "{name}={value}; path=/; max-age={max_age_seconds}; SameSite=Lax"; }} catch(e2) {{}}
+    }}
+    </script>
+    """
+    components.html(js, height=0, width=0)
+
+
+def _delete_cookie_js(name):
+    """Delete a browser cookie via injected JavaScript."""
+    js = f"""
+    <script>
+    try {{
+        window.top.document.cookie = "{name}=; path=/; max-age=0; SameSite=Lax";
+    }} catch(e) {{
+        try {{ parent.document.cookie = "{name}=; path=/; max-age=0; SameSite=Lax"; }} catch(e2) {{}}
+    }}
+    </script>
+    """
+    components.html(js, height=0, width=0)
+
+
+def _get_cookie_from_headers(name):
+    """Read a cookie value from the Streamlit request headers."""
+    # First check query params (reliable fallback)
+    token_from_params = st.query_params.get(name)
+    if token_from_params:
+        return token_from_params
+    # Then check cookies from headers
     try:
-        val = float(val)
-    except (TypeError, ValueError):
-        return str(val)
-    if val >= 1_000_000:
-        return f"{val / 1_000_000:.1f}M"
-    if val >= 1_000:
-        return f"{val / 1_000:.1f}K"
-    return str(int(val))
-
-
-def _flatten_list_col(df: pd.DataFrame, col: str) -> pd.DataFrame:
-    """Convert list-type column values to comma-separated strings."""
-    if col in df.columns:
-        df[col] = df[col].apply(lambda x: ", ".join(x) if isinstance(x, list) else str(x) if x else "")
-    return df
-
-
-def _ensure_cols(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
-    """Add missing columns with 'N/A' so display never fails."""
-    for c in cols:
-        if c not in df.columns:
-            df[c] = "N/A"
-    return df
-
-
-def _display_table(df: pd.DataFrame, cols: list[str], col_config: dict | None = None,
-                   height: int = 380, gradient_col: str | None = "virality_score"):
-    """Render a styled dataframe with optional gradient highlighting."""
-    if df.empty:
-        st.info("No data available.")
-        return
-
-    display = _ensure_cols(df.copy(), cols)
-    display = _flatten_list_col(display, "platform")
-    display = _flatten_list_col(display, "geo")
-
-    if gradient_col and gradient_col in display.columns:
-        display[gradient_col] = pd.to_numeric(display[gradient_col], errors="coerce").fillna(0)
-
-    try:
-        if gradient_col and gradient_col in cols:
-            styled = display[cols].style.background_gradient(
-                subset=[gradient_col], cmap="YlOrRd"
-            )
-            st.dataframe(styled, column_config=col_config, height=height, use_container_width=True)
-        else:
-            st.dataframe(display[cols], column_config=col_config, height=height, use_container_width=True)
+        cookie_header = st.context.headers.get("Cookie", "")
+        for part in cookie_header.split(";"):
+            part = part.strip()
+            if part.startswith(f"{name}="):
+                return part[len(name) + 1:]
     except Exception:
-        st.dataframe(display[cols], column_config=col_config, height=height, use_container_width=True)
+        pass
+    return None
 
 
-def _kpi_row(df: pd.DataFrame):
-    """Render a row of KPI metric cards summarizing the current dataset."""
-    if df.empty:
+def _init_session_state():
+    """Initialise auth-related session state keys and restore from cookies."""
+    for key, default in [("authenticated", False), ("user_email", ""), ("user_role", ""), ("otp_sent", False)]:
+        if key not in st.session_state:
+            st.session_state[key] = default
+
+
+def _try_restore_from_cookies(api):
+    """Attempt to restore auth session from a cached token cookie."""
+    if st.session_state.authenticated:
         return
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.metric("Total Trends", _format_number(len(df)))
-    with c2:
-        top_score = df["virality_score"].max() if "virality_score" in df.columns else 0
-        st.metric("Top Virality", f"{top_score:.1f}")
-    with c3:
-        platforms = set()
-        if "platform" in df.columns:
-            for p in df["platform"]:
-                if isinstance(p, list):
-                    platforms.update(p)
+    token = _get_cookie_from_headers("tr_token")
+    if token:
+        result = api.validate_token(token)
+        if "error" not in result:
+            st.session_state.authenticated = True
+            st.session_state.user_email = result["email"]
+            st.session_state.user_role = result["role"]
+            st.session_state.auth_token = token
+
+
+def _save_auth_cookies(token):
+    """Persist auth token in a cookie valid for 12 hours."""
+    _set_cookie_js("tr_token", token, max_age_seconds=43200)
+    # Also persist in query params as a reliable fallback
+    st.query_params["tr_token"] = token
+
+
+def _clear_auth_cookies():
+    """Remove auth cookie on logout."""
+    _delete_cookie_js("tr_token")
+    if "tr_token" in st.query_params:
+        del st.query_params["tr_token"]
+
+
+def login_page(api):
+    """Render the OTP login form. Returns True when authenticated."""
+    # Centered branded login card
+    st.markdown(
+        '<div class="login-container">'
+        '<div class="login-brand">'
+        '<div class="logo">🚀</div>'
+        '<div class="title">Trends Research</div>'
+        '<div class="subtitle">Sign in with your whitelisted email</div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    email = st.text_input("Email address", key="login_email", placeholder="you@company.com")
+
+    if not st.session_state.otp_sent:
+        if st.button("Send One-Time Code", disabled=not email, width='stretch', type="primary"):
+            res = api.request_otp(email)
+            if "error" in res:
+                st.error(res["error"])
+            else:
+                st.session_state.otp_sent = True
+                st.session_state.user_email = email
+                st.rerun()
+    else:
+        st.success(f"Code sent to **{st.session_state.user_email}**")
+        code = st.text_input("Enter verification code", key="login_code", placeholder="6-digit code")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("✓ Verify", width='stretch', type="primary"):
+                res = api.verify_otp(st.session_state.user_email, code)
+                if "error" in res:
+                    st.error(res["error"])
                 else:
-                    platforms.add(p)
-        st.metric("Platforms", len(platforms))
-    with c4:
-        avg_growth = df["growth"].mean() if "growth" in df.columns else 0
-        st.metric("Avg Growth", _format_number(avg_growth))
+                    st.session_state.authenticated = True
+                    st.session_state.user_role = res["role"]
+                    st.session_state.auth_token = res["token"]
+                    _save_auth_cookies(res["token"])
+                    st.rerun()
+        with col2:
+            if st.button("← Back", width='content'):
+                st.session_state.otp_sent = False
+                st.rerun()
+
+    st.markdown('</div>', unsafe_allow_html=True)  # close login-container
+    _render_footer()
+    return False
 
 
-# Plotly defaults
-_PLOTLY_LAYOUT = dict(
-    margin=dict(t=40, b=20, l=20, r=20),
-    font=dict(family="Inter, sans-serif", size=12),
-    plot_bgcolor="#fafafa",
-    paper_bgcolor="#ffffff",
-    colorway=px.colors.qualitative.Set2,
-)
+def logout():
+    """Clear auth session state and cookies."""
+    _clear_auth_cookies()
+    for key in ("authenticated", "user_email", "user_role", "otp_sent"):
+        st.session_state[key] = "" if key in ("user_email", "user_role") else False
 
-def _apply_layout(fig, **overrides):
-    fig.update_layout(**{**_PLOTLY_LAYOUT, **overrides})
-    return fig
+
+# ---------------------------------------------------------------------------
+# Sidebar
+# ---------------------------------------------------------------------------
+
+def _render_header():
+    """Render the branded app header bar."""
+    st.markdown(
+        '<div class="app-header">'
+        '<span class="app-logo">🚀</span>'
+        '<span class="app-title">Trends Research</span>'
+        '<span class="app-env-badge">Production</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_footer():
+    """Render a minimal footer."""
+    st.markdown(
+        '<div class="app-footer">'
+        '© 2026 Trends Research · Built with Streamlit'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_sidebar(api):
+    """Build sidebar controls with user card and mode indicator."""
+    with st.sidebar:
+        # Branding
+        st.markdown(
+            '<div style="text-align:center;padding:0.5rem 0 0.8rem 0;">'
+            '<span style="font-size:1.6rem;">🚀</span><br>'
+            '<span style="font-size:0.9rem;font-weight:700;'
+            'background:linear-gradient(135deg,#58a6ff,#a855f7);'
+            '-webkit-background-clip:text;-webkit-text-fill-color:transparent;">'
+            'Trends Research</span></div>',
+            unsafe_allow_html=True,
+        )
+
+        # User card
+        email = st.session_state.user_email
+        role = st.session_state.user_role
+        initial = email[0].upper() if email else "?"
+        st.markdown(
+            f'<div class="sidebar-user">'
+            f'<div class="user-avatar">{initial}</div>'
+            f'<div class="user-info">'
+            f'<div class="user-email">{email}</div>'
+            f'<div class="user-role">{role}</div>'
+            f'</div></div>',
+            unsafe_allow_html=True,
+        )
+
+        if api.direct:
+            st.markdown('<span class="status-badge status-ok">⚡ Direct mode</span>', unsafe_allow_html=True)
+        else:
+            st.markdown('<span class="status-badge status-warn">🌐 API mode</span>', unsafe_allow_html=True)
+
+        # --- Database connection status ---
+        st.divider()
+        st.markdown(
+            '<div style="font-size:0.75rem;font-weight:600;color:#8b949e;'
+            'text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.4rem;">'
+            '🗄️ Database</div>',
+            unsafe_allow_html=True,
+        )
+
+        if "db_status" not in st.session_state:
+            st.session_state.db_status = None
+
+        if st.button("🔌 Check Connection", key="db_connect_btn", width='stretch'):
+            try:
+                ok, msg = test_connection()
+                if ok:
+                    st.session_state.db_status = ("success", msg)
+                else:
+                    st.session_state.db_status = ("error", msg)
+            except Exception as e:
+                st.session_state.db_status = ("error", str(e))
+            st.rerun()
+
+        if st.session_state.db_status:
+            level, msg = st.session_state.db_status
+            if level == "success":
+                st.success(msg, icon="✅")
+            else:
+                st.error(msg, icon="❌")
+
+        # App switcher for admin users
+        if role == "admin":
+            st.divider()
+            st.markdown(
+                '<div style="font-size:0.75rem;font-weight:600;color:#8b949e;'
+                'text-transform:uppercase;letter-spacing:0.05em;margin-bottom:0.4rem;">'
+                '🔀 Switch App</div>',
+                unsafe_allow_html=True,
+            )
+            st.page_link("pages/admin.py", label="🛠️ Admin Panel", width='stretch')
+            st.page_link("pages/ads_insight.py", label="📢 Ads Insight", width='stretch')
+
+        st.divider()
+        if st.button("🚪 Logout", key="logout_btn", width='stretch'):
+            logout()
+            st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -169,296 +286,77 @@ def _apply_layout(fig, **overrides):
 # ---------------------------------------------------------------------------
 
 def main():
+    st.set_page_config(
+        page_title="Trends Research",
+        layout="wide",
+        page_icon="🚀",
+        initial_sidebar_state="expanded",
+    )
+    inject_custom_css()
+    _init_session_state()
+
     api = APIClient()
 
-    # ===== Sidebar =====
+    # --- Restore session from cookies if available ---
+    _try_restore_from_cookies(api)
+
+    # --- Auth gate (hide sidebar until logged in) ---
+    if not st.session_state.authenticated:
+        login_page(api)
+        return
+
+    _render_header()
+    render_sidebar(api)
+
+    role = st.session_state.user_role
+
+    # Define all available tabs with their role requirements
+    # "trends" role: only Niche Research and Daily Trends
+    # "admin" role: all tabs
+    all_tabs = [
+        ("🎯 Niche Research", tab_niche_research, "trends"),
+        ("📈 Daily Trends", tab_daily_trends, "trends"),
+        ("🎬 YouTube", tab_youtube, "admin"),
+        ("🎵 TikTok", tab_tiktok, "admin"),
+        ("👽 Reddit", tab_reddit, "admin"),
+        ("📸 Instagram", tab_instagram, "admin"),
+        ("💬 Threads", tab_threads, "admin"),
+        ("🌐 Community & News", tab_community_news, "admin"),
+    ]
+
+    # Filter tabs based on role
+    if role == "admin":
+        visible_tabs = all_tabs
+    else:
+        visible_tabs = [t for t in all_tabs if t[2] == "trends"]
+
+    tab_objects = st.tabs([t[0] for t in visible_tabs])
+
+    niche_df = None
+    for tab_obj, (label, renderer, _) in zip(tab_objects, visible_tabs):
+        with tab_obj:
+            result = renderer(api)
+            if label == "🎯 Niche Research":
+                niche_df = result
+
+    # Sidebar export
     with st.sidebar:
-        st.markdown("## Trends Research")
-        st.caption("v2.0 — Multi-platform niche intelligence")
-        st.divider()
-
-        refresh = st.button("Refresh Data", use_container_width=True, type="primary")
-
-        selected_country = st.selectbox("Region", list(COUNTRIES.keys()), index=0)
-        selected_geo = COUNTRIES[selected_country]
-
-        niches = api.get_niches()
-        selected_niche = st.selectbox("Niche", niches)
-
-        with st.expander("Scraper Settings"):
-            selected_tf_name = st.selectbox("Time Range", list(TIMEFRAMES.keys()))
-            selected_tf = TIMEFRAMES[selected_tf_name]
-            selected_cat_name = st.selectbox("Category", list(CATEGORIES.keys()))
-            selected_cat = CATEGORIES[selected_cat_name]
-
-        if st.button(f"Scrape {selected_niche}", use_container_width=True):
-            with st.status(f"Scraping {selected_niche}...", expanded=True) as status:
-                st.write(f"Requesting data for {selected_niche}...")
-                ok = api.trigger_scrape(selected_niche, geo=selected_geo,
-                                        timeframe=selected_tf, category=selected_cat)
-                if ok:
-                    status.update(label=f"{selected_niche} scrape started!", state="complete", expanded=False)
-                    st.cache_data.clear()
-                    refresh = True
+        st.markdown("---")
+        with st.expander("📥 Export", expanded=False):
+            try:
+                if niche_df is not None and not niche_df.empty:
+                    csv = niche_df.to_csv(index=False).encode('utf-8')
+                    st.download_button("Download CSV", data=csv, file_name='trends.csv', mime='text/csv')
+                    json_data = niche_df.to_json(orient="records")
+                    st.download_button("Download JSON", data=json_data, file_name='trends.json', mime='application/json')
                 else:
-                    status.update(label="Scraping failed", state="error")
-
-        st.divider()
-        with st.expander("Export"):
-            # Will be populated after data loads
-            pass
-
-    # ===== Clear cache on refresh or geo change =====
-    if refresh or st.session_state.get("_last_geo") != selected_geo:
-        st.cache_data.clear()
-        st.session_state["_last_geo"] = selected_geo
-
-    # ===== Tabs =====
-    tab_niche, tab_daily, tab_social, tab_community, tab_errors = st.tabs([
-        "Niche Research",
-        "Daily Trends",
-        "Social Media",
-        "Community & News",
-        "System Health",
-    ])
-
-    # ==================== TAB 1: Niche Research ====================
-    with tab_niche:
-        with st.spinner(f"Loading {selected_niche} trends for {selected_country}..."):
-            df = api.get_trends(geo=selected_geo, niche_name=selected_niche)
-
-        if df.empty:
-            st.warning(f"No trends found for **{selected_niche}** in **{selected_country}**. "
-                       "Run the scraper to populate data.")
-        else:
-            _kpi_row(df)
-            st.divider()
-
-            # Filter out Google Regions for the main table
-            topics_df = df.copy()
-            if "platform" in topics_df.columns:
-                topics_df = topics_df[topics_df["platform"].apply(
-                    lambda x: x != "Google Regions" and not (isinstance(x, list) and x == ["Google Regions"])
-                )]
-            if selected_geo != "Global" and "geo" in topics_df.columns:
-                topics_df = topics_df[topics_df["geo"].apply(
-                    lambda x: x != "Global" and x != "" and not (isinstance(x, list) and "Global" in x)
-                )]
-
-            topic_col = "aggregated_topic" if "aggregated_topic" in topics_df.columns else "topic"
-            cols = [topic_col, "platform", "growth", "sentiment", "virality_score"]
-            for opt in ("geo", "keyword", "url"):
-                if opt in topics_df.columns:
-                    cols.append(opt)
-
-            st.subheader("Trending Topics")
-            _display_table(topics_df, cols, col_config={
-                "url": st.column_config.LinkColumn("Source"),
-                "growth": st.column_config.NumberColumn("Growth", format="%.0f"),
-                "virality_score": st.column_config.NumberColumn("Virality", format="%.1f"),
-                "sentiment": st.column_config.NumberColumn("Sentiment", format="%.2f"),
-            })
-
-            # Charts
-            col_a, col_b = st.columns(2)
-            with col_a:
-                chart_df = topics_df.head(12).copy()
-                if not chart_df.empty:
-                    fig = px.treemap(
-                        chart_df, path=[topic_col], values="virality_score",
-                        color="virality_score", color_continuous_scale="YlOrRd",
-                        title="Virality Treemap",
-                    )
-                    _apply_layout(fig, height=380)
-                    st.plotly_chart(fig, use_container_width=True)
-
-            with col_b:
-                chart_df2 = topics_df.head(12).copy()
-                chart_df2 = _flatten_list_col(chart_df2, "platform")
-                if not chart_df2.empty:
-                    fig2 = px.bar(
-                        chart_df2, x=topic_col, y="growth", color="platform",
-                        title="Growth by Platform",
-                    )
-                    _apply_layout(fig2, height=380, xaxis_tickangle=-45)
-                    st.plotly_chart(fig2, use_container_width=True)
-
-    # ==================== TAB 2: Daily Trends ====================
-    with tab_daily:
-        effective_geo = selected_geo if selected_geo != "Global" else "US"
-        display_geo = selected_country if selected_geo != "Global" else "United States (default)"
-
-        col_ctrl, col_data = st.columns([1, 5])
-        with col_ctrl:
-            trend_type = st.radio("Type", ["daily", "realtime"], index=0)
-            if st.button("Refresh", key="refresh_daily"):
-                st.cache_data.clear()
-
-        with st.spinner(f"Fetching {trend_type} trends for {display_geo}..."):
-            daily_df = api.get_trending_now(geo=effective_geo, trend_type=trend_type)
-
-        with col_data:
-            if daily_df.empty:
-                st.info("No daily trends found. The scraper might be running or blocked.")
-            else:
-                _kpi_row(daily_df)
-                _display_table(daily_df, ["topic", "growth", "virality_score", "url"], col_config={
-                    "url": st.column_config.LinkColumn("Link"),
-                    "growth": "Traffic",
-                })
-
-        if not daily_df.empty:
-            fig_d = px.bar(
-                daily_df.head(15), x="topic", y="growth",
-                color="virality_score", color_continuous_scale="Viridis",
-                title=f"Top {trend_type.capitalize()} Trends — {display_geo}",
-            )
-            _apply_layout(fig_d, height=380, xaxis_tickangle=-45)
-            st.plotly_chart(fig_d, use_container_width=True)
-
-    # ==================== TAB 3: Social Media ====================
-    with tab_social:
-        platform_choice = st.radio(
-            "Platform", ["X (Twitter)", "Threads", "Instagram"], horizontal=True
-        )
-        platform_map = {"X (Twitter)": "X", "Threads": "Threads", "Instagram": "Instagram"}
-        platform_key = platform_map[platform_choice]
-
-        if st.button("Refresh", key="refresh_social"):
-            st.cache_data.clear()
-
-        with st.spinner(f"Fetching {platform_key} trends for {selected_niche}..."):
-            social_df = api.get_social_trends(platform=platform_key, niche_name=selected_niche, geo=selected_geo)
-
-        if social_df.empty:
-            st.info(f"No {platform_key} trends found for **{selected_niche}**. Run the scraper to populate data.")
-        else:
-            _kpi_row(social_df)
-            data_cols = ["topic", "replies" if platform_key == "Threads" else "posts",
-                         "growth", "virality_score", "url"]
-            _display_table(social_df, data_cols, col_config={
-                "url": st.column_config.LinkColumn("Source"),
-                "growth": "Engagement",
-            })
-
-            fig_s = px.bar(
-                social_df.head(10), x="topic", y="virality_score",
-                color="virality_score", color_continuous_scale="Tealgrn",
-                title=f"{platform_choice} — Top Trends",
-            )
-            _apply_layout(fig_s, height=380, xaxis_tickangle=-45)
-            st.plotly_chart(fig_s, use_container_width=True)
-
-    # ==================== TAB 4: Community & News ====================
-    with tab_community:
-        source = st.radio("Source", ["Hacker News", "Reddit", "News"], horizontal=True)
-
-        if source == "Hacker News":
-            if st.button("Refresh", key="refresh_hn"):
-                st.cache_data.clear()
-            with st.spinner("Fetching Hacker News..."):
-                hn_df = api.get_hackernews_trends(niche_name=selected_niche, geo=selected_geo)
-            if hn_df.empty:
-                st.info("No Hacker News trends found.")
-            else:
-                _kpi_row(hn_df)
-                _display_table(hn_df, ["topic", "author", "growth", "engagement", "virality_score", "url"],
-                               col_config={"url": st.column_config.LinkColumn("Link"),
-                                           "growth": "Points", "engagement": "Comments", "author": "By"})
-                fig_hn = px.scatter(
-                    hn_df, x="growth", y="engagement", size="virality_score",
-                    color="virality_score", hover_name="topic",
-                    color_continuous_scale="Sunset", title="Points vs Comments",
-                )
-                _apply_layout(fig_hn, height=400)
-                st.plotly_chart(fig_hn, use_container_width=True)
-
-        elif source == "Reddit":
-            col_r1, col_r2 = st.columns([4, 1])
-            with col_r2:
-                subreddit = st.text_input("Subreddit", value="all")
-            if st.button("Refresh", key="refresh_reddit"):
-                st.cache_data.clear()
-            with st.spinner("Fetching Reddit..."):
-                reddit_df = api.get_reddit_trends(subreddit=subreddit, niche_name=selected_niche, geo=selected_geo)
-            if reddit_df.empty:
-                st.info("No Reddit trends found.")
-            else:
-                _kpi_row(reddit_df)
-                _display_table(reddit_df, ["topic", "subreddit", "growth", "engagement", "virality_score", "url"],
-                               col_config={"url": st.column_config.LinkColumn("Link"),
-                                           "growth": "Score", "engagement": "Comments"})
-                fig_r = px.scatter(
-                    reddit_df, x="growth", y="engagement", size="virality_score",
-                    color="virality_score", hover_name="topic",
-                    color_continuous_scale="Bluered", title=f"r/{subreddit} — Score vs Comments",
-                )
-                _apply_layout(fig_r, height=400)
-                st.plotly_chart(fig_r, use_container_width=True)
-
-        elif source == "News":
-            news_query = st.text_input("Query", value=selected_niche or "Health")
-            if st.button("Refresh", key="refresh_news"):
-                st.cache_data.clear()
-            with st.spinner("Fetching News..."):
-                news_df = api.get_news_trends(query=news_query, niche_name=selected_niche, geo=selected_geo)
-            if news_df.empty:
-                st.info("No news trends found.")
-            else:
-                _kpi_row(news_df)
-                _display_table(news_df, ["topic", "source", "virality_score", "url"],
-                               col_config={"url": st.column_config.LinkColumn("Article"), "source": "Source"})
-
-    # ==================== TAB 5: System Health ====================
-    with tab_errors:
-        st.subheader("Scrape Error Log")
-        if st.button("Refresh", key="refresh_errors"):
-            st.cache_data.clear()
-        errors_df = api.get_scrape_errors()
-        if errors_df.empty:
-            st.success("No scrape errors recorded — all systems healthy.")
-        else:
-            # Summary metrics
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.metric("Total Errors", len(errors_df))
-            with c2:
-                if "platform" in errors_df.columns:
-                    st.metric("Affected Platforms", errors_df["platform"].nunique())
-            with c3:
-                if "status" in errors_df.columns:
-                    most_common = errors_df["status"].mode()
-                    st.metric("Most Common Status", most_common.iloc[0] if not most_common.empty else "N/A")
-
-            st.dataframe(
-                errors_df,
-                column_config={
-                    "url": st.column_config.LinkColumn("Failed URL"),
-                    "status": "HTTP Status",
-                    "extracted_at": "Timestamp",
-                },
-                use_container_width=True, hide_index=True, height=400,
-            )
-
-            # Error distribution chart
-            if "platform" in errors_df.columns:
-                fig_err = px.histogram(errors_df, x="platform", color="status",
-                                       title="Errors by Platform")
-                _apply_layout(fig_err, height=300)
-                st.plotly_chart(fig_err, use_container_width=True)
-
-    # ===== Sidebar export (after data is loaded) =====
-    with st.sidebar:
-        with st.expander("Export Data"):
-            if not df.empty:
-                csv = df.to_csv(index=False).encode("utf-8")
-                st.download_button("Download CSV", data=csv, file_name="trends.csv", mime="text/csv",
-                                   use_container_width=True)
-                json_data = df.to_json(orient="records")
-                st.download_button("Download JSON", data=json_data, file_name="trends.json",
-                                   mime="application/json", use_container_width=True)
-            else:
+                    st.caption("No data to export.")
+            except Exception:
                 st.caption("No data to export.")
+
+
+    # Footer
+    _render_footer()
 
 
 if __name__ == "__main__":

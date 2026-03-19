@@ -3,7 +3,10 @@ import urllib.parse
 
 import scrapy
 
-from ..items import GoogleTrendItem, ScrapeErrorItem
+try:
+    from ..items import GoogleTrendsItem, ScrapeErrorItem
+except ImportError:
+    from google_trends.items import GoogleTrendsItem, ScrapeErrorItem
 
 
 class GoogleTrendsSpider(scrapy.Spider):
@@ -72,7 +75,7 @@ class GoogleTrendsSpider(scrapy.Spider):
             url=url,
             status=status,
             reason=reason,
-            extracted_at=datetime.now().isoformat(),
+            extracted_at=datetime.now(),
         )
 
     def handle_error(self, failure):
@@ -311,7 +314,7 @@ class GoogleTrendsSpider(scrapy.Spider):
                         }
                     )
 
-        yield GoogleTrendItem(
+        yield GoogleTrendsItem(
             keyword=response.meta.get("keyword") or ", ".join(self.keywords),
             geo=response.meta.get("geo", self.geo),
             time_range=response.meta.get("timeframe", self.timeframe),
@@ -341,3 +344,8 @@ class GoogleTrendsSpider(scrapy.Spider):
                 item.get("reason"),
                 item.get("url"),
             )
+
+
+if __name__ == "__main__":
+    from run_spider import run
+    run(GoogleTrendsSpider)

@@ -1,0 +1,22 @@
+# Copy this file to terraform.tfvars and fill in the values.
+# Do NOT commit terraform.tfvars to version control.
+
+location            = "West Europe"
+resource_group_name = "trends-research-rg"
+sql_server_name     = "gb-ads-sql-server"
+sql_database_name   = "Trends_DB"
+sql_admin_user      = "CloudSAe0108f5f"
+sql_admin_password  = "CHANGE_ME"
+
+# Azure AD admin (optional – leave empty to skip)
+aad_admin_login     = ""
+aad_admin_object_id = ""
+
+# Serverless Gen5 settings
+sql_sku_name         = "GP_S_Gen5_1"
+sql_max_size_gb      = 32
+sql_auto_pause_delay = 60
+sql_min_capacity     = 0.5
+
+# Developer firewall rule (optional – set your public IP)
+dev_ip_address = ""
