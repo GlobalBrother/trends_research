@@ -1,7 +1,7 @@
 version: "3.9"
 
 services:
-  api:
+  app:
     build:
       context: .
       dockerfile: Dockerfile.api
@@ -16,22 +16,9 @@ services:
       - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
       - AZURE_TENANT_ID=${AZURE_TENANT_ID}
     restart: unless-stopped
-
-  dashboard:
-    build:
-      context: .
-      dockerfile: Dockerfile.dashboard
-    ports:
-      - "8501:8501"
-    env_file:
-      - .env
-    environment:
-      - BACKEND_URL=http://api:8000
-      - AZURE_SQL_CONNECTION_STRING=${AZURE_SQL_CONNECTION_STRING}
-      - AZURE_SQL_DRIVER=ODBC Driver 18 for SQL Server
-      - AZURE_CLIENT_ID=${AZURE_CLIENT_ID}
-      - AZURE_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
-      - AZURE_TENANT_ID=${AZURE_TENANT_ID}
-    depends_on:
-      - api
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s

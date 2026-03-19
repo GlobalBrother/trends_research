@@ -1,11 +1,36 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Stage 1: Build the React frontend
+# ──────────────────────────────────────────────────────────────────────────────
+FROM node:22-slim AS frontend-build
+
+WORKDIR /frontend
+
+# Install pnpm
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+# Install dependencies first (cache layer)
+COPY frontend/package.json frontend/pnpm-lock.yaml* ./
+RUN pnpm install --frozen-lockfile || pnpm install
+
+# Copy source and build
+COPY frontend/ ./
+RUN pnpm build
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Stage 2: Python API + built frontend
+# ──────────────────────────────────────────────────────────────────────────────
 FROM python:3.11-slim
 
 WORKDIR /app
 
 # Install system dependencies + ODBC Driver 18 for SQL Server
-RUN apt-get update && apt-get install -y --no-install-recommends gcc curl gnupg apt-transport-https && \
-    curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg && \
-    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" > /etc/apt/sources.list.d/mssql-release.list && \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc curl gnupg apt-transport-https && \
+    curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | \
+        gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg && \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] \
+        https://packages.microsoft.com/debian/12/prod bookworm main" \
+        > /etc/apt/sources.list.d/mssql-release.list && \
     apt-get update && \
     ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc-dev && \
     rm -rf /var/lib/apt/lists/*
@@ -13,10 +38,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc curl gnupg 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt gunicorn
 
+# Copy the full Python project
 COPY . .
+
+# Copy the built React frontend into the expected location
+COPY --from=frontend-build /frontend/dist /app/frontend/dist
 
 ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8000
 
-CMD ["gunicorn", "src.api.main:app", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--workers", "2", "--timeout", "120"]
+CMD ["gunicorn", "src.api.main:app", \
+     "-k", "uvicorn.workers.UvicornWorker", \
+     "--bind", "0.0.0.0:8000", \
+     "--workers", "2", \
+     "--timeout", "120"]
