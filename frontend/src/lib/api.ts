@@ -46,13 +46,32 @@ export interface ContentRow {
 
 export interface AdsInsightRow {
   hookd_id?: string;
+  external_id?: string;
   title?: string;
   body?: string;
   platform?: string;
-  brand_name?: string;
-  performance_score?: number;
+  display_format?: string;
+  landing_page?: string;
+  cta_type?: string;
+  cta_text?: string;
+  start_date?: string;
+  end_date?: string;
   days_active?: number;
+  active_in_library?: number;
+  performance_score?: number;
+  performance_score_title?: string;
+  used_count?: number;
+  age_audience_min?: number;
+  age_audience_max?: number;
+  gender_audience?: string;
+  eu_total_reach?: number;
+  brand_name?: string;
+  brand_logo_url?: string;
+  brand_active_ads?: number;
+  media?: string;
+  share_url?: string;
   search_keyword?: string;
+  extracted_at?: string;
   [key: string]: unknown;
 }
 
