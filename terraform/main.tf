@@ -17,20 +17,32 @@ terraform {
 }
 
 provider "azurerm" {
-  features {}
+  features {
+    key_vault {
+      purge_soft_delete_on_destroy    = true
+      recover_soft_deleted_key_vaults = true
+    }
+  }
 }
 
+# Current client config (for Key Vault access policies)
+data "azurerm_client_config" "current" {}
+
 # ---------------------------------------------------------------------------
-# Resource Group
+# Resource Group (existing — managed externally, imported into state)
 # ---------------------------------------------------------------------------
 resource "azurerm_resource_group" "main" {
   name     = var.resource_group_name
   location = var.location
   tags     = var.tags
+
+  lifecycle {
+    ignore_changes = [name, location]
+  }
 }
 
 # ---------------------------------------------------------------------------
-# SQL Server
+# SQL Server (existing — preserve AAD admin, identity, and password)
 # ---------------------------------------------------------------------------
 resource "azurerm_mssql_server" "main" {
   name                         = var.sql_server_name
@@ -49,10 +61,20 @@ resource "azurerm_mssql_server" "main" {
       object_id      = var.aad_admin_object_id
     }
   }
+
+  # Preserve existing server config that we don't manage
+  lifecycle {
+    ignore_changes = [
+      administrator_login_password,
+      azuread_administrator,
+      identity,
+      tags,
+    ]
+  }
 }
 
 # ---------------------------------------------------------------------------
-# SQL Database
+# SQL Database (existing — preserve current SKU and settings)
 # ---------------------------------------------------------------------------
 resource "azurerm_mssql_database" "trends" {
   name      = var.sql_database_name
@@ -70,6 +92,16 @@ resource "azurerm_mssql_database" "trends" {
   }
 
   tags = var.tags
+
+  # Preserve existing database config
+  lifecycle {
+    ignore_changes = [
+      sku_name,
+      max_size_gb,
+      storage_account_type,
+      tags,
+    ]
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -94,23 +126,146 @@ resource "azurerm_mssql_firewall_rule" "allow_dev" {
 }
 
 # ---------------------------------------------------------------------------
-# Schema Deployment (runs azure_schema.sql after DB creation)
+# Schema Deployment
 # ---------------------------------------------------------------------------
-resource "terraform_data" "schema_deploy" {
-  depends_on = [azurerm_mssql_database.trends]
+# NOTE: Schema is managed by the app's startup migration (src/db/migrate.py).
+# The azure_schema.sql provisioner has been removed — the ORM handles this
+# automatically when the app starts via Base.metadata.create_all().
 
-  triggers_replace = [
-    filesha256("${path.module}/../src/db/azure_schema.sql")
-  ]
+# ---------------------------------------------------------------------------
+# Azure Container Registry
+# ---------------------------------------------------------------------------
+resource "azurerm_container_registry" "acr" {
+  name                = var.acr_name
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  sku                 = "Basic"
+  admin_enabled       = true
+  tags                = var.tags
+}
 
-  provisioner "local-exec" {
-    command = <<-EOT
-      sqlcmd -S ${azurerm_mssql_server.main.fully_qualified_domain_name} ^
-             -d ${azurerm_mssql_database.trends.name} ^
-             -U ${var.sql_admin_user} ^
-             -P "${var.sql_admin_password}" ^
-             -i "${path.module}/../src/db/azure_schema.sql" ^
-             -N -C
-    EOT
+# ---------------------------------------------------------------------------
+# User-Assigned Managed Identity
+# ---------------------------------------------------------------------------
+resource "azurerm_user_assigned_identity" "app" {
+  name                = var.managed_identity_name
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  tags                = var.tags
+}
+
+# ---------------------------------------------------------------------------
+# Azure Key Vault
+# ---------------------------------------------------------------------------
+resource "azurerm_key_vault" "main" {
+  name                       = var.key_vault_name
+  location                   = azurerm_resource_group.main.location
+  resource_group_name        = azurerm_resource_group.main.name
+  tenant_id                  = data.azurerm_client_config.current.tenant_id
+  sku_name                   = "standard"
+  soft_delete_retention_days = 7
+  purge_protection_enabled   = false
+  tags                       = var.tags
+
+  # Access policy for the Terraform runner / your account
+  access_policy {
+    tenant_id = data.azurerm_client_config.current.tenant_id
+    object_id = data.azurerm_client_config.current.object_id
+
+    secret_permissions = ["Get", "List", "Set", "Delete", "Recover", "Backup", "Restore", "Purge"]
+  }
+
+  # Access policy for the App's Managed Identity (read-only)
+  access_policy {
+    tenant_id = data.azurerm_client_config.current.tenant_id
+    object_id = azurerm_user_assigned_identity.app.principal_id
+
+    secret_permissions = ["Get", "List"]
   }
 }
+
+# Store secrets in Key Vault
+# nonsensitive() is required because Terraform does not allow sensitive values
+# as for_each keys. The secret *values* remain protected — only the map keys
+# (e.g. "AZURE-SQL-SERVER") are exposed as resource instance addresses.
+resource "azurerm_key_vault_secret" "app_secrets" {
+  for_each     = nonsensitive(var.app_secrets)
+  name         = each.key
+  value        = each.value
+  key_vault_id = azurerm_key_vault.main.id
+
+  depends_on = [azurerm_key_vault.main]
+}
+
+# ---------------------------------------------------------------------------
+# App Service Plan (Linux)
+# ---------------------------------------------------------------------------
+resource "azurerm_service_plan" "main" {
+  name                = var.app_service_plan_name
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  os_type             = "Linux"
+  sku_name            = var.app_service_sku
+  tags                = var.tags
+}
+
+# ---------------------------------------------------------------------------
+# App Service (Web App for Containers)
+# ---------------------------------------------------------------------------
+resource "azurerm_linux_web_app" "main" {
+  name                = var.app_service_name
+  resource_group_name = azurerm_resource_group.main.name
+  location            = azurerm_resource_group.main.location
+  service_plan_id     = azurerm_service_plan.main.id
+
+  identity {
+    type         = "SystemAssigned, UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.app.id]
+  }
+
+  site_config {
+    always_on = var.app_service_sku != "F1"
+
+    application_stack {
+      docker_image_name        = "${var.docker_image_name}:latest"
+      docker_registry_url      = "https://${azurerm_container_registry.acr.login_server}"
+      docker_registry_username = azurerm_container_registry.acr.admin_username
+      docker_registry_password = azurerm_container_registry.acr.admin_password
+    }
+
+    health_check_path = "/health"
+  }
+
+  app_settings = {
+    # Key Vault — the app reads all secrets from here at startup
+    "KEY_VAULT_NAME"             = azurerm_key_vault.main.name
+    "MANAGED_IDENTITY_CLIENT_ID" = azurerm_user_assigned_identity.app.client_id
+
+    # App configuration
+    "WEBSITES_PORT"                       = "8000"
+    "WEBSITES_ENABLE_APP_SERVICE_STORAGE" = "false"
+
+    # Docker registry
+    "DOCKER_REGISTRY_SERVER_URL"      = "https://${azurerm_container_registry.acr.login_server}"
+    "DOCKER_REGISTRY_SERVER_USERNAME" = azurerm_container_registry.acr.admin_username
+    "DOCKER_REGISTRY_SERVER_PASSWORD" = azurerm_container_registry.acr.admin_password
+  }
+
+  logs {
+    application_logs {
+      file_system_level = "Information"
+    }
+    http_logs {
+      file_system {
+        retention_in_days = 7
+        retention_in_mb   = 35
+      }
+    }
+  }
+
+  tags = var.tags
+}
+
+# NOTE: App Service → SQL Server connectivity is already covered by the
+# "AllowAzureServices" firewall rule (0.0.0.0–0.0.0.0) defined above,
+# which permits all Azure-internal traffic. No per-IP rules are needed.

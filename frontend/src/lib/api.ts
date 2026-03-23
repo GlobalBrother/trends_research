@@ -65,14 +65,42 @@ export interface AdsInsightRow {
   age_audience_max?: number;
   gender_audience?: string;
   eu_total_reach?: number;
+  ad_spend_range_score?: number;
+  ad_spend_range_score_title?: string;
   brand_name?: string;
   brand_logo_url?: string;
   brand_active_ads?: number;
   media?: string;
+  ad_cards?: string;
   share_url?: string;
   search_keyword?: string;
   extracted_at?: string;
   [key: string]: unknown;
+}
+
+export interface AdsInsightParams {
+  niche_name?: string;
+  geo?: string;
+  limit?: number;
+  offset?: number;
+  date_from?: string;
+  date_to?: string;
+  platform_filter?: string;
+  format_filter?: string;
+  keyword_filter?: string;
+  brand_filter?: string;
+  perf_filter?: string;
+  sort_by?: string;
+  sort_dir?: string;
+}
+
+export interface AdsInsightFilters {
+  platforms: string[];
+  formats: string[];
+  keywords: string[];
+  performance_tiers: string[];
+  brands: string[];
+  date_range: { min: string | null; max: string | null };
 }
 
 export interface TokenUsageRow {
@@ -176,8 +204,12 @@ export const getThreadsPosts = (params?: { niche_name?: string; geo?: string; li
   client.get<{ data: ContentRow[] }>("/threads_posts", { params });
 
 /** Ads insight */
-export const getAdsInsight = (params?: { niche_name?: string; geo?: string; limit?: number }) =>
-  client.get<{ data: AdsInsightRow[] }>("/ads_insight", { params });
+export const getAdsInsight = (params?: AdsInsightParams) =>
+  client.get<{ data: AdsInsightRow[]; total: number }>("/ads_insight", { params });
+
+/** Ads insight filter options */
+export const getAdsInsightFilters = () =>
+  client.get<AdsInsightFilters>("/ads_insight/filters");
 
 /** Trigger scraping */
 export const triggerScrape = (body: ScrapeRequest) =>
@@ -222,5 +254,103 @@ export const triggerMigration = () =>
 
 export const triggerDiagnose = () =>
   client.get<{ checks: { name: string; passed: boolean; detail?: string }[] }>("/admin/azure/diagnose");
+
+// ─── My Brands ──────────────────────────────────────────────────────────────
+
+export interface MyBrandRow {
+  id: number;
+  brand_name: string;
+  brand_external_id?: string;
+  brand_logo_url?: string;
+  brand_active_ads?: number;
+  added_at?: string;
+}
+
+export interface MyBrandAdsParams {
+  limit?: number;
+  offset?: number;
+  brand_name?: string;
+  date_from?: string;
+  date_to?: string;
+  platform_filter?: string;
+  sort_by?: string;
+  sort_dir?: string;
+}
+
+/** List tracked brands */
+export const getMyBrands = () =>
+  client.get<{ data: MyBrandRow[] }>("/my_brands");
+
+/** Add a brand to track */
+export const addMyBrand = (body: {
+  brand_name: string;
+  brand_external_id?: string;
+  brand_logo_url?: string;
+  brand_active_ads?: number;
+}) => client.post<{ message: string; id: number }>("/my_brands", body);
+
+/** Remove a tracked brand */
+export const removeMyBrand = (brandId: number) =>
+  client.delete("/my_brands/" + brandId);
+
+/** Get ads for tracked brands */
+export const getMyBrandAds = (params?: MyBrandAdsParams) =>
+  client.get<{ data: AdsInsightRow[]; total: number; tracked_brands: string[] }>("/my_brands/ads", { params });
+
+/** Refresh ads for all tracked brands */
+export const refreshMyBrandAds = () =>
+  client.post<{ message: string }>("/my_brands/refresh");
+
+/** Search brands via GetHooked */
+export const searchBrands = (query: string) =>
+  client.get<{ data: { external_id: string; name: string; logo_url?: string; active_ads?: number }[] }>("/search_brands", { params: { query } });
+
+// ─── Auth ──────────────────────────────────────────────────────────────────
+
+export interface AuthUser {
+  email: string;
+  role: string;
+  created_at?: string;
+}
+
+/** Request OTP for login */
+export const requestOtp = (email: string) =>
+  client.post<{ message: string; email: string }>("/auth/request_otp", null, { params: { email } });
+
+/** Verify OTP and get auth token */
+export const verifyOtp = (email: string, code: string) =>
+  client.post<{ message: string; email: string; role: string; token: string }>("/auth/verify_otp", null, { params: { email, code } });
+
+/** Validate an existing auth token */
+export const validateToken = (token: string) =>
+  client.get<{ email: string; role: string }>("/auth/validate_token", { params: { token } });
+
+/** List all whitelisted users */
+export const listUsers = () =>
+  client.get<AuthUser[]>("/auth/users");
+
+/** Add a whitelisted user */
+export const addUser = (email: string, role: string = "trends") =>
+  client.post<{ message: string; email: string; role: string }>("/auth/users", { email, role });
+
+/** Update a user's role */
+export const updateUserRole = (email: string, role: string) =>
+  client.put<{ message: string; email: string; role: string }>("/auth/users", null, { params: { email, role } });
+
+/** Delete a whitelisted user */
+export const deleteUser = (email: string) =>
+  client.delete<{ message: string; email: string }>("/auth/users", { params: { email } });
+
+// ─── Import Tokens ─────────────────────────────────────────────────────────
+
+/** Import Google Trends JSON tokens file */
+export const importTokens = (file: File, geo: string = "US") => {
+  const formData = new FormData();
+  formData.append("file", file);
+  return client.post<{ message: string }>("/import_tokens", formData, {
+    params: { geo },
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+};
 
 export default client;

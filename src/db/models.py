@@ -281,6 +281,23 @@ class Niche(Base):
     )
 
 
+class MyBrand(Base):
+    """Brands the user is tracking via GetHooked Brand Spy."""
+    __tablename__ = "my_brands"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    brand_name = Column(Text, nullable=False)
+    brand_external_id = Column(Text)
+    brand_logo_url = Column(Text)
+    brand_active_ads = Column(Integer, default=0)
+    added_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_mybrand_name", "brand_name"),
+        Index("idx_mybrand_external", "brand_external_id"),
+    )
+
+
 class AdsInsight(Base):
     __tablename__ = "ads_insight"
 

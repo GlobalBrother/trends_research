@@ -1,6 +1,7 @@
 /*
  * Trend Explorer — Main research interface
  * Fetches real data from /trends, /niches, /all_trends, and platform-specific endpoints.
+ * Now includes Platform Content tabs for YouTube, TikTok, Instagram, Reddit, Threads.
  */
 import { useState, useMemo, useCallback } from "react";
 import {
@@ -19,6 +20,11 @@ import {
   Globe,
   Loader2,
   Play,
+  ExternalLink,
+  Heart,
+  MessageCircle,
+  Share2,
+  Eye,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -34,6 +40,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   LineChart,
   Line,
@@ -50,7 +57,17 @@ import {
   getTrends,
   getNiches,
   triggerScrape,
+  getYoutubeVideos,
+  getTiktokVideos,
+  getInstagramPosts,
+  getRedditPosts,
+  getThreadsPosts,
+  getYoutubeTrends,
+  getHackerNewsTrends,
+  getRedditTrends,
+  getNewsTrends,
   type TrendRow,
+  type ContentRow,
   type ScrapeRequest,
 } from "@/lib/api";
 
@@ -115,6 +132,27 @@ function getPlatformBreakdown(rows: TrendRow[]) {
     }));
 }
 
+function formatNumber(n?: number): string {
+  if (n == null) return "\u2014";
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
+  return String(n);
+}
+
+function timeAgo(dateStr?: string): string {
+  if (!dateStr) return "\u2014";
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return dateStr;
+  const diff = Date.now() - d.getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  const days = Math.floor(hrs / 24);
+  if (days < 30) return `${days}d ago`;
+  return d.toLocaleDateString("en", { month: "short", day: "numeric" });
+}
+
 const PLATFORM_COLORS = [
   "oklch(0.50 0.20 260)",
   "oklch(0.60 0.22 20)",
@@ -135,6 +173,324 @@ const SCRAPER_OPTIONS = [
   { value: "Instagram", label: "Instagram" },
   { value: "Threads", label: "Threads" },
 ];
+
+/* ── Platform Content Card ──────────────────────────────────────────────── */
+
+/** Normalize platform-specific field names back to common names for display */
+function normalizeContentItem(item: ContentRow, platform: string) {
+  const r = { ...item } as Record<string, unknown>;
+  // Text / title
+  const text = r.title ?? r.description ?? r.caption ?? r.text_content ?? "";
+  // Author
+  const author = r.channel_title ?? r.author_name ?? r.author ?? r.username ?? "";
+  // Engagement
+  const views = Number(r.view_count ?? r.play_count ?? r.views ?? 0);
+  const likes = Number(r.like_count ?? r.digg_count ?? r.score ?? r.likes ?? 0);
+  const comments = Number(r.comment_count ?? r.num_comments ?? r.reply_count ?? r.comments ?? 0);
+  const shares = Number(r.share_count ?? r.repost_count ?? r.shares ?? 0);
+  const saves = Number(r.save_count ?? r.collect_count ?? r.quote_count ?? r.saves ?? 0);
+  const engagementTotal = Number(r.engagement_total ?? 0) || (views + likes + comments + shares + saves);
+  // Time
+  const postedAt = String(r.published ?? r.created ?? r.posted ?? r.created_at ?? "");
+  // Topic / category
+  const topic = String(r.subreddit ?? r.keyword ?? "");
+  // Follower count
+  const followers = Number(r.follower_count ?? 0);
+  const isVerified = Boolean(r.is_verified);
+  const profilePic = String(r.profile_pic_url ?? "");
+  const fullName = String(r.full_name ?? "");
+  const url = String(r.url ?? "");
+  const mediaType = String(r.media_type ?? "");
+
+  return {
+    text: String(text),
+    author: String(author),
+    fullName,
+    views,
+    likes,
+    comments,
+    shares,
+    saves,
+    engagementTotal,
+    postedAt,
+    topic,
+    followers,
+    isVerified,
+    profilePic,
+    url,
+    mediaType,
+  };
+}
+
+function ContentCard({ item, platform }: { item: ContentRow; platform: string }) {
+  const n = normalizeContentItem(item, platform);
+  const truncated = n.text.length > 200 ? n.text.slice(0, 200) + "\u2026" : n.text || "\u2014";
+
+  // Engagement rate estimate (likes+comments / views) if views > 0
+  const engRate = n.views > 0 ? ((n.likes + n.comments) / n.views) * 100 : 0;
+  const engLabel = engRate > 10 ? "Hot" : engRate > 5 ? "High" : engRate > 1 ? "Good" : n.views > 0 ? "Low" : null;
+  const engColor = engRate > 10
+    ? "text-red-500 bg-red-500/10"
+    : engRate > 5
+    ? "text-orange-500 bg-orange-500/10"
+    : engRate > 1
+    ? "text-green-500 bg-green-500/10"
+    : "text-muted-foreground bg-muted";
+
+  return (
+    <div className="bg-card border border-border p-3 space-y-2.5 hover:border-primary/30 transition-colors rounded-md">
+      {/* Header: author + verified + topic + time */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2 min-w-0">
+          {n.profilePic && (
+            <img src={n.profilePic} alt="" className="w-5 h-5 rounded-full object-cover shrink-0" />
+          )}
+          <div className="flex items-center gap-1 min-w-0">
+            {n.author && (
+              <span className="text-xs font-medium text-primary truncate">
+                @{n.author}
+              </span>
+            )}
+            {n.isVerified && (
+              <Shield className="w-3 h-3 text-blue-500 shrink-0" />
+            )}
+          </div>
+          {n.followers > 0 && (
+            <span className="text-[9px] text-muted-foreground shrink-0">
+              {formatNumber(n.followers)} followers
+            </span>
+          )}
+        </div>
+        <span className="text-[10px] text-muted-foreground shrink-0 ml-2">{timeAgo(n.postedAt)}</span>
+      </div>
+
+      {/* Topic tag */}
+      {n.topic && (
+        <span className="inline-block text-[10px] px-1.5 py-0.5 bg-muted rounded text-muted-foreground">
+          {platform === "reddit" ? `r/${n.topic}` : n.topic}
+        </span>
+      )}
+
+      {/* Content text */}
+      <p className="text-xs leading-relaxed">{truncated}</p>
+
+      {/* Engagement stats row */}
+      <div className="flex items-center gap-3 text-[10px] text-muted-foreground flex-wrap">
+        {n.views > 0 && (
+          <span className="flex items-center gap-1">
+            <Eye className="w-3 h-3" /> {formatNumber(n.views)}
+          </span>
+        )}
+        {n.likes > 0 && (
+          <span className="flex items-center gap-1">
+            <Heart className="w-3 h-3" /> {formatNumber(n.likes)}
+          </span>
+        )}
+        {n.comments > 0 && (
+          <span className="flex items-center gap-1">
+            <MessageCircle className="w-3 h-3" /> {formatNumber(n.comments)}
+          </span>
+        )}
+        {n.shares > 0 && (
+          <span className="flex items-center gap-1">
+            <Share2 className="w-3 h-3" /> {formatNumber(n.shares)}
+          </span>
+        )}
+        {n.saves > 0 && (
+          <span className="flex items-center gap-1">
+            <Sparkles className="w-3 h-3" /> {formatNumber(n.saves)} saved
+          </span>
+        )}
+      </div>
+
+      {/* Insights row: engagement rate + total + link */}
+      <div className="flex items-center justify-between pt-1 border-t border-border/50">
+        <div className="flex items-center gap-2">
+          {n.engagementTotal > 0 && (
+            <span className="text-[10px] font-mono text-muted-foreground">
+              {formatNumber(n.engagementTotal)} total
+            </span>
+          )}
+          {engLabel && (
+            <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded ${engColor}`}>
+              {engLabel} {engRate > 0 ? `(${engRate.toFixed(1)}%)` : ""}
+            </span>
+          )}
+          {n.mediaType && n.mediaType !== "unknown" && (
+            <span className="text-[9px] px-1.5 py-0.5 bg-muted rounded text-muted-foreground">
+              {n.mediaType}
+            </span>
+          )}
+        </div>
+        {n.url && (
+          <a
+            href={n.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-1 text-[10px] text-primary hover:underline"
+          >
+            <ExternalLink className="w-3 h-3" /> View
+          </a>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ── Platform Content Section ───────────────────────────────────────────── */
+
+function PlatformContentSection({
+  selectedNiche,
+  selectedGeo,
+}: {
+  selectedNiche: string;
+  selectedGeo: string;
+}) {
+  const [activeTab, setActiveTab] = useState("youtube");
+  const [contentLimit, setContentLimit] = useState(50);
+
+  const nicheParam = selectedNiche !== "all-niches" ? selectedNiche : undefined;
+  const geoParam = selectedGeo !== "global" ? selectedGeo : undefined;
+
+  // Fetch content for each platform
+  const { data: ytData, loading: ytLoading } = useApi(
+    () => getYoutubeVideos({ niche_name: nicheParam, geo: geoParam, limit: contentLimit }),
+    [nicheParam, geoParam, contentLimit]
+  );
+  const { data: ttData, loading: ttLoading } = useApi(
+    () => getTiktokVideos({ niche_name: nicheParam, geo: geoParam, limit: contentLimit }),
+    [nicheParam, geoParam, contentLimit]
+  );
+  const { data: igData, loading: igLoading } = useApi(
+    () => getInstagramPosts({ niche_name: nicheParam, geo: geoParam, limit: contentLimit }),
+    [nicheParam, geoParam, contentLimit]
+  );
+  const { data: rdData, loading: rdLoading } = useApi(
+    () => getRedditPosts({ niche_name: nicheParam, geo: geoParam, limit: contentLimit }),
+    [nicheParam, geoParam, contentLimit]
+  );
+  const { data: thData, loading: thLoading } = useApi(
+    () => getThreadsPosts({ niche_name: nicheParam, geo: geoParam, limit: contentLimit }),
+    [nicheParam, geoParam, contentLimit]
+  );
+
+  // Fetch platform-specific trends
+  const { data: ytTrends, loading: ytTrendsLoading } = useApi(
+    () => getYoutubeTrends({ niche_name: nicheParam, geo: geoParam }),
+    [nicheParam, geoParam]
+  );
+  const { data: hnTrends, loading: hnTrendsLoading } = useApi(
+    () => getHackerNewsTrends({ niche_name: nicheParam, geo: geoParam }),
+    [nicheParam, geoParam]
+  );
+  const { data: rdTrends, loading: rdTrendsLoading } = useApi(
+    () => getRedditTrends({ niche_name: nicheParam, geo: geoParam }),
+    [nicheParam, geoParam]
+  );
+  const { data: newsTrends, loading: newsTrendsLoading } = useApi(
+    () => getNewsTrends({ niche_name: nicheParam, geo: geoParam }),
+    [nicheParam, geoParam]
+  );
+
+  const platformTabs = [
+    { id: "youtube", label: "YouTube", data: ytData?.data ?? [], loading: ytLoading, trends: ytTrends?.data ?? [], trendsLoading: ytTrendsLoading },
+    { id: "tiktok", label: "TikTok", data: ttData?.data ?? [], loading: ttLoading, trends: [], trendsLoading: false },
+    { id: "instagram", label: "Instagram", data: igData?.data ?? [], loading: igLoading, trends: [], trendsLoading: false },
+    { id: "reddit", label: "Reddit", data: rdData?.data ?? [], loading: rdLoading, trends: rdTrends?.data ?? [], trendsLoading: rdTrendsLoading },
+    { id: "threads", label: "Threads", data: thData?.data ?? [], loading: thLoading, trends: [], trendsLoading: false },
+    { id: "hackernews", label: "Hacker News", data: [], loading: false, trends: hnTrends?.data ?? [], trendsLoading: hnTrendsLoading },
+    { id: "news", label: "News", data: [], loading: false, trends: newsTrends?.data ?? [], trendsLoading: newsTrendsLoading },
+  ];
+
+  const active = platformTabs.find((t) => t.id === activeTab) ?? platformTabs[0];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-sm font-semibold">Platform Content & Trends</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Browse scraped content and trends from each platform.
+          </p>
+        </div>
+        <Select value={String(contentLimit)} onValueChange={(v) => setContentLimit(Number(v))}>
+          <SelectTrigger className="w-24 h-7 text-[10px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="25">25</SelectItem>
+            <SelectItem value="50">50</SelectItem>
+            <SelectItem value="100">100</SelectItem>
+            <SelectItem value="200">200</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <TabsList className="h-8 flex-wrap">
+          {platformTabs.map((tab) => (
+            <TabsTrigger key={tab.id} value={tab.id} className="text-[10px] gap-1 px-2">
+              {tab.label}
+              {(tab.data.length > 0 || tab.trends.length > 0) && (
+                <span className="ml-1 text-[9px] font-mono bg-primary/10 text-primary px-1 rounded">
+                  {tab.data.length + tab.trends.length}
+                </span>
+              )}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+
+        {platformTabs.map((tab) => (
+          <TabsContent key={tab.id} value={tab.id} className="space-y-3 mt-3">
+            {/* Platform trends summary */}
+            {tab.trends.length > 0 && (
+              <div className="bg-card border border-border p-3">
+                <h3 className="text-xs font-semibold mb-2 flex items-center gap-1.5">
+                  <TrendingUp className="w-3.5 h-3.5 text-primary" />
+                  {tab.label} Trending Topics
+                </h3>
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
+                  {tab.trends.slice(0, 10).map((t, i) => (
+                    <div
+                      key={i}
+                      className="flex items-center gap-2 text-xs p-2 bg-muted/30 rounded"
+                    >
+                      <span className="w-4 font-mono text-muted-foreground text-[10px]">{i + 1}</span>
+                      <span className="flex-1 truncate font-medium">{t.title || t.keyword || "\u2014"}</span>
+                      {t.virality_score != null && (
+                        <span className="font-mono text-primary text-[10px]">
+                          {Number(t.virality_score).toFixed(1)}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Platform content cards */}
+            {tab.loading || tab.trendsLoading ? (
+              <div className="flex items-center justify-center py-12 text-muted-foreground">
+                <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                <span className="text-sm">Loading {tab.label} content...</span>
+              </div>
+            ) : tab.data.length > 0 ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                {tab.data.map((item, i) => (
+                  <ContentCard key={item.external_id || i} item={item} platform={tab.id} />
+                ))}
+              </div>
+            ) : tab.trends.length === 0 ? (
+              <div className="text-center py-12 text-sm text-muted-foreground">
+                No {tab.label} content found. Try selecting a niche and running a scrape.
+              </div>
+            ) : null}
+          </TabsContent>
+        ))}
+      </Tabs>
+    </div>
+  );
+}
 
 /* ── component ───────────────────────────────────────────────────────────── */
 
@@ -202,7 +558,7 @@ export default function TrendExplorer() {
   const avgVirality =
     trends.length > 0
       ? (trends.reduce((s, r) => s + (r.virality_score ?? 0), 0) / trends.length).toFixed(1)
-      : "—";
+      : "\u2014";
   const uniqueKeywords = new Set(trends.map((r) => r.keyword).filter(Boolean)).size;
   const platformCount = new Set(trends.map((r) => r.platform).filter(Boolean)).size;
 
@@ -224,7 +580,7 @@ export default function TrendExplorer() {
             <Input
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
-              placeholder="Keyword or topic…"
+              placeholder="Keyword or topic\u2026"
               className="pl-8 h-8 text-sm"
             />
           </div>
@@ -307,7 +663,7 @@ export default function TrendExplorer() {
       {/* KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {[
-          { label: "Total Volume", value: totalVolume > 0 ? totalVolume.toLocaleString() : "—", icon: BarChart3, tip: "Sum of search volume across all trends" },
+          { label: "Total Volume", value: totalVolume > 0 ? totalVolume.toLocaleString() : "\u2014", icon: BarChart3, tip: "Sum of search volume across results" },
           { label: "Avg Virality", value: avgVirality, icon: TrendingUp, tip: "Average virality score across results" },
           { label: "Keywords", value: String(uniqueKeywords), icon: Shield, tip: "Unique keywords in current results" },
           { label: "Platforms", value: String(platformCount), icon: Globe, tip: "Number of platforms with data" },
@@ -492,10 +848,10 @@ export default function TrendExplorer() {
                   key={i}
                   className="flex items-center gap-2 text-xs py-1.5 border-b border-border/30 last:border-0"
                 >
-                  <span className="flex-1 truncate font-medium">{t.title || t.keyword || "—"}</span>
+                  <span className="flex-1 truncate font-medium">{t.title || t.keyword || "\u2014"}</span>
                   <span className="text-muted-foreground shrink-0">{t.platform}</span>
                   <span className="font-mono shrink-0">
-                    {t.virality_score != null ? Number(t.virality_score).toFixed(1) : "—"}
+                    {t.virality_score != null ? Number(t.virality_score).toFixed(1) : "\u2014"}
                   </span>
                 </div>
               ))
@@ -504,6 +860,11 @@ export default function TrendExplorer() {
             )}
           </div>
         </div>
+      </div>
+
+      {/* ── Platform Content Section ─────────────────────────────────────── */}
+      <div className="border-t border-border pt-4">
+        <PlatformContentSection selectedNiche={selectedNiche} selectedGeo={selectedGeo} />
       </div>
     </div>
   );

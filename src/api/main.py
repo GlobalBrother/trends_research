@@ -20,7 +20,40 @@ from pydantic import BaseModel
 from sqlalchemy import text, func
 from sqlalchemy.exc import IntegrityError
 
-load_dotenv()
+# ---------------------------------------------------------------------------
+# Secret loading: Key Vault (production) → .env (local development)
+# ---------------------------------------------------------------------------
+def _init_secrets():
+    """Load secrets from Azure Key Vault if KEY_VAULT_NAME is set,
+    otherwise fall back to the local .env file."""
+    kv_name = os.environ.get("KEY_VAULT_NAME")
+    if kv_name:
+        try:
+            from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
+            from azure.keyvault.secrets import SecretClient
+
+            mi_client_id = os.environ.get("MANAGED_IDENTITY_CLIENT_ID")
+            credential = (
+                ManagedIdentityCredential(client_id=mi_client_id)
+                if mi_client_id
+                else DefaultAzureCredential()
+            )
+            client = SecretClient(
+                vault_url=f"https://{kv_name}.vault.azure.net",
+                credential=credential,
+            )
+            for prop in client.list_properties_of_secrets():
+                secret = client.get_secret(prop.name)
+                # Key Vault names use hyphens; env vars use underscores
+                os.environ[secret.name.replace("-", "_")] = secret.value
+            print(f"Loaded secrets from Key Vault: {kv_name}")
+        except Exception as exc:
+            print(f"Key Vault load failed ({exc}), falling back to .env")
+            load_dotenv()
+    else:
+        load_dotenv()
+
+_init_secrets()
 
 # Ensure project root is on sys.path so `src.*` imports work in any environment (e.g. WSL).
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -35,7 +68,7 @@ from src.db.connection import get_engine, get_session, session_scope, get_sessio
 from src.db.sql_compat import get_platform_id, get_platform_name, insert_niche_if_not_exists, verify_otp
 from src.db.models import (
     Base, User, OtpCode, AuthToken, Niche, TokenUsage, ScrapeError as ScrapeErrorModel,
-    AdsInsight, Content, ContentMetric, Author, Platform, Trend,
+    AdsInsight, Content, ContentMetric, Author, Platform, Trend, MyBrand,
 )
 
 # Try to import GetHookdAI ads scraper
@@ -1154,8 +1187,28 @@ def get_threads_posts(
 def get_ads_insight(
     niche_name: Optional[str] = Query(None),
     geo: Optional[str] = Query(None),
-    limit: int = Query(500),
+    limit: int = Query(500, description="Max rows to return. Use 0 for all."),
+    offset: int = Query(0, description="Number of rows to skip (for pagination)."),
+    date_from: Optional[str] = Query(None, description="Filter ads with start_date >= this (YYYY-MM-DD)."),
+    date_to: Optional[str] = Query(None, description="Filter ads with start_date <= this (YYYY-MM-DD)."),
+    platform_filter: Optional[str] = Query(None, description="Filter by platform substring (e.g. FACEBOOK)."),
+    format_filter: Optional[str] = Query(None, description="Filter by display_format (e.g. VIDEO, IMAGE)."),
+    keyword_filter: Optional[str] = Query(None, description="Filter by search_keyword (exact match)."),
+    brand_filter: Optional[str] = Query(None, description="Filter by brand_name substring."),
+    perf_filter: Optional[str] = Query(None, description="Filter by performance_score_title (e.g. Winning)."),
+    sort_by: str = Query("extracted_at", description="Column to sort by."),
+    sort_dir: str = Query("desc", description="Sort direction: asc or desc."),
 ):
+    _SORTABLE = {
+        "extracted_at": AdsInsight.extracted_at,
+        "start_date": AdsInsight.start_date,
+        "end_date": AdsInsight.end_date,
+        "days_active": AdsInsight.days_active,
+        "performance_score": AdsInsight.performance_score,
+        "used_count": AdsInsight.used_count,
+        "brand_name": AdsInsight.brand_name,
+        "brand_active_ads": AdsInsight.brand_active_ads,
+    }
     with session_scope() as session:
         q = session.query(
             AdsInsight.hookd_id, AdsInsight.external_id, AdsInsight.search_keyword,
@@ -1164,15 +1217,48 @@ def get_ads_insight(
             AdsInsight.start_date, AdsInsight.end_date, AdsInsight.days_active, AdsInsight.active_in_library,
             AdsInsight.performance_score, AdsInsight.performance_score_title, AdsInsight.used_count,
             AdsInsight.age_audience_min, AdsInsight.age_audience_max, AdsInsight.gender_audience, AdsInsight.eu_total_reach,
+            AdsInsight.ad_spend_range_score, AdsInsight.ad_spend_range_score_title,
             AdsInsight.brand_name, AdsInsight.brand_logo_url, AdsInsight.brand_active_ads,
-            AdsInsight.media, AdsInsight.share_url,
+            AdsInsight.media, AdsInsight.ad_cards, AdsInsight.share_url,
             AdsInsight.extracted_at,
         )
+        # --- Filters ---
         if niche_name:
             kws = _get_niche_keywords_from_db(niche_name)
             if kws:
                 q = q.filter(AdsInsight.search_keyword.in_(kws))
-        q = q.order_by(AdsInsight.extracted_at.desc()).limit(limit)
+        if date_from:
+            q = q.filter(AdsInsight.start_date >= date_from)
+        if date_to:
+            q = q.filter(AdsInsight.start_date <= date_to)
+        if platform_filter:
+            q = q.filter(AdsInsight.platform.contains(platform_filter))
+        if format_filter:
+            q = q.filter(AdsInsight.display_format == format_filter)
+        if keyword_filter:
+            q = q.filter(AdsInsight.search_keyword == keyword_filter)
+        if brand_filter:
+            q = q.filter(AdsInsight.brand_name.contains(brand_filter))
+        if perf_filter:
+            q = q.filter(AdsInsight.performance_score_title == perf_filter)
+
+        # --- Total count (before pagination) ---
+        total_count = q.count()
+
+        # --- Sorting ---
+        sort_col = _SORTABLE.get(sort_by, AdsInsight.extracted_at)
+        if sort_dir.lower() == "asc":
+            q = q.order_by(sort_col.asc())
+        else:
+            q = q.order_by(sort_col.desc())
+
+        # --- Pagination ---
+        if offset > 0:
+            q = q.offset(offset)
+        if limit > 0:
+            q = q.limit(limit)
+        # limit=0 means return all rows (no limit applied)
+
         rows = q.all()
 
     columns = [
@@ -1182,13 +1268,58 @@ def get_ads_insight(
         "start_date", "end_date", "days_active", "active_in_library",
         "performance_score", "performance_score_title", "used_count",
         "age_audience_min", "age_audience_max", "gender_audience", "eu_total_reach",
+        "ad_spend_range_score", "ad_spend_range_score_title",
         "brand_name", "brand_logo_url", "brand_active_ads",
-        "media", "share_url", "extracted_at",
+        "media", "ad_cards", "share_url", "extracted_at",
     ]
     if not rows:
-        return {"data": []}
+        return {"data": [], "total": total_count}
     df = pd.DataFrame(rows, columns=columns)
-    return {"data": _sanitize(df)}
+    return {"data": _sanitize(df), "total": total_count}
+
+
+@app.get("/ads_insight/filters")
+def get_ads_insight_filters():
+    """Return distinct filter values for the ads_insight table."""
+    result = {}
+    with session_scope() as session:
+        # Distinct platforms
+        rows = session.query(AdsInsight.platform).distinct().all()
+        all_platforms = set()
+        for (p,) in rows:
+            if p:
+                for part in p.split(", "):
+                    all_platforms.add(part.strip())
+        result["platforms"] = sorted(all_platforms)
+
+    with session_scope() as session:
+        # Distinct formats
+        rows = session.query(AdsInsight.display_format).distinct().all()
+        result["formats"] = sorted([r[0] for r in rows if r[0]])
+
+    with session_scope() as session:
+        # Distinct keywords
+        rows = session.query(AdsInsight.search_keyword).distinct().all()
+        result["keywords"] = sorted([r[0] for r in rows if r[0]])
+
+    with session_scope() as session:
+        # Distinct performance tiers
+        rows = session.query(AdsInsight.performance_score_title).distinct().all()
+        result["performance_tiers"] = sorted([r[0] for r in rows if r[0]])
+
+    with session_scope() as session:
+        # Distinct brands
+        rows = session.query(AdsInsight.brand_name).distinct().all()
+        result["brands"] = sorted([r[0] for r in rows if r[0]])
+
+    with session_scope() as session:
+        # Date range
+        row = session.execute(
+            text("SELECT MIN(start_date), MAX(start_date) FROM ads_insight")
+        ).fetchone()
+        result["date_range"] = {"min": row[0], "max": row[1]} if row else {"min": None, "max": None}
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1239,6 +1370,162 @@ def scrape_brand_ads_endpoint(
         brand_id=brand_id,
     )
     return {"message": f"Brand spy started for brand {brand_id}"}
+
+
+# ---------------------------------------------------------------------------
+# My Brands — track your own brands
+# ---------------------------------------------------------------------------
+
+class MyBrandRequest(BaseModel):
+    brand_name: str
+    brand_external_id: str | None = None
+    brand_logo_url: str | None = None
+    brand_active_ads: int = 0
+
+
+@app.get("/my_brands")
+def list_my_brands():
+    """Return all tracked brands."""
+    with session_scope() as session:
+        rows = session.query(MyBrand).order_by(MyBrand.added_at.desc()).all()
+        return {
+            "data": [
+                {
+                    "id": r.id,
+                    "brand_name": r.brand_name,
+                    "brand_external_id": r.brand_external_id,
+                    "brand_logo_url": r.brand_logo_url,
+                    "brand_active_ads": r.brand_active_ads,
+                    "added_at": str(r.added_at) if r.added_at else None,
+                }
+                for r in rows
+            ]
+        }
+
+
+@app.post("/my_brands")
+def add_my_brand(body: MyBrandRequest, background_tasks: BackgroundTasks):
+    """Add a brand to track and optionally trigger a brand spy scrape."""
+    with session_scope() as session:
+        # Check if already tracked
+        existing = session.query(MyBrand).filter(
+            MyBrand.brand_name == body.brand_name
+        ).first()
+        if existing:
+            return {"message": "Brand already tracked", "id": existing.id}
+
+        brand = MyBrand(
+            brand_name=body.brand_name,
+            brand_external_id=body.brand_external_id,
+            brand_logo_url=body.brand_logo_url,
+            brand_active_ads=body.brand_active_ads,
+        )
+        session.add(brand)
+        session.flush()
+        brand_id = brand.id
+
+    # Trigger brand spy scrape in background if external_id is available
+    if body.brand_external_id and HAS_GETHOOKEDAI:
+        # Search for the brand's ads by brand name to populate ads_insight
+        background_tasks.add_task(
+            _run_and_log, gethookd_scrape_ads,
+            "ads_insight", [body.brand_name], None,
+            keywords=[body.brand_name], max_pages=5,
+        )
+
+    return {"message": f"Brand '{body.brand_name}' added to tracking", "id": brand_id}
+
+
+@app.delete("/my_brands/{brand_id}")
+def remove_my_brand(brand_id: int):
+    """Remove a tracked brand."""
+    with session_scope() as session:
+        brand = session.query(MyBrand).filter(MyBrand.id == brand_id).first()
+        if not brand:
+            raise HTTPException(status_code=404, detail="Brand not found")
+        session.delete(brand)
+    return {"ok": True}
+
+
+@app.get("/my_brands/ads")
+def get_my_brand_ads(
+    limit: int = Query(500, description="Max rows. 0 for all."),
+    offset: int = Query(0),
+    brand_name: Optional[str] = Query(None, description="Filter by specific tracked brand."),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    platform_filter: Optional[str] = Query(None),
+    sort_by: Optional[str] = Query("start_date"),
+    sort_dir: Optional[str] = Query("desc"),
+):
+    """Return ads from the ads_insight table that belong to tracked brands."""
+    with session_scope() as session:
+        # Get all tracked brand names
+        tracked = session.query(MyBrand.brand_name).all()
+        tracked_names = [r[0] for r in tracked if r[0]]
+
+    if not tracked_names:
+        return {"data": [], "total": 0, "tracked_brands": []}
+
+    with session_scope() as session:
+        q = session.query(AdsInsight).filter(AdsInsight.brand_name.in_(tracked_names))
+
+        if brand_name:
+            q = q.filter(AdsInsight.brand_name == brand_name)
+        if date_from:
+            q = q.filter(AdsInsight.start_date >= date_from)
+        if date_to:
+            q = q.filter(AdsInsight.start_date <= date_to)
+        if platform_filter:
+            q = q.filter(AdsInsight.platform.contains(platform_filter))
+
+        total = q.count()
+
+        # Sorting
+        sort_col = getattr(AdsInsight, sort_by, AdsInsight.start_date)
+        q = q.order_by(sort_col.desc() if sort_dir == "desc" else sort_col.asc())
+
+        if limit > 0:
+            q = q.offset(offset).limit(limit)
+        elif offset > 0:
+            q = q.offset(offset)
+
+        rows = q.all()
+
+        cols = [
+            "id", "hookd_id", "external_id", "search_keyword", "platform",
+            "display_format", "title", "body", "landing_page", "cta_type", "cta_text",
+            "start_date", "end_date", "days_active", "active_in_library",
+            "performance_score", "performance_score_title", "used_count",
+            "age_audience_min", "age_audience_max", "gender_audience",
+            "eu_total_reach", "ad_spend_range_score", "ad_spend_range_score_title",
+            "brand_name", "brand_logo_url", "brand_active_ads",
+            "media", "ad_cards", "share_url", "extracted_at",
+        ]
+        data = [{c: getattr(r, c, None) for c in cols} for r in rows]
+
+    return {"data": data, "total": total, "tracked_brands": tracked_names}
+
+
+@app.post("/my_brands/refresh")
+def refresh_my_brand_ads(background_tasks: BackgroundTasks):
+    """Re-scrape ads for all tracked brands."""
+    if not HAS_GETHOOKEDAI:
+        raise HTTPException(status_code=501, detail="GetHookdAI scraper not available")
+
+    with session_scope() as session:
+        brands = session.query(MyBrand).all()
+        brand_names = [b.brand_name for b in brands if b.brand_name]
+
+    if not brand_names:
+        return {"message": "No tracked brands to refresh"}
+
+    background_tasks.add_task(
+        _run_and_log, gethookd_scrape_ads,
+        "ads_insight", brand_names, None,
+        keywords=brand_names, max_pages=5,
+    )
+    return {"message": f"Refreshing ads for {len(brand_names)} tracked brands"}
 
 
 # ---------------------------------------------------------------------------
@@ -1420,6 +1707,15 @@ def azure_diagnose():
         return {"connected": False, "error": str(e), "strategy": "unknown"}
 
 
+
+
+# ---------------------------------------------------------------------------
+# Health check (used by Azure App Service and Docker HEALTHCHECK)
+# ---------------------------------------------------------------------------
+@app.get("/health")
+async def health_check():
+    """Lightweight health check for load balancers and container orchestration."""
+    return {"status": "healthy", "service": "trends-research-app"}
 
 
 # ---------------------------------------------------------------------------

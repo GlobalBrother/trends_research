@@ -1,12 +1,19 @@
 # Copy this file to terraform.tfvars and fill in the values.
 # Do NOT commit terraform.tfvars to version control.
 
+# ---------------------------------------------------------------------------
+# General
+# ---------------------------------------------------------------------------
 location            = "West Europe"
 resource_group_name = "trends-research-rg"
-sql_server_name     = "gb-ads-sql-server"
-sql_database_name   = "Trends_DB"
-sql_admin_user      = "CloudSAe0108f5f"
-sql_admin_password  = "CHANGE_ME"
+
+# ---------------------------------------------------------------------------
+# SQL Server & Database
+# ---------------------------------------------------------------------------
+sql_server_name      = "gb-ads-sql-server"
+sql_database_name    = "Trends_DB"
+sql_admin_user       = "CloudSAe0108f5f"
+# sql_admin_password = ""  # Optional — ignored for existing servers (lifecycle ignore)
 
 # Azure AD admin (optional – leave empty to skip)
 aad_admin_login     = ""
@@ -20,3 +27,39 @@ sql_min_capacity     = 0.5
 
 # Developer firewall rule (optional – set your public IP)
 dev_ip_address = ""
+
+# ---------------------------------------------------------------------------
+# Container Registry
+# ---------------------------------------------------------------------------
+acr_name          = "trendsresearchacr"    # Alphanumeric only, globally unique
+docker_image_name = "trends-research-app"
+
+# ---------------------------------------------------------------------------
+# Managed Identity
+# ---------------------------------------------------------------------------
+managed_identity_name = "trendsApp"
+
+# ---------------------------------------------------------------------------
+# Key Vault
+# ---------------------------------------------------------------------------
+key_vault_name = "kv-trends-app-prod"
+
+# Secrets to store in Key Vault (use hyphenated names)
+app_secrets = {
+  "AZURE-SQL-SERVER"    = "gb-ads-sql-server.database.windows.net"
+  "AZURE-SQL-DATABASE"  = "Trends_DB"
+  "AZURE-SQL-USER"      = "trendsAppUser"
+  "AZURE-SQL-PASS"      = "CHANGE_ME"
+  "GETHOOKEDAI-TOKEN"   = "CHANGE_ME"
+  "RESEND-API-KEY"      = "CHANGE_ME"
+  "RESEND-FROM-EMAIL"   = "noreply@yourdomain.com"
+  "NEWS-API-KEY"        = "CHANGE_ME"
+  "ENSEMBLEDATA-TOKEN"  = "CHANGE_ME"
+}
+
+# ---------------------------------------------------------------------------
+# App Service
+# ---------------------------------------------------------------------------
+app_service_plan_name = "asp-trends-app"
+app_service_name      = "trends-research-app"   # Must be globally unique
+app_service_sku       = "B1"                     # B1 ~$13/mo, S1 ~$70/mo

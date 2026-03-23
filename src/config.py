@@ -9,8 +9,10 @@ import os
 from dotenv import load_dotenv
 
 # Load .env from project root (two levels up from src/)
+# When running on Azure, secrets are already in env vars via Key Vault
+# (loaded by main.py _init_secrets), so load_dotenv is a harmless no-op.
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-load_dotenv(os.path.join(_PROJECT_ROOT, ".env"))
+load_dotenv(os.path.join(_PROJECT_ROOT, ".env"), override=False)
 
 # ---------------------------------------------------------------------------
 # Paths

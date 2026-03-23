@@ -1,10 +1,10 @@
-/*
+/**
  * Dashboard — Overview page
  * Fetches real data from the FastAPI backend.
  * Design: KPI strip → Main trend chart + Activity → Top Trends + Momentum
  *         → Ads Insight section (HookedAI data)
  */
-import { useMemo } from "react";
+import { useMemo, useState, useCallback } from "react";
 import {
   TrendingUp,
   Activity,
@@ -18,6 +18,14 @@ import {
   Eye,
   Target,
   ExternalLink,
+  Calendar,
+  Filter,
+  ChevronLeft,
+  ChevronRight,
+  ChevronDown,
+  MousePointerClick,
+  Clock,
+  X,
 } from "lucide-react";
 import {
   LineChart,
@@ -34,16 +42,26 @@ import {
   Cell,
   PieChart,
   Pie,
+  Legend,
 } from "recharts";
 import { useApi } from "@/hooks/useApi";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   getTrends,
   getAllTrends,
   getAzureStatus,
   getNiches,
   getAdsInsight,
+  getAdsInsightFilters,
   type TrendRow,
   type AdsInsightRow,
+  type AdsInsightParams,
 } from "@/lib/api";
 
 const HERO_IMG =
@@ -83,22 +101,29 @@ function topTrends(rows: TrendRow[], n = 8) {
 
 /* ── Ads helpers ─────────────────────────────────────────────────────────── */
 
-function topAds(rows: AdsInsightRow[], n = 6) {
+function topAds(rows: AdsInsightRow[], n = 10) {
   return [...rows]
     .filter((r) => r.title || r.body)
     .sort((a, b) => (b.performance_score ?? 0) - (a.performance_score ?? 0))
     .slice(0, n);
 }
 
+/**
+ * Parse comma-separated platform strings into individual platform counts.
+ * e.g. "FACEBOOK, INSTAGRAM, MESSENGER" → counts FACEBOOK +1, INSTAGRAM +1, MESSENGER +1
+ */
 function adsPlatformBreakdown(rows: AdsInsightRow[]) {
   const counts: Record<string, number> = {};
   for (const r of rows) {
-    const p = String(r.platform || "unknown").toLowerCase();
-    counts[p] = (counts[p] || 0) + 1;
+    const raw = String(r.platform || "unknown");
+    const parts = raw.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+    for (const p of parts) {
+      counts[p] = (counts[p] || 0) + 1;
+    }
   }
   return Object.entries(counts)
     .sort(([, a], [, b]) => b - a)
-    .map(([name, value]) => ({ name, value }));
+    .map(([name, value]) => ({ name: name.charAt(0).toUpperCase() + name.slice(1).toLowerCase(), value }));
 }
 
 function topBrands(
@@ -130,7 +155,7 @@ function topBrands(
 function adsFormatBreakdown(rows: AdsInsightRow[]) {
   const counts: Record<string, number> = {};
   for (const r of rows) {
-    const f = String(r.display_format || "unknown").toLowerCase();
+    const f = String(r.display_format || "unknown").toUpperCase();
     counts[f] = (counts[f] || 0) + 1;
   }
   return Object.entries(counts)
@@ -147,6 +172,39 @@ function performanceDistribution(rows: AdsInsightRow[]) {
   return Object.entries(buckets)
     .sort(([, a], [, b]) => b - a)
     .map(([name, value]) => ({ name, value }));
+}
+
+function ctaBreakdown(rows: AdsInsightRow[]) {
+  const counts: Record<string, number> = {};
+  for (const r of rows) {
+    const cta = String(r.cta_type || "None").replace(/_/g, " ");
+    counts[cta] = (counts[cta] || 0) + 1;
+  }
+  return Object.entries(counts)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 8)
+    .map(([name, value]) => ({ name, value }));
+}
+
+function daysActiveDistribution(rows: AdsInsightRow[]) {
+  const buckets: Record<string, number> = {
+    "0-1d": 0,
+    "2-7d": 0,
+    "8-14d": 0,
+    "15-30d": 0,
+    "31-60d": 0,
+    "60d+": 0,
+  };
+  for (const r of rows) {
+    const d = r.days_active ?? 0;
+    if (d <= 1) buckets["0-1d"]++;
+    else if (d <= 7) buckets["2-7d"]++;
+    else if (d <= 14) buckets["8-14d"]++;
+    else if (d <= 30) buckets["15-30d"]++;
+    else if (d <= 60) buckets["31-60d"]++;
+    else buckets["60d+"]++;
+  }
+  return Object.entries(buckets).map(([name, value]) => ({ name, value }));
 }
 
 const PERF_COLORS: Record<string, string> = {
@@ -167,11 +225,97 @@ const PIE_COLORS = [
   "oklch(0.60 0.22 340)",
   "oklch(0.55 0.25 320)",
   "oklch(0.65 0.15 170)",
+  "oklch(0.45 0.15 200)",
+  "oklch(0.70 0.12 100)",
 ];
+
+const PLATFORM_COLORS_ADS: Record<string, string> = {
+  Facebook: "oklch(0.50 0.20 260)",
+  Instagram: "oklch(0.60 0.22 340)",
+  Messenger: "oklch(0.55 0.18 300)",
+  Threads: "oklch(0.55 0.25 320)",
+  "Audience_network": "oklch(0.65 0.15 170)",
+};
+
+const PAGE_SIZE_OPTIONS = [
+  { label: "100", value: "100" },
+  { label: "250", value: "250" },
+  { label: "500", value: "500" },
+  { label: "1000", value: "1000" },
+  { label: "All", value: "0" },
+];
+
+/* ── Custom Pie Label ────────────────────────────────────────────────────── */
+
+function renderCustomPieLabel({
+  cx,
+  cy,
+  midAngle,
+  innerRadius,
+  outerRadius,
+  name,
+  percent,
+}: {
+  cx: number;
+  cy: number;
+  midAngle: number;
+  innerRadius: number;
+  outerRadius: number;
+  name: string;
+  percent: number;
+}) {
+  if (percent < 0.03) return null; // hide labels for tiny slices
+  const RADIAN = Math.PI / 180;
+  const radius = outerRadius + 22;
+  const x = cx + radius * Math.cos(-midAngle * RADIAN);
+  const y = cy + radius * Math.sin(-midAngle * RADIAN);
+  return (
+    <text
+      x={x}
+      y={y}
+      fill="oklch(0.45 0.015 260)"
+      textAnchor={x > cx ? "start" : "end"}
+      dominantBaseline="central"
+      fontSize={10}
+      fontWeight={500}
+    >
+      {name} {(percent * 100).toFixed(0)}%
+    </text>
+  );
+}
 
 /* ── component ───────────────────────────────────────────────────────────── */
 
 export default function Dashboard() {
+  /* ── Ads filter state ──────────────────────────────────────────────── */
+  const [adsPageSize, setAdsPageSize] = useState("500");
+  const [adsOffset, setAdsOffset] = useState(0);
+  const [adsDateFrom, setAdsDateFrom] = useState("");
+  const [adsDateTo, setAdsDateTo] = useState("");
+  const [adsPlatformFilter, setAdsPlatformFilter] = useState("");
+  const [adsFormatFilter, setAdsFormatFilter] = useState("");
+  const [adsKeywordFilter, setAdsKeywordFilter] = useState("");
+  const [adsPerfFilter, setAdsPerfFilter] = useState("");
+  const [adsSortBy, setAdsSortBy] = useState("extracted_at");
+  const [adsSortDir, setAdsSortDir] = useState("desc");
+
+  /* ── Build params object ───────────────────────────────────────────── */
+  const adsParams: AdsInsightParams = useMemo(() => {
+    const p: AdsInsightParams = {
+      limit: Number(adsPageSize),
+      offset: adsOffset,
+      sort_by: adsSortBy,
+      sort_dir: adsSortDir,
+    };
+    if (adsDateFrom) p.date_from = adsDateFrom;
+    if (adsDateTo) p.date_to = adsDateTo;
+    if (adsPlatformFilter) p.platform_filter = adsPlatformFilter;
+    if (adsFormatFilter) p.format_filter = adsFormatFilter;
+    if (adsKeywordFilter) p.keyword_filter = adsKeywordFilter;
+    if (adsPerfFilter) p.perf_filter = adsPerfFilter;
+    return p;
+  }, [adsPageSize, adsOffset, adsDateFrom, adsDateTo, adsPlatformFilter, adsFormatFilter, adsKeywordFilter, adsPerfFilter, adsSortBy, adsSortDir]);
+
   /* ── data fetching ──────────────────────────────────────────────────── */
   const {
     data: trendsData,
@@ -186,11 +330,46 @@ export default function Dashboard() {
     data: adsData,
     loading: adsLoading,
     refetch: refetchAds,
-  } = useApi(() => getAdsInsight({ limit: 500 }), []);
+  } = useApi(
+    () => getAdsInsight(adsParams),
+    [adsParams]
+  );
+  const { data: adsFiltersData } = useApi(() => getAdsInsightFilters(), []);
 
   const trends = trendsData?.data ?? [];
   const allTrends = allTrendsData?.data ?? [];
   const ads = adsData?.data ?? [];
+  const adsTotal = adsData?.total ?? 0;
+  const adsFilters = adsFiltersData ?? null;
+
+  /* ── Ads pagination helpers ────────────────────────────────────────── */
+  const currentPageSize = Number(adsPageSize) || adsTotal;
+  const currentPage = currentPageSize > 0 ? Math.floor(adsOffset / currentPageSize) + 1 : 1;
+  const totalPages = currentPageSize > 0 ? Math.max(1, Math.ceil(adsTotal / currentPageSize)) : 1;
+
+  const goNextPage = useCallback(() => {
+    if (currentPage < totalPages) {
+      setAdsOffset((prev) => prev + currentPageSize);
+    }
+  }, [currentPage, totalPages, currentPageSize]);
+
+  const goPrevPage = useCallback(() => {
+    if (currentPage > 1) {
+      setAdsOffset((prev) => Math.max(0, prev - currentPageSize));
+    }
+  }, [currentPage, currentPageSize]);
+
+  const resetAdsFilters = useCallback(() => {
+    setAdsDateFrom("");
+    setAdsDateTo("");
+    setAdsPlatformFilter("");
+    setAdsFormatFilter("");
+    setAdsKeywordFilter("");
+    setAdsPerfFilter("");
+    setAdsOffset(0);
+  }, []);
+
+  const hasActiveFilters = adsDateFrom || adsDateTo || adsPlatformFilter || adsFormatFilter || adsKeywordFilter || adsPerfFilter;
 
   /* ── Trends KPIs ────────────────────────────────────────────────────── */
   const totalTrends = trends.length;
@@ -203,16 +382,20 @@ export default function Dashboard() {
   const tableCount = azureData?.tables ? Object.keys(azureData.tables).length : 0;
 
   /* ── Ads KPIs ───────────────────────────────────────────────────────── */
-  const totalAds = ads.length;
+  const totalAds = adsTotal;
+  const displayedAds = ads.length;
+  const adsWithScore = ads.filter((a) => a.performance_score != null && a.performance_score > 0);
   const avgPerfScore =
-    ads.length > 0
-      ? (ads.reduce((s, r) => s + (r.performance_score ?? 0), 0) / ads.length).toFixed(1)
+    adsWithScore.length > 0
+      ? (adsWithScore.reduce((s, r) => s + (r.performance_score ?? 0), 0) / adsWithScore.length).toFixed(1)
       : "—";
+  const adsWithDays = ads.filter((a) => a.days_active != null && a.days_active > 0);
   const avgDaysActive =
-    ads.length > 0
-      ? Math.round(ads.reduce((s, r) => s + (r.days_active ?? 0), 0) / ads.length)
+    adsWithDays.length > 0
+      ? Math.round(adsWithDays.reduce((s, r) => s + (r.days_active ?? 0), 0) / adsWithDays.length)
       : 0;
   const uniqueBrands = new Set(ads.map((a) => a.brand_name).filter(Boolean)).size;
+  const winningAds = ads.filter((a) => String(a.performance_score_title || "").toLowerCase() === "winning").length;
 
   /* ── Chart data ─────────────────────────────────────────────────────── */
   const chartData = useMemo(() => groupByMonth(allTrends), [allTrends]);
@@ -260,12 +443,44 @@ export default function Dashboard() {
 
   const latestMomentum = momentumData.length > 0 ? momentumData[momentumData.length - 1].score : 0;
 
+  /* ── Collapsible ad groups state ────────────────────────────────────── */
+  const [expandedAdGroups, setExpandedAdGroups] = useState<Set<string>>(new Set());
+  const toggleAdGroup = useCallback((key: string) => {
+    setExpandedAdGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
   /* ── Ads derived data ───────────────────────────────────────────────── */
   const topAdsList = useMemo(() => topAds(ads), [ads]);
   const platformBreakdown = useMemo(() => adsPlatformBreakdown(ads), [ads]);
   const brandList = useMemo(() => topBrands(ads), [ads]);
   const formatBreakdown = useMemo(() => adsFormatBreakdown(ads), [ads]);
   const perfDist = useMemo(() => performanceDistribution(ads), [ads]);
+  const ctaDist = useMemo(() => ctaBreakdown(ads), [ads]);
+  const daysActiveDist = useMemo(() => daysActiveDistribution(ads), [ads]);
+
+  /** Group ads by (brand_name + title/body) for collapsible display */
+  const groupedTopAds = useMemo(() => {
+    const groups: { key: string; primary: AdsInsightRow; duplicates: AdsInsightRow[] }[] = [];
+    const keyMap = new Map<string, number>();
+    for (const ad of topAdsList) {
+      const title = (ad.title || (ad.body ? String(ad.body).slice(0, 60) : "")).trim().toLowerCase();
+      const brand = (ad.brand_name || "").trim().toLowerCase();
+      const key = `${brand}|||${title}`;
+      const existing = keyMap.get(key);
+      if (existing != null) {
+        groups[existing].duplicates.push(ad);
+      } else {
+        keyMap.set(key, groups.length);
+        groups.push({ key, primary: ad, duplicates: [] });
+      }
+    }
+    return groups;
+  }, [topAdsList]);
 
   /* ── KPI card configs ───────────────────────────────────────────────── */
   const kpiData = [
@@ -276,8 +491,8 @@ export default function Dashboard() {
   ];
 
   const adsKpiData = [
-    { label: "Tracked Ads", value: totalAds.toLocaleString(), change: "from HookedAI", up: totalAds > 0, icon: Megaphone },
-    { label: "Avg Performance", value: String(avgPerfScore), change: "performance score", up: Number(avgPerfScore) > 50, icon: Target },
+    { label: "Total Ads", value: totalAds.toLocaleString(), change: `${displayedAds} displayed`, up: totalAds > 0, icon: Megaphone },
+    { label: "Avg Performance", value: String(avgPerfScore), change: `${winningAds} winning`, up: Number(avgPerfScore) > 50, icon: Target },
     { label: "Avg Days Active", value: String(avgDaysActive), change: "days running", up: avgDaysActive > 7, icon: Eye },
     { label: "Unique Brands", value: String(uniqueBrands), change: "brands tracked", up: uniqueBrands > 0, icon: BarChart3 },
   ];
@@ -555,6 +770,206 @@ export default function Dashboard() {
         <span className="section-label">{totalAds} ads tracked via HookedAI</span>
       </div>
 
+      {/* ── Ads Filter Bar ───────────────────────────────────────────────── */}
+      <div className="bg-card border border-border p-3 rounded-sm">
+        <div className="flex items-center gap-2 mb-2">
+          <Filter className="w-4 h-4 text-muted-foreground" />
+          <span className="text-xs font-semibold">Filters &amp; Controls</span>
+          {hasActiveFilters && (
+            <button
+              onClick={resetAdsFilters}
+              className="ml-2 flex items-center gap-1 text-[10px] text-destructive hover:text-destructive/80 transition-colors"
+            >
+              <X className="w-3 h-3" /> Clear filters
+            </button>
+          )}
+        </div>
+        <div className="flex flex-wrap items-end gap-3">
+          {/* Page Size */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] text-muted-foreground font-medium">Show</label>
+            <Select
+              value={adsPageSize}
+              onValueChange={(v) => {
+                setAdsPageSize(v);
+                setAdsOffset(0);
+              }}
+            >
+              <SelectTrigger size="sm" className="w-[80px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PAGE_SIZE_OPTIONS.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>
+                    {o.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Date From */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] text-muted-foreground font-medium flex items-center gap-1">
+              <Calendar className="w-3 h-3" /> From
+            </label>
+            <input
+              type="date"
+              value={adsDateFrom}
+              onChange={(e) => {
+                setAdsDateFrom(e.target.value);
+                setAdsOffset(0);
+              }}
+              min={(adsFilters?.date_range?.min ?? undefined)}
+              max={adsDateTo || (adsFilters?.date_range?.max ?? undefined)}
+              className="h-8 px-2 text-xs border border-input rounded-md bg-transparent focus:outline-none focus:ring-2 focus:ring-ring/50"
+            />
+          </div>
+
+          {/* Date To */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] text-muted-foreground font-medium flex items-center gap-1">
+              <Calendar className="w-3 h-3" /> To
+            </label>
+            <input
+              type="date"
+              value={adsDateTo}
+              onChange={(e) => {
+                setAdsDateTo(e.target.value);
+                setAdsOffset(0);
+              }}
+              min={adsDateFrom || (adsFilters?.date_range?.min ?? undefined)}
+              max={(adsFilters?.date_range?.max ?? undefined)}
+              className="h-8 px-2 text-xs border border-input rounded-md bg-transparent focus:outline-none focus:ring-2 focus:ring-ring/50"
+            />
+          </div>
+
+          {/* Platform Filter */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] text-muted-foreground font-medium">Platform</label>
+            <Select
+              value={adsPlatformFilter || "__all__"}
+              onValueChange={(v) => {
+                setAdsPlatformFilter(v === "__all__" ? "" : v);
+                setAdsOffset(0);
+              }}
+            >
+              <SelectTrigger size="sm" className="w-[130px]">
+                <SelectValue placeholder="All" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__">All Platforms</SelectItem>
+                {(adsFilters?.platforms ?? []).map((p) => (
+                  <SelectItem key={p} value={p}>
+                    {p}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Format Filter */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] text-muted-foreground font-medium">Format</label>
+            <Select
+              value={adsFormatFilter || "__all__"}
+              onValueChange={(v) => {
+                setAdsFormatFilter(v === "__all__" ? "" : v);
+                setAdsOffset(0);
+              }}
+            >
+              <SelectTrigger size="sm" className="w-[100px]">
+                <SelectValue placeholder="All" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__">All Formats</SelectItem>
+                {(adsFilters?.formats ?? []).map((f) => (
+                  <SelectItem key={f} value={f}>
+                    {f}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Performance Filter */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] text-muted-foreground font-medium">Performance</label>
+            <Select
+              value={adsPerfFilter || "__all__"}
+              onValueChange={(v) => {
+                setAdsPerfFilter(v === "__all__" ? "" : v);
+                setAdsOffset(0);
+              }}
+            >
+              <SelectTrigger size="sm" className="w-[110px]">
+                <SelectValue placeholder="All" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__">All Tiers</SelectItem>
+                {(adsFilters?.performance_tiers ?? []).map((t) => (
+                  <SelectItem key={t} value={t}>
+                    {t}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Keyword Filter */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] text-muted-foreground font-medium">Keyword</label>
+            <Select
+              value={adsKeywordFilter || "__all__"}
+              onValueChange={(v) => {
+                setAdsKeywordFilter(v === "__all__" ? "" : v);
+                setAdsOffset(0);
+              }}
+            >
+              <SelectTrigger size="sm" className="w-[150px]">
+                <SelectValue placeholder="All" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all__">All Keywords</SelectItem>
+                {(adsFilters?.keywords ?? []).map((k) => (
+                  <SelectItem key={k} value={k}>
+                    {k}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Sort */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] text-muted-foreground font-medium">Sort by</label>
+            <div className="flex gap-1">
+              <Select value={adsSortBy} onValueChange={(v) => { setAdsSortBy(v); setAdsOffset(0); }}>
+                <SelectTrigger size="sm" className="w-[120px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="extracted_at">Date Added</SelectItem>
+                  <SelectItem value="start_date">Start Date</SelectItem>
+                  <SelectItem value="performance_score">Score</SelectItem>
+                  <SelectItem value="days_active">Days Active</SelectItem>
+                  <SelectItem value="brand_name">Brand</SelectItem>
+                </SelectContent>
+              </Select>
+              <Select value={adsSortDir} onValueChange={(v) => { setAdsSortDir(v); setAdsOffset(0); }}>
+                <SelectTrigger size="sm" className="w-[70px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="desc">Desc</SelectItem>
+                  <SelectItem value="asc">Asc</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Ads KPI Strip */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {adsKpiData.map((kpi) => (
@@ -576,7 +991,7 @@ export default function Dashboard() {
         ))}
       </div>
 
-      {/* Ads Charts Row: Performance Distribution + Platform Breakdown + Format Breakdown */}
+      {/* Ads Charts Row 1: Performance Distribution + Platform Breakdown + Format Breakdown */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         {/* Performance Score Distribution */}
         <div className="lg:col-span-4 bg-card border border-border p-4">
@@ -614,10 +1029,10 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Ads by Platform (Pie) */}
+        {/* Ads by Platform (Pie) — FIXED: individual platforms */}
         <div className="lg:col-span-4 bg-card border border-border p-4">
           <h2 className="text-sm font-semibold mb-1">Ads by Platform</h2>
-          <p className="text-xs text-muted-foreground mb-3">Distribution across ad platforms</p>
+          <p className="text-xs text-muted-foreground mb-3">Individual platform presence across ads</p>
           <div className="h-52">
             {platformBreakdown.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
@@ -626,21 +1041,25 @@ export default function Dashboard() {
                     data={platformBreakdown}
                     cx="50%"
                     cy="50%"
-                    innerRadius={40}
-                    outerRadius={70}
+                    innerRadius={35}
+                    outerRadius={65}
                     paddingAngle={2}
                     dataKey="value"
                     nameKey="name"
-                    label={({ name, percent }: { name: string; percent: number }) =>
-                      `${name} ${(percent * 100).toFixed(0)}%`
-                    }
-                    labelLine={false}
+                    label={renderCustomPieLabel}
+                    labelLine={true}
                   >
-                    {platformBreakdown.map((_, idx) => (
-                      <Cell key={idx} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
+                    {platformBreakdown.map((entry, idx) => (
+                      <Cell
+                        key={idx}
+                        fill={PLATFORM_COLORS_ADS[entry.name] || PIE_COLORS[idx % PIE_COLORS.length]}
+                      />
                     ))}
                   </Pie>
-                  <Tooltip contentStyle={{ fontSize: 12, borderRadius: 4 }} />
+                  <Tooltip
+                    contentStyle={{ fontSize: 12, borderRadius: 4 }}
+                    formatter={(value: number, name: string) => [`${value} ads`, name]}
+                  />
                 </PieChart>
               </ResponsiveContainer>
             ) : (
@@ -679,6 +1098,75 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* Ads Charts Row 2: CTA Breakdown + Days Active Distribution */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        {/* CTA Type Breakdown */}
+        <div className="lg:col-span-6 bg-card border border-border p-4">
+          <div className="flex items-center gap-2 mb-1">
+            <MousePointerClick className="w-4 h-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold">CTA Type Breakdown</h2>
+          </div>
+          <p className="text-xs text-muted-foreground mb-3">Call-to-action distribution across ads</p>
+          <div className="h-52">
+            {ctaDist.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={ctaDist} layout="vertical">
+                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.91 0.005 260)" horizontal={false} />
+                  <XAxis type="number" tick={{ fontSize: 10 }} stroke="oklch(0.55 0.015 260)" />
+                  <YAxis
+                    dataKey="name"
+                    type="category"
+                    tick={{ fontSize: 9 }}
+                    stroke="oklch(0.55 0.015 260)"
+                    width={90}
+                  />
+                  <Tooltip contentStyle={{ fontSize: 12, borderRadius: 4 }} />
+                  <Bar dataKey="value" radius={[0, 3, 3, 0]}>
+                    {ctaDist.map((_, idx) => (
+                      <Cell key={idx} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
+                {adsLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : "No ads data yet"}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Days Active Distribution */}
+        <div className="lg:col-span-6 bg-card border border-border p-4">
+          <div className="flex items-center gap-2 mb-1">
+            <Clock className="w-4 h-4 text-muted-foreground" />
+            <h2 className="text-sm font-semibold">Ad Longevity</h2>
+          </div>
+          <p className="text-xs text-muted-foreground mb-3">Distribution of how long ads have been running</p>
+          <div className="h-52">
+            {daysActiveDist.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={daysActiveDist}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.91 0.005 260)" />
+                  <XAxis dataKey="name" tick={{ fontSize: 10 }} stroke="oklch(0.55 0.015 260)" />
+                  <YAxis tick={{ fontSize: 10 }} stroke="oklch(0.55 0.015 260)" />
+                  <Tooltip contentStyle={{ fontSize: 12, borderRadius: 4 }} />
+                  <Bar dataKey="value" radius={[3, 3, 0, 0]}>
+                    {daysActiveDist.map((_, idx) => (
+                      <Cell key={idx} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
+                {adsLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : "No ads data yet"}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
       {/* Top Performing Ads Table + Brand Intelligence */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         {/* Top Performing Ads */}
@@ -693,75 +1181,123 @@ export default function Dashboard() {
                 <tr className="border-b border-border">
                   <th className="text-left py-2 text-xs font-medium text-muted-foreground">Ad Title</th>
                   <th className="text-left py-2 text-xs font-medium text-muted-foreground">Brand</th>
-                  <th className="text-left py-2 text-xs font-medium text-muted-foreground">Platform</th>
+                  <th className="text-left py-2 text-xs font-medium text-muted-foreground">Format</th>
                   <th className="text-right py-2 text-xs font-medium text-muted-foreground">Score</th>
+                  <th className="text-center py-2 text-xs font-medium text-muted-foreground">Tier</th>
                   <th className="text-right py-2 text-xs font-medium text-muted-foreground">Days</th>
                   <th className="text-center py-2 text-xs font-medium text-muted-foreground">CTA</th>
+                  <th className="text-left py-2 text-xs font-medium text-muted-foreground">Start</th>
                   <th className="text-center py-2 text-xs font-medium text-muted-foreground">Link</th>
                 </tr>
               </thead>
               <tbody>
                 {adsLoading ? (
                   <tr>
-                    <td colSpan={7} className="py-8 text-center">
+                    <td colSpan={9} className="py-8 text-center">
                       <Loader2 className="w-5 h-5 animate-spin mx-auto text-muted-foreground" />
                     </td>
                   </tr>
-                ) : topAdsList.length > 0 ? (
-                  topAdsList.map((ad, i) => (
-                    <tr
-                      key={ad.hookd_id || i}
-                      className="border-b border-border/50 last:border-0 hover:bg-muted/30 transition-colors"
-                    >
-                      <td className="py-2.5 font-medium text-xs max-w-[200px] truncate">
-                        {ad.title || (ad.body ? String(ad.body).slice(0, 60) + "..." : "—")}
-                      </td>
-                      <td className="py-2.5 text-xs text-muted-foreground">{ad.brand_name || "—"}</td>
-                      <td className="py-2.5 text-xs text-muted-foreground">{ad.platform || "—"}</td>
-                      <td className="py-2.5 text-right font-mono font-semibold text-xs">
-                        <span
-                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold"
-                          style={{
-                            backgroundColor:
-                              (ad.performance_score ?? 0) >= 80
-                                ? "oklch(0.65 0.17 165 / 0.15)"
-                                : (ad.performance_score ?? 0) >= 50
-                                  ? "oklch(0.72 0.17 70 / 0.15)"
-                                  : "oklch(0.55 0.015 260 / 0.15)",
-                            color:
-                              (ad.performance_score ?? 0) >= 80
-                                ? "oklch(0.45 0.17 165)"
-                                : (ad.performance_score ?? 0) >= 50
-                                  ? "oklch(0.52 0.17 70)"
-                                  : "oklch(0.45 0.015 260)",
-                          }}
-                        >
-                          {ad.performance_score ?? "—"}
-                        </span>
-                      </td>
-                      <td className="py-2.5 text-right font-mono text-xs">{ad.days_active ?? "—"}</td>
-                      <td className="py-2.5 text-center text-xs text-muted-foreground">
-                        {ad.cta_type || "—"}
-                      </td>
-                      <td className="py-2.5 text-center">
-                        {ad.share_url ? (
-                          <a
-                            href={String(ad.share_url)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center text-primary hover:text-primary/80"
+                ) : groupedTopAds.length > 0 ? (
+                  groupedTopAds.map((group) => {
+                    const ad = group.primary;
+                    const hasDupes = group.duplicates.length > 0;
+                    const isExpanded = expandedAdGroups.has(group.key);
+                    const allInGroup = [ad, ...group.duplicates];
+
+                    const renderAdRow = (rowAd: AdsInsightRow, idx: number, isChild: boolean) => (
+                      <tr
+                        key={rowAd.hookd_id || `${group.key}-${idx}`}
+                        className={`border-b border-border/50 last:border-0 hover:bg-muted/30 transition-colors ${
+                          isChild ? "bg-muted/10" : ""
+                        }`}
+                      >
+                        <td className="py-2.5 font-medium text-xs max-w-[180px]">
+                          <div className="flex items-center gap-1.5">
+                            {!isChild && hasDupes && (
+                              <button
+                                onClick={() => toggleAdGroup(group.key)}
+                                className="shrink-0 p-0.5 rounded hover:bg-muted transition-colors"
+                              >
+                                <ChevronDown
+                                  className={`w-3.5 h-3.5 text-muted-foreground transition-transform ${
+                                    isExpanded ? "rotate-0" : "-rotate-90"
+                                  }`}
+                                />
+                              </button>
+                            )}
+                            {isChild && <span className="w-3.5 shrink-0" />}
+                            <span className="truncate">
+                              {rowAd.title || (rowAd.body ? String(rowAd.body).slice(0, 60) + "..." : "\u2014")}
+                            </span>
+                            {!isChild && hasDupes && (
+                              <span className="shrink-0 text-[9px] font-mono px-1.5 py-0.5 rounded bg-primary/10 text-primary">
+                                {allInGroup.length}x
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="py-2.5 text-xs text-muted-foreground max-w-[100px] truncate">{rowAd.brand_name || "\u2014"}</td>
+                        <td className="py-2.5 text-xs text-muted-foreground">{rowAd.display_format || "\u2014"}</td>
+                        <td className="py-2.5 text-right font-mono font-semibold text-xs">
+                          <span
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold"
+                            style={{
+                              backgroundColor:
+                                (rowAd.performance_score ?? 0) >= 80
+                                  ? "oklch(0.65 0.17 165 / 0.15)"
+                                  : (rowAd.performance_score ?? 0) >= 50
+                                    ? "oklch(0.72 0.17 70 / 0.15)"
+                                    : "oklch(0.55 0.015 260 / 0.15)",
+                              color:
+                                (rowAd.performance_score ?? 0) >= 80
+                                  ? "oklch(0.45 0.17 165)"
+                                  : (rowAd.performance_score ?? 0) >= 50
+                                    ? "oklch(0.52 0.17 70)"
+                                    : "oklch(0.45 0.015 260)",
+                            }}
                           >
-                            <ExternalLink className="w-3.5 h-3.5" />
-                          </a>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))
+                            {rowAd.performance_score ?? "\u2014"}
+                          </span>
+                        </td>
+                        <td className="py-2.5 text-center text-[10px] text-muted-foreground">
+                          {rowAd.performance_score_title || "\u2014"}
+                        </td>
+                        <td className="py-2.5 text-right font-mono text-xs">{rowAd.days_active ?? "\u2014"}</td>
+                        <td className="py-2.5 text-center text-xs text-muted-foreground">
+                          {rowAd.cta_type ? rowAd.cta_type.replace(/_/g, " ") : "\u2014"}
+                        </td>
+                        <td className="py-2.5 text-xs text-muted-foreground whitespace-nowrap">
+                          {rowAd.start_date || "\u2014"}
+                        </td>
+                        <td className="py-2.5 text-center">
+                          {rowAd.share_url ? (
+                            <a
+                              href={String(rowAd.share_url)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center text-primary hover:text-primary/80"
+                            >
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            </a>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">\u2014</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+
+                    return (
+                      <>
+                        {renderAdRow(ad, 0, false)}
+                        {hasDupes && isExpanded &&
+                          group.duplicates.map((dup, di) => renderAdRow(dup, di + 1, true))
+                        }
+                      </>
+                    );
+                  })
                 ) : (
                   <tr>
-                    <td colSpan={7} className="py-6 text-center text-xs text-muted-foreground">
+                    <td colSpan={9} className="py-6 text-center text-xs text-muted-foreground">
                       No ads data available. Trigger an ads scrape to populate.
                     </td>
                   </tr>
@@ -769,6 +1305,34 @@ export default function Dashboard() {
               </tbody>
             </table>
           </div>
+
+          {/* Pagination Controls */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between mt-3 pt-3 border-t border-border">
+              <span className="text-xs text-muted-foreground">
+                Showing {adsOffset + 1}–{Math.min(adsOffset + currentPageSize, adsTotal)} of {adsTotal}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={goPrevPage}
+                  disabled={currentPage <= 1}
+                  className="flex items-center gap-1 px-2 py-1 text-xs border border-border rounded hover:bg-muted/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  <ChevronLeft className="w-3 h-3" /> Prev
+                </button>
+                <span className="text-xs font-mono">
+                  {currentPage} / {totalPages}
+                </span>
+                <button
+                  onClick={goNextPage}
+                  disabled={currentPage >= totalPages}
+                  className="flex items-center gap-1 px-2 py-1 text-xs border border-border rounded hover:bg-muted/50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  Next <ChevronRight className="w-3 h-3" />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Brand Intelligence */}

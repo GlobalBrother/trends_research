@@ -38,9 +38,10 @@ variable "sql_admin_user" {
 }
 
 variable "sql_admin_password" {
-  description = "SQL Server administrator password"
+  description = "SQL Server administrator password (ignored for existing servers)"
   type        = string
   sensitive   = true
+  default     = "placeholder-ignored-by-lifecycle"
 }
 
 # ---------------------------------------------------------------------------
@@ -98,4 +99,65 @@ variable "dev_ip_address" {
   description = "Developer public IP to allow through firewall (leave empty to skip)"
   type        = string
   default     = ""
+}
+
+# ---------------------------------------------------------------------------
+# Container Registry
+# ---------------------------------------------------------------------------
+variable "acr_name" {
+  description = "Name of the Azure Container Registry (alphanumeric only, globally unique)"
+  type        = string
+  default     = "trendsresearchacr"
+}
+
+variable "docker_image_name" {
+  description = "Docker image name (without registry prefix)"
+  type        = string
+  default     = "trends-research-app"
+}
+
+# ---------------------------------------------------------------------------
+# Managed Identity
+# ---------------------------------------------------------------------------
+variable "managed_identity_name" {
+  description = "Name of the User-Assigned Managed Identity"
+  type        = string
+  default     = "trendsApp"
+}
+
+# ---------------------------------------------------------------------------
+# Key Vault
+# ---------------------------------------------------------------------------
+variable "key_vault_name" {
+  description = "Name of the Azure Key Vault (globally unique, 3-24 chars)"
+  type        = string
+  default     = "kv-trends-app-prod"
+}
+
+variable "app_secrets" {
+  description = "Map of secret names (hyphenated) to values for Key Vault"
+  type        = map(string)
+  sensitive   = true
+  default     = {}
+}
+
+# ---------------------------------------------------------------------------
+# App Service
+# ---------------------------------------------------------------------------
+variable "app_service_plan_name" {
+  description = "Name of the App Service Plan"
+  type        = string
+  default     = "asp-trends-app"
+}
+
+variable "app_service_name" {
+  description = "Name of the Azure Web App (must be globally unique)"
+  type        = string
+  default     = "trends-research-app"
+}
+
+variable "app_service_sku" {
+  description = "SKU for the App Service Plan (F1, B1, B2, S1, P1v2, etc.)"
+  type        = string
+  default     = "B1"
 }

@@ -37,7 +37,9 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-load_dotenv()
+# When running on Azure, secrets are already in env vars via Key Vault.
+# override=False ensures .env values don't overwrite Key Vault secrets.
+load_dotenv(override=False)
 
 logger = logging.getLogger(__name__)
 
@@ -280,11 +282,11 @@ def _mask_conn_str(conn_str: str) -> str:
 # Azure AD token helper
 # ---------------------------------------------------------------------------
 
-def _get_azure_token() -> bytes:
+def _get_azure_token(managed_identity_client_id: Optional[str] = None) -> bytes:
     """Obtain an Azure AD access token and encode it for ODBC."""
     from azure.identity import DefaultAzureCredential
 
-    credential = DefaultAzureCredential()
+    credential = DefaultAzureCredential(managed_identity_client_id=managed_identity_client_id)
     token = credential.get_token("https://database.windows.net/.default")
     token_bytes = token.token.encode("UTF-16-LE")
     return struct.pack(f"<I{len(token_bytes)}s", len(token_bytes), token_bytes)
@@ -334,7 +336,8 @@ def _build_engine_from_connection_string(diag: ConnectionDiagnostic) -> Engine:
 
         def creator():
             import pyodbc
-            token_struct = _get_azure_token()
+            client_id = os.getenv("MANAGED_IDENTITY_CLIENT_ID")
+            token_struct = _get_azure_token(managed_identity_client_id=client_id)
             return pyodbc.connect(
                 conn_str,
                 attrs_before={SQL_COPT_SS_ACCESS_TOKEN: token_struct},
@@ -421,7 +424,8 @@ def _build_engine_azure_ad(diag: ConnectionDiagnostic) -> Engine:
     def creator():
         import pyodbc
         diag.log("Acquiring Azure AD token...")
-        token_struct = _get_azure_token()
+        client_id = os.getenv("MANAGED_IDENTITY_CLIENT_ID")
+        token_struct = _get_azure_token(managed_identity_client_id=client_id)
         diag.log("Token acquired, connecting...")
         return pyodbc.connect(
             conn_str,

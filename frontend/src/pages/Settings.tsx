@@ -1,6 +1,7 @@
 /*
  * Settings — Configuration and system management
- * Wired to: /admin/azure/status, /admin/azure/migrate, /admin/azure/diagnose
+ * Wired to: /admin/azure/status, /admin/azure/migrate, /admin/azure/diagnose,
+ *           /auth/users (CRUD), /import_tokens
  */
 import {
   Settings as SettingsIcon,
@@ -17,13 +18,27 @@ import {
   Loader2,
   Play,
   Stethoscope,
+  Users,
+  UserPlus,
+  Trash2,
+  Upload,
+  FileJson,
+  Shield,
+  ShieldCheck,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, useCallback, useRef } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { toast } from "sonner";
 import { useApi, useLazyApi } from "@/hooks/useApi";
 import {
@@ -31,12 +46,18 @@ import {
   triggerMigration,
   triggerDiagnose,
   triggerScrape,
+  listUsers,
+  addUser,
+  updateUserRole,
+  deleteUser,
+  importTokens,
+  type AuthUser,
 } from "@/lib/api";
 
 export default function Settings() {
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
 
-  // Database status — live
+  // ── Database status ────────────────────────────────────────────────────
   const {
     data: azureData,
     loading: azureLoading,
@@ -44,12 +65,9 @@ export default function Settings() {
     refetch: refetchAzure,
   } = useApi(() => getAzureStatus(), []);
 
-  // Migration trigger
   const { loading: migrating, execute: doMigrate } = useLazyApi(
     () => triggerMigration()
   );
-
-  // Diagnose trigger
   const { loading: diagnosing, execute: doDiagnose } = useLazyApi(
     () => triggerDiagnose()
   );
@@ -58,7 +76,7 @@ export default function Settings() {
   const tables = azureData?.tables ?? {};
   const tableNames = Object.keys(tables);
   const totalRecords = Object.values(tables).reduce(
-    (s: number, v: any) => s + (typeof v === "number" ? v : 0),
+    (s: number, v: unknown) => s + (typeof v === "number" ? v : 0),
     0
   );
 
@@ -80,7 +98,7 @@ export default function Settings() {
     try {
       const res = await doDiagnose();
       if (res?.checks) {
-        const passed = res.checks.filter((c: any) => c.passed).length;
+        const passed = res.checks.filter((c: { passed: boolean }) => c.passed).length;
         const total = res.checks.length;
         toast.info(`Diagnosis: ${passed}/${total} checks passed`);
       } else {
@@ -91,7 +109,6 @@ export default function Settings() {
     }
   };
 
-  // Scrape sync buttons
   const { loading: syncing, execute: doSync } = useLazyApi(
     (args: { niche: string; scraper_type: string }) =>
       triggerScrape({ niche: args.niche, geo: "US", scraper_type: args.scraper_type })
@@ -108,18 +125,108 @@ export default function Settings() {
     { name: "Threads", scraper: "Threads" },
   ];
 
+  // ── User Management ────────────────────────────────────────────────────
+  const {
+    data: usersData,
+    loading: usersLoading,
+    refetch: refetchUsers,
+  } = useApi(() => listUsers(), []);
+
+  const users: AuthUser[] = Array.isArray(usersData) ? usersData : [];
+
+  const [newEmail, setNewEmail] = useState("");
+  const [newRole, setNewRole] = useState("trends");
+  const [addingUser, setAddingUser] = useState(false);
+  const [deletingEmail, setDeletingEmail] = useState<string | null>(null);
+  const [updatingEmail, setUpdatingEmail] = useState<string | null>(null);
+
+  const handleAddUser = async () => {
+    if (!newEmail.trim()) {
+      toast.error("Please enter an email address");
+      return;
+    }
+    setAddingUser(true);
+    try {
+      await addUser(newEmail.trim(), newRole);
+      toast.success(`User ${newEmail} added`);
+      setNewEmail("");
+      setNewRole("trends");
+      refetchUsers();
+    } catch (err: unknown) {
+      const msg =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data
+          ?.detail || "Failed to add user";
+      toast.error(msg);
+    } finally {
+      setAddingUser(false);
+    }
+  };
+
+  const handleDeleteUser = async (email: string) => {
+    setDeletingEmail(email);
+    try {
+      await deleteUser(email);
+      toast.success(`User ${email} removed`);
+      refetchUsers();
+    } catch {
+      toast.error("Failed to remove user");
+    } finally {
+      setDeletingEmail(null);
+    }
+  };
+
+  const handleUpdateRole = async (email: string, role: string) => {
+    setUpdatingEmail(email);
+    try {
+      await updateUserRole(email, role);
+      toast.success(`Role updated for ${email}`);
+      refetchUsers();
+    } catch {
+      toast.error("Failed to update role");
+    } finally {
+      setUpdatingEmail(null);
+    }
+  };
+
+  // ── Import Tokens ──────────────────────────────────────────────────────
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [importGeo, setImportGeo] = useState("US");
+  const [importing, setImporting] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+
+  const handleImport = useCallback(async () => {
+    if (!selectedFile) {
+      toast.error("Please select a JSON file first");
+      return;
+    }
+    setImporting(true);
+    try {
+      const res = await importTokens(selectedFile, importGeo);
+      toast.success(res.data.message || "Import started!");
+      setSelectedFile(null);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    } catch (err: unknown) {
+      const msg =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data
+          ?.detail || "Import failed";
+      toast.error(msg);
+    } finally {
+      setImporting(false);
+    }
+  }, [selectedFile, importGeo]);
+
   return (
     <div className="p-4 lg:p-6 space-y-5">
       {/* Header */}
       <div>
         <h1 className="text-xl font-bold tracking-tight">Settings</h1>
         <p className="text-sm text-muted-foreground mt-0.5">
-          Configure data sources, API keys, and system preferences.
+          Configure data sources, API keys, user access, and system preferences.
         </p>
       </div>
 
       <Tabs defaultValue="general" className="space-y-4">
-        <TabsList className="h-9">
+        <TabsList className="h-9 flex-wrap">
           <TabsTrigger value="general" className="text-xs gap-1.5">
             <SettingsIcon className="w-3.5 h-3.5" /> General
           </TabsTrigger>
@@ -132,9 +239,15 @@ export default function Settings() {
           <TabsTrigger value="database" className="text-xs gap-1.5">
             <Database className="w-3.5 h-3.5" /> Database
           </TabsTrigger>
+          <TabsTrigger value="users" className="text-xs gap-1.5">
+            <Users className="w-3.5 h-3.5" /> Users
+          </TabsTrigger>
+          <TabsTrigger value="import" className="text-xs gap-1.5">
+            <Upload className="w-3.5 h-3.5" /> Import
+          </TabsTrigger>
         </TabsList>
 
-        {/* General */}
+        {/* ── General ──────────────────────────────────────────────────── */}
         <TabsContent value="general" className="space-y-4">
           <div className="bg-card border border-border p-5 space-y-5 max-w-2xl">
             <h2 className="text-sm font-semibold">General Preferences</h2>
@@ -181,7 +294,7 @@ export default function Settings() {
           </div>
         </TabsContent>
 
-        {/* Data Sources */}
+        {/* ── Data Sources ─────────────────────────────────────────────── */}
         <TabsContent value="sources" className="space-y-4">
           <div className="bg-card border border-border">
             <div className="grid grid-cols-12 gap-4 px-4 py-2.5 border-b border-border text-xs font-medium text-muted-foreground uppercase tracking-wider">
@@ -192,7 +305,7 @@ export default function Settings() {
             </div>
             {DATA_SOURCES.map((source, i) => {
               const tableKey = source.scraper.toLowerCase();
-              const count = tables[tableKey] ?? tables[source.name] ?? "—";
+              const count = tables[tableKey] ?? tables[source.name] ?? "\u2014";
               const hasData = typeof count === "number" && count > 0;
               return (
                 <div
@@ -254,7 +367,7 @@ export default function Settings() {
           </div>
         </TabsContent>
 
-        {/* API Keys */}
+        {/* ── API Keys ─────────────────────────────────────────────────── */}
         <TabsContent value="keys" className="space-y-4">
           <div className="bg-card border border-border p-5 space-y-4 max-w-2xl">
             <h2 className="text-sm font-semibold">API Keys</h2>
@@ -275,7 +388,6 @@ export default function Settings() {
                     type={showKeys[apiKey.key] ? "text" : "password"}
                     defaultValue={apiKey.value}
                     className="h-8 text-xs font-mono flex-1"
-                    readOnly
                   />
                   <Button
                     variant="ghost"
@@ -298,16 +410,15 @@ export default function Settings() {
           </div>
         </TabsContent>
 
-        {/* Database */}
+        {/* ── Database ─────────────────────────────────────────────────── */}
         <TabsContent value="database" className="space-y-4">
           <div className="bg-card border border-border p-5 space-y-5 max-w-2xl">
             <h2 className="text-sm font-semibold">Azure SQL Database</h2>
 
-            {/* Connection status */}
             {azureLoading ? (
               <div className="flex items-center gap-3 p-3 bg-muted/50 border border-border">
                 <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
-                <p className="text-sm text-muted-foreground">Checking connection…</p>
+                <p className="text-sm text-muted-foreground">Checking connection\u2026</p>
               </div>
             ) : azureError ? (
               <div className="flex items-center gap-3 p-3 bg-destructive/5 border border-destructive/20">
@@ -323,7 +434,7 @@ export default function Settings() {
                 <div>
                   <p className="text-sm font-medium text-success">Connected</p>
                   <p className="text-xs text-muted-foreground">
-                    {azureData?.server || "Azure SQL"} &middot; {azureData?.database || "Trends_DB"}
+                    {String((azureData as unknown as Record<string, unknown>)?.server || "Azure SQL")} &middot; {String((azureData as unknown as Record<string, unknown>)?.database || "Trends_DB")}
                   </p>
                 </div>
               </div>
@@ -339,7 +450,6 @@ export default function Settings() {
               </div>
             )}
 
-            {/* Table stats */}
             <div className="grid grid-cols-3 gap-3">
               <div className="kpi-card">
                 <span className="section-label">Total Records</span>
@@ -371,7 +481,6 @@ export default function Settings() {
               </div>
             </div>
 
-            {/* Table breakdown */}
             {tableNames.length > 0 && (
               <div>
                 <h3 className="text-xs font-semibold mb-2">Table Breakdown</h3>
@@ -390,7 +499,6 @@ export default function Settings() {
               </div>
             )}
 
-            {/* Actions */}
             <div className="flex items-center gap-2 flex-wrap">
               <Button
                 variant="outline"
@@ -435,6 +543,222 @@ export default function Settings() {
                 Diagnose
               </Button>
             </div>
+          </div>
+        </TabsContent>
+
+        {/* ── Users ────────────────────────────────────────────────────── */}
+        <TabsContent value="users" className="space-y-4">
+          <div className="bg-card border border-border p-5 space-y-5 max-w-3xl">
+            <div>
+              <h2 className="text-sm font-semibold">User Management</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Manage whitelisted users who can access the platform via OTP login.
+              </p>
+            </div>
+
+            {/* Add user form */}
+            <div className="flex items-end gap-2 flex-wrap">
+              <div className="flex-1 min-w-[200px] space-y-1">
+                <Label className="text-xs">Email</Label>
+                <Input
+                  type="email"
+                  placeholder="user@company.com"
+                  value={newEmail}
+                  onChange={(e) => setNewEmail(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleAddUser()}
+                  className="h-8 text-sm"
+                />
+              </div>
+              <div className="w-32 space-y-1">
+                <Label className="text-xs">Role</Label>
+                <Select value={newRole} onValueChange={setNewRole}>
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="trends">Trends</SelectItem>
+                    <SelectItem value="admin">Admin</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <Button
+                size="sm"
+                className="h-8 text-xs gap-1.5"
+                onClick={handleAddUser}
+                disabled={addingUser}
+              >
+                {addingUser ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <UserPlus className="w-3.5 h-3.5" />
+                )}
+                Add User
+              </Button>
+            </div>
+
+            {/* Users list */}
+            {usersLoading ? (
+              <div className="flex items-center gap-2 py-6 justify-center text-muted-foreground">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span className="text-sm">Loading users...</span>
+              </div>
+            ) : users.length === 0 ? (
+              <div className="py-6 text-center text-sm text-muted-foreground">
+                No whitelisted users yet. Add one above.
+              </div>
+            ) : (
+              <div className="border border-border rounded-md overflow-hidden">
+                <div className="grid grid-cols-12 gap-2 px-4 py-2 border-b border-border bg-muted/30 text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                  <div className="col-span-5">Email</div>
+                  <div className="col-span-2">Role</div>
+                  <div className="col-span-3">Added</div>
+                  <div className="col-span-2 text-right">Actions</div>
+                </div>
+                {users.map((u) => (
+                  <div
+                    key={u.email}
+                    className="grid grid-cols-12 gap-2 px-4 py-2.5 border-b border-border/50 last:border-0 items-center"
+                  >
+                    <div className="col-span-5 text-sm font-mono truncate" title={u.email}>
+                      {u.email}
+                    </div>
+                    <div className="col-span-2">
+                      <Select
+                        value={u.role}
+                        onValueChange={(val) => handleUpdateRole(u.email, val)}
+                        disabled={updatingEmail === u.email}
+                      >
+                        <SelectTrigger className="h-7 text-[10px] w-24">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="trends">
+                            <span className="flex items-center gap-1">
+                              <Shield className="w-3 h-3" /> Trends
+                            </span>
+                          </SelectItem>
+                          <SelectItem value="admin">
+                            <span className="flex items-center gap-1">
+                              <ShieldCheck className="w-3 h-3" /> Admin
+                            </span>
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="col-span-3 text-xs text-muted-foreground">
+                      {u.created_at
+                        ? new Date(u.created_at).toLocaleDateString("en", {
+                            month: "short",
+                            day: "numeric",
+                            year: "numeric",
+                          })
+                        : "\u2014"}
+                    </div>
+                    <div className="col-span-2 flex justify-end">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 w-7 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
+                        onClick={() => handleDeleteUser(u.email)}
+                        disabled={deletingEmail === u.email}
+                        title="Remove user"
+                      >
+                        {deletingEmail === u.email ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Trash2 className="w-3.5 h-3.5" />
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <p className="text-[10px] text-muted-foreground">
+              Users with the <strong>Admin</strong> role can manage other users and system settings.
+              Users with the <strong>Trends</strong> role can view dashboards and run scrapes.
+            </p>
+          </div>
+        </TabsContent>
+
+        {/* ── Import Tokens ────────────────────────────────────────────── */}
+        <TabsContent value="import" className="space-y-4">
+          <div className="bg-card border border-border p-5 space-y-5 max-w-2xl">
+            <div>
+              <h2 className="text-sm font-semibold">Import Google Trends Tokens</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                When the Google Trends API returns a 429 (rate limit) error, you can manually
+                download the JSON response from your browser and upload it here. The system will
+                extract widget tokens and fetch the trend data using those tokens directly.
+              </p>
+            </div>
+
+            {/* Instructions */}
+            <div className="bg-muted/30 border border-border rounded-md p-4 space-y-2">
+              <h3 className="text-xs font-semibold flex items-center gap-1.5">
+                <FileJson className="w-3.5 h-3.5" /> How to get the JSON file
+              </h3>
+              <ol className="text-xs text-muted-foreground space-y-1 list-decimal list-inside">
+                <li>Open Google Trends in your browser and search for a keyword</li>
+                <li>Open DevTools (F12) and go to the Network tab</li>
+                <li>Look for the request to <code className="font-mono text-[10px]">trends/api/widgetdata</code> or the main explore request</li>
+                <li>Right-click the request and select "Copy response"</li>
+                <li>Save the response as a <code className="font-mono text-[10px]">.json</code> file</li>
+                <li>Upload the file below</li>
+              </ol>
+            </div>
+
+            {/* Upload form */}
+            <div className="space-y-3">
+              <div className="space-y-1.5">
+                <Label className="text-xs">JSON File</Label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".json,application/json"
+                    onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+                    className="h-9 text-xs file:mr-3 file:h-7 file:px-3 file:rounded file:border-0 file:bg-primary file:text-primary-foreground file:text-xs file:font-medium cursor-pointer"
+                  />
+                </div>
+                {selectedFile && (
+                  <p className="text-[10px] text-muted-foreground">
+                    Selected: <span className="font-mono">{selectedFile.name}</span> ({(selectedFile.size / 1024).toFixed(1)} KB)
+                  </p>
+                )}
+              </div>
+
+              <div className="flex items-end gap-2">
+                <div className="w-24 space-y-1">
+                  <Label className="text-xs">Geo</Label>
+                  <Input
+                    value={importGeo}
+                    onChange={(e) => setImportGeo(e.target.value.toUpperCase())}
+                    className="h-8 text-xs font-mono"
+                    maxLength={5}
+                    placeholder="US"
+                  />
+                </div>
+                <Button
+                  size="sm"
+                  className="h-8 text-xs gap-1.5"
+                  onClick={handleImport}
+                  disabled={importing || !selectedFile}
+                >
+                  {importing ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Upload className="w-3.5 h-3.5" />
+                  )}
+                  Import Tokens
+                </Button>
+              </div>
+            </div>
+
+            <p className="text-[10px] text-muted-foreground">
+              The import runs in the background. Trend data will appear in the dashboard once processing is complete.
+            </p>
           </div>
         </TabsContent>
       </Tabs>

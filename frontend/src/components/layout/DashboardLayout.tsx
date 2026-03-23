@@ -4,7 +4,8 @@
  * Sidebar: deep navy (#0F172A), icon + label nav, grouped sections
  * Top bar: white, global search, date range, user menu
  */
-import { useState, type ReactNode } from "react";
+import { useState, useMemo, type ReactNode } from "react";
+import { LogOut } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard,
@@ -19,6 +20,7 @@ import {
   Menu,
   X,
   TrendingUp,
+  Megaphone,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -45,6 +47,12 @@ const NAV_SECTIONS = [
       { href: "/projects", icon: FolderKanban, label: "Research Projects" },
       { href: "/reports", icon: FileBarChart, label: "Reports" },
       { href: "/saved", icon: Bookmark, label: "Saved Views" },
+    ],
+  },
+  {
+    label: "ADVERTISING",
+    items: [
+      { href: "/my-ads", icon: Megaphone, label: "My Ads" },
     ],
   },
   {
@@ -94,6 +102,25 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
 
 export default function DashboardLayout({ children }: { children: ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  const authEmail = useMemo(() => localStorage.getItem("auth_email") || "user@company.com", []);
+  const authInitials = useMemo(() => {
+    const parts = authEmail.split("@")[0].split(/[._-]/);
+    return parts.length >= 2
+      ? (parts[0][0] + parts[1][0]).toUpperCase()
+      : authEmail.slice(0, 2).toUpperCase();
+  }, [authEmail]);
+  const authName = useMemo(() => {
+    const parts = authEmail.split("@")[0].split(/[._-]/);
+    return parts.map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(" ");
+  }, [authEmail]);
+
+  const handleLogout = () => {
+    localStorage.removeItem("auth_token");
+    localStorage.removeItem("auth_email");
+    localStorage.removeItem("auth_role");
+    window.location.href = "/login";
+  };
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -219,7 +246,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
                 <button className="flex items-center gap-2 h-8 px-2 rounded hover:bg-muted transition-colors">
                   <div className="w-6 h-6 rounded-full bg-primary flex items-center justify-center">
                     <span className="text-[10px] font-semibold text-primary-foreground">
-                      MC
+                      {authInitials}
                     </span>
                   </div>
                   <ChevronDown className="w-3 h-3 text-muted-foreground" />
@@ -227,9 +254,9 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-48">
                 <div className="px-2 py-1.5">
-                  <p className="text-sm font-medium">Marian Craciun</p>
+                  <p className="text-sm font-medium">{authName}</p>
                   <p className="text-xs text-muted-foreground">
-                    marian@globalbrother.com
+                    {authEmail}
                   </p>
                 </div>
                 <DropdownMenuSeparator />
@@ -240,7 +267,8 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
                   Preferences
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => toast("Feature coming soon")}>
+                <DropdownMenuItem onClick={handleLogout}>
+                  <LogOut className="w-3.5 h-3.5 mr-2" />
                   Sign out
                 </DropdownMenuItem>
               </DropdownMenuContent>
