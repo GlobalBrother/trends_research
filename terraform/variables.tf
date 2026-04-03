@@ -83,7 +83,7 @@ variable "sql_max_size_gb" {
 variable "sql_auto_pause_delay" {
   description = "Auto-pause delay in minutes (-1 to disable)"
   type        = number
-  default     = 60
+  default     = -1
 }
 
 variable "sql_min_capacity" {

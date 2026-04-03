@@ -167,6 +167,9 @@ class Trend(Base):
         # Composite index for the duplicate-check query:
         # WHERE platform_id=? AND topic=? AND keyword=? AND geo=? AND extracted_at>?
         Index("idx_trends_dedup", "platform_id", "keyword", "geo", "extracted_at"),
+        # Covering index for the main API query:
+        # WHERE platform_id IN (...) AND geo=? ORDER BY extracted_at DESC
+        Index("idx_trends_api_query", "platform_id", "geo", "extracted_at"),
     )
 
 

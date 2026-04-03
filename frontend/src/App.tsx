@@ -15,7 +15,16 @@ import Alerts from "./pages/Alerts";
 import Settings from "./pages/Settings";
 import MyAds from "./pages/MyAds";
 import Login from "./pages/Login";
-import { validateToken } from "./lib/api";
+import { validateToken, isAdmin } from "./lib/api";
+import { Redirect } from "wouter";
+
+/** Wrapper that redirects non-admin users away from admin-only routes */
+function AdminRoute({ component: Component }: { component: React.ComponentType }) {
+  if (!isAdmin()) {
+    return <Redirect to="/" />;
+  }
+  return <Component />;
+}
 
 function AuthenticatedRouter() {
   return (
@@ -28,7 +37,7 @@ function AuthenticatedRouter() {
         <Route path="/saved" component={SavedViews} />
         <Route path="/alerts" component={Alerts} />
         <Route path="/my-ads" component={MyAds} />
-        <Route path="/settings" component={Settings} />
+        <Route path="/settings">{() => <AdminRoute component={Settings} />}</Route>
         <Route path="/404" component={NotFound} />
         <Route component={NotFound} />
       </Switch>

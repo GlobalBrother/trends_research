@@ -75,6 +75,7 @@ _INDEXES = [
     ("idx_trends_geo",                  "trends",           "geo"),
     ("idx_trends_extracted_at",         "trends",           "extracted_at"),
     ("idx_trends_dedup",                "trends",           "platform_id, keyword, geo, extracted_at"),
+    ("idx_trends_api_query",            "trends",           "platform_id, geo, extracted_at"),
 
     # Scrape Errors
     ("idx_error_platform",              "scrape_errors",    "platform"),

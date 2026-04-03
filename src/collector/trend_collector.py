@@ -153,24 +153,29 @@ class TrendCollector:
     def _apply_geo_filter(query, geo: Optional[str]):
         """Apply geo filtering to a SQLAlchemy query.
 
-        Normalises the input geo to uppercase so the comparison is
-        case-insensitive without wrapping the *column* in ``func.upper()``,
-        which would prevent index usage on databases that support
-        case-sensitive indexes.
+        Uses direct string comparisons with common case variants to
+        enable index usage. Avoids wrapping the column in func.upper()
+        which prevents SQL Server from using indexes.
         """
         if geo is None:
             return query
-        geo_upper = geo.strip().upper()
-        if geo_upper == "GLOBAL" or geo_upper == "":
+        geo_clean = geo.strip()
+        if geo_clean.upper() in ("GLOBAL", ""):
             return query.filter(
-                (func.upper(Trend.geo) == "GLOBAL")
+                (Trend.geo == "Global")
+                | (Trend.geo == "GLOBAL")
+                | (Trend.geo == "global")
                 | (Trend.geo == "")
                 | (Trend.geo.is_(None))
             )
+        # Match common case variants to avoid func.upper() on the column
         return query.filter(
-            (func.upper(Trend.geo) == geo_upper)
+            (Trend.geo == geo_clean)
+            | (Trend.geo == geo_clean.upper())
+            | (Trend.geo == geo_clean.lower())
             | (Trend.geo == "")
-            | (func.upper(Trend.geo) == "GLOBAL")
+            | (Trend.geo == "Global")
+            | (Trend.geo == "GLOBAL")
             | (Trend.geo.is_(None))
         )
 

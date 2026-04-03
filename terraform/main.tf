@@ -266,6 +266,54 @@ resource "azurerm_linux_web_app" "main" {
   tags = var.tags
 }
 
+# ---------------------------------------------------------------------------
+# Azure Communication Services (Email)
+# ---------------------------------------------------------------------------
+resource "azurerm_communication_service" "main" {
+  name                = "acs-trends-research"
+  resource_group_name = azurerm_resource_group.main.name
+  data_location       = "Europe"
+  tags                = var.tags
+}
+
+resource "azurerm_email_communication_service" "main" {
+  name                = "acs-email-trends-research"
+  resource_group_name = azurerm_resource_group.main.name
+  data_location       = "Europe"
+  tags                = var.tags
+}
+
+# Azure-managed domain — no DNS verification needed
+resource "azurerm_email_communication_service_domain" "managed" {
+  name             = "AzureManagedDomain"
+  email_service_id = azurerm_email_communication_service.main.id
+  domain_management = "AzureManaged"
+}
+
+# Link the email domain to the Communication Service
+resource "azurerm_communication_service_email_domain_association" "main" {
+  communication_service_id = azurerm_communication_service.main.id
+  email_service_domain_id  = azurerm_email_communication_service_domain.managed.id
+}
+
+# Store ACS connection string in Key Vault
+resource "azurerm_key_vault_secret" "acs_connection_string" {
+  name         = "ACS-CONNECTION-STRING"
+  value        = azurerm_communication_service.main.primary_connection_string
+  key_vault_id = azurerm_key_vault.main.id
+
+  depends_on = [azurerm_key_vault.main]
+}
+
+# Store ACS sender address in Key Vault
+resource "azurerm_key_vault_secret" "acs_sender_address" {
+  name         = "ACS-SENDER-ADDRESS"
+  value        = "DoNotReply@${azurerm_email_communication_service_domain.managed.from_sender_domain}"
+  key_vault_id = azurerm_key_vault.main.id
+
+  depends_on = [azurerm_key_vault.main]
+}
+
 # NOTE: App Service → SQL Server connectivity is already covered by the
 # "AllowAzureServices" firewall rule (0.0.0.0–0.0.0.0) defined above,
 # which permits all Azure-internal traffic. No per-IP rules are needed.

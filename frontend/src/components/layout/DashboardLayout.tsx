@@ -32,8 +32,21 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
+import { isAdmin } from "@/lib/api";
 
-const NAV_SECTIONS = [
+interface NavItem {
+  href: string;
+  icon: typeof LayoutDashboard;
+  label: string;
+  adminOnly?: boolean;
+}
+
+interface NavSection {
+  label: string;
+  items: NavItem[];
+}
+
+const NAV_SECTIONS: NavSection[] = [
   {
     label: "OVERVIEW",
     items: [
@@ -59,43 +72,53 @@ const NAV_SECTIONS = [
     label: "SYSTEM",
     items: [
       { href: "/alerts", icon: Bell, label: "Alerts" },
-      { href: "/settings", icon: Settings, label: "Settings" },
+      { href: "/settings", icon: Settings, label: "Settings", adminOnly: true },
     ],
   },
 ];
 
 function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const [location] = useLocation();
+  const userIsAdmin = useMemo(() => isAdmin(), []);
 
   return (
     <nav className="flex flex-col gap-6 px-3 py-4 sidebar-scroll overflow-y-auto flex-1">
-      {NAV_SECTIONS.map((section) => (
-        <div key={section.label}>
-          <p className="px-3 mb-2 text-[10px] font-semibold uppercase tracking-[0.15em] text-sidebar-foreground/40">
-            {section.label}
-          </p>
-          <div className="flex flex-col gap-0.5">
-            {section.items.map((item) => {
-              const isActive = location === item.href;
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  onClick={onNavigate}
-                  className={`flex items-center gap-3 px-3 py-2 text-sm font-medium transition-colors duration-150 ${
-                    isActive
-                      ? "bg-sidebar-accent text-sidebar-accent-foreground border-l-2 border-sidebar-primary"
-                      : "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50 border-l-2 border-transparent"
-                  }`}
-                >
-                  <item.icon className="w-4 h-4 shrink-0" />
-                  <span>{item.label}</span>
-                </Link>
-              );
-            })}
+      {NAV_SECTIONS.map((section) => {
+        // Filter out admin-only items for non-admin users
+        const visibleItems = section.items.filter(
+          (item) => !item.adminOnly || userIsAdmin
+        );
+        // Don't render the section if no visible items
+        if (visibleItems.length === 0) return null;
+
+        return (
+          <div key={section.label}>
+            <p className="px-3 mb-2 text-[10px] font-semibold uppercase tracking-[0.15em] text-sidebar-foreground/40">
+              {section.label}
+            </p>
+            <div className="flex flex-col gap-0.5">
+              {visibleItems.map((item) => {
+                const isActive = location === item.href;
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    onClick={onNavigate}
+                    className={`flex items-center gap-3 px-3 py-2 text-sm font-medium transition-colors duration-150 ${
+                      isActive
+                        ? "bg-sidebar-accent text-sidebar-accent-foreground border-l-2 border-sidebar-primary"
+                        : "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50 border-l-2 border-transparent"
+                    }`}
+                  >
+                    <item.icon className="w-4 h-4 shrink-0" />
+                    <span>{item.label}</span>
+                  </Link>
+                );
+              })}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </nav>
   );
 }

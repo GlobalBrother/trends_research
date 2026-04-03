@@ -72,14 +72,20 @@ const HERO_IMG =
 function groupByMonth(rows: TrendRow[]) {
   const buckets: Record<string, Record<string, number>> = {};
   for (const r of rows) {
-    const d = r.extracted_at || r.created_at;
+    const d = r.extracted_at || (r as Record<string, unknown>).created_at;
     if (!d) continue;
     const dt = new Date(String(d));
     if (isNaN(dt.getTime())) continue;
     const key = dt.toLocaleString("en", { month: "short", year: "2-digit" });
     if (!buckets[key]) buckets[key] = {};
-    const platform = String(r.platform || "other").toLowerCase();
-    buckets[key][platform] = (buckets[key][platform] || 0) + 1;
+    // platform may be a list (after analytics aggregation) or a string
+    const rawPlatform = r.platform;
+    const platformList: string[] = Array.isArray(rawPlatform)
+      ? rawPlatform.map((p: unknown) => String(p).toLowerCase())
+      : [String(rawPlatform || "other").toLowerCase()];
+    for (const platform of platformList) {
+      buckets[key][platform] = (buckets[key][platform] || 0) + 1;
+    }
   }
   return Object.entries(buckets)
     .sort(([a], [b]) => new Date(`1 ${a}`).getTime() - new Date(`1 ${b}`).getTime())
@@ -88,12 +94,16 @@ function groupByMonth(rows: TrendRow[]) {
 
 function topTrends(rows: TrendRow[], n = 8) {
   const scored = rows
-    .filter((r) => r.title || r.keyword)
+    .filter((r) => r.topic || r.title || r.keyword)
     .map((r) => ({
-      name: r.title || r.keyword || "—",
+      name: r.topic || r.title || r.keyword || "—",
       score: r.virality_score ?? r.search_volume ?? 0,
-      platform: String(r.platform || "—"),
-      geo: r.geo || "—",
+      platform: Array.isArray(r.platform)
+        ? (r.platform as string[]).join(", ")
+        : String(r.platform || "—"),
+      geo: Array.isArray(r.geo)
+        ? (r.geo as string[]).join(", ")
+        : String(r.geo || "—"),
     }));
   scored.sort((a, b) => (b.score as number) - (a.score as number));
   return scored.slice(0, n);
@@ -402,13 +412,25 @@ export default function Dashboard() {
   const platforms = useMemo(() => {
     const set = new Set<string>();
     for (const r of allTrends) {
-      if (r.platform) set.add(String(r.platform).toLowerCase());
+      if (r.platform) {
+        const rawPlatform = r.platform;
+        if (Array.isArray(rawPlatform)) {
+          for (const p of rawPlatform) set.add(String(p).toLowerCase());
+        } else {
+          set.add(String(rawPlatform).toLowerCase());
+        }
+      }
     }
-    return Array.from(set).slice(0, 6);
+    return Array.from(set).slice(0, 9);
   }, [allTrends]);
 
   const PLATFORM_COLORS: Record<string, string> = {
-    google_trends: "oklch(0.50 0.20 260)",
+    // DB platform names (lowercased) — spaces preserved
+    "google trends": "oklch(0.50 0.20 260)",
+    "google interest": "oklch(0.50 0.18 260)",
+    "google regions": "oklch(0.55 0.16 260)",
+    "google related queries": "oklch(0.48 0.18 260)",
+    "google related topics": "oklch(0.52 0.16 260)",
     youtube: "oklch(0.60 0.22 25)",
     reddit: "oklch(0.55 0.20 30)",
     hackernews: "oklch(0.65 0.15 70)",
@@ -417,6 +439,8 @@ export default function Dashboard() {
     threads: "oklch(0.50 0.15 200)",
     news: "oklch(0.65 0.15 170)",
     gethookdai: "oklch(0.60 0.20 145)",
+    // Legacy underscore variants (fallback)
+    google_trends: "oklch(0.50 0.20 260)",
   };
 
   /* ── Top trends ─────────────────────────────────────────────────────── */

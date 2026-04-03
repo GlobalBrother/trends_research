@@ -7,9 +7,18 @@
 import axios, { type AxiosInstance } from "axios";
 
 const client: AxiosInstance = axios.create({
-  baseURL: "/api",
+  baseURL: import.meta.env.VITE_API_BASE_URL ?? "",
   timeout: 60_000,
   headers: { "Content-Type": "application/json" },
+});
+
+// Automatically attach auth token to every request
+client.interceptors.request.use((config) => {
+  const token = localStorage.getItem("auth_token");
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
 });
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -133,6 +142,14 @@ export interface ScrapeRequest {
   category?: number;
   scraper_type?: string;
 }
+
+// ─── Auth helpers ───────────────────────────────────────────────────────────
+
+/** Get the current user's role from localStorage */
+export const getUserRole = (): string => localStorage.getItem("auth_role") || "trends";
+
+/** Check if the current user is an admin */
+export const isAdmin = (): boolean => getUserRole() === "admin";
 
 // ─── API Functions ───────────────────────────────────────────────────────────
 

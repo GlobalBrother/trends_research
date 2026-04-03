@@ -21,3 +21,4 @@ sqlalchemy
 pyodbc
 azure-identity
 azure-keyvault-secrets
+azure-communication-email

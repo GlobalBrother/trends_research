@@ -65,3 +65,13 @@ output "managed_identity_client_id" {
   description = "Client ID of the Managed Identity"
   value       = azurerm_user_assigned_identity.app.client_id
 }
+
+output "acs_sender_domain" {
+  description = "Azure Communication Services sender domain"
+  value       = azurerm_email_communication_service_domain.managed.from_sender_domain
+}
+
+output "acs_sender_address" {
+  description = "Full sender email address for ACS"
+  value       = "DoNotReply@${azurerm_email_communication_service_domain.managed.from_sender_domain}"
+}

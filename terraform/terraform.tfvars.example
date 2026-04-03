@@ -45,16 +45,15 @@ managed_identity_name = "trendsApp"
 key_vault_name = "kv-trends-app-prod"
 
 # Secrets to store in Key Vault (use hyphenated names)
+# NOTE: SQL user/pass removed — using Entra ID (Managed Identity) for DB auth.
+# The app auto-detects no AZURE_SQL_USER/PASS and uses Azure AD tokens instead.
 app_secrets = {
   "AZURE-SQL-SERVER"    = "gb-ads-sql-server.database.windows.net"
   "AZURE-SQL-DATABASE"  = "Trends_DB"
-  "AZURE-SQL-USER"      = "trendsAppUser"
-  "AZURE-SQL-PASS"      = "CHANGE_ME"
   "GETHOOKEDAI-TOKEN"   = "CHANGE_ME"
   "RESEND-API-KEY"      = "CHANGE_ME"
   "RESEND-FROM-EMAIL"   = "noreply@yourdomain.com"
   "NEWS-API-KEY"        = "CHANGE_ME"
-  "ENSEMBLEDATA-TOKEN"  = "CHANGE_ME"
 }
 
 # ---------------------------------------------------------------------------

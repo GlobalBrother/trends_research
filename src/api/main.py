@@ -10,9 +10,8 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import pandas as pd
-import resend
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Query, BackgroundTasks, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, Query, BackgroundTasks, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -101,9 +100,49 @@ except Exception as _eng_err:
 
 SessionFactory = get_session  # backward-compat alias
 
-# Resend API config
-resend.api_key = os.getenv("RESEND_API_KEY", "")
-RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "noreply@yourdomain.com")
+# ---------------------------------------------------------------------------
+# Email provider: Azure Communication Services (production) or Resend (fallback)
+# ---------------------------------------------------------------------------
+_acs_conn_str = os.getenv("ACS_CONNECTION_STRING", "")
+_acs_sender = os.getenv("ACS_SENDER_ADDRESS", "")
+_email_client = None
+
+if _acs_conn_str:
+    try:
+        from azure.communication.email import EmailClient
+        _email_client = EmailClient.from_connection_string(_acs_conn_str)
+        print(f"Email provider: Azure Communication Services (sender: {_acs_sender})")
+    except Exception as _acs_err:
+        print(f"ACS Email init failed ({_acs_err}), falling back to Resend")
+
+# Resend fallback (for local dev or if ACS is not configured)
+if not _email_client:
+    import resend
+    resend.api_key = os.getenv("RESEND_API_KEY", "")
+    print("Email provider: Resend")
+
+EMAIL_FROM = _acs_sender or os.getenv("RESEND_FROM_EMAIL", "noreply@yourdomain.com")
+
+
+def _send_email(to_email: str, subject: str, html_body: str):
+    """Send an email via ACS or Resend, depending on what's configured."""
+    if _email_client:
+        # Azure Communication Services
+        message = {
+            "content": {"subject": subject, "html": html_body},
+            "recipients": {"to": [{"address": to_email}]},
+            "senderAddress": EMAIL_FROM,
+        }
+        poller = _email_client.begin_send(message)
+        poller.result()  # wait for completion
+    else:
+        # Resend fallback
+        resend.Emails.send({
+            "from": EMAIL_FROM,
+            "to": [to_email],
+            "subject": subject,
+            "html": html_body,
+        })
 
 # Test account that bypasses OTP (for development/testing).
 TEST_ACCOUNT_EMAIL = os.getenv("TEST_ACCOUNT_EMAIL", "").strip()
@@ -196,6 +235,36 @@ def _init_niches_table():
         logger.warning(f"Could not seed niches table: {e}")
 
 _init_niches_table()
+
+
+# ---------------------------------------------------------------------------
+# Role-based access control helpers
+# ---------------------------------------------------------------------------
+
+def _get_current_user(authorization: str) -> User:
+    """Validate the Bearer token and return the User object.
+    Raises 401 if the token is missing, invalid, or expired."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+    token = authorization.split(" ", 1)[1]
+    with session_scope() as session:
+        row = session.query(User.id, User.email, User.role).join(
+            AuthToken, AuthToken.user_id == User.id
+        ).filter(
+            AuthToken.token == token,
+            AuthToken.expires_at > datetime.utcnow(),
+        ).first()
+    if not row:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return row
+
+
+def _require_admin(authorization: str) -> None:
+    """Verify the request comes from an admin user.
+    Raises 401 if unauthenticated, 403 if not admin."""
+    user = _get_current_user(authorization)
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
 
 
 class ScrapeRequest(BaseModel):
@@ -327,7 +396,12 @@ def request_otp(email: str = Query(...)):
                 user = User(email=email, role="admin")
                 session.add(user)
                 session.flush()
-            session.add(OtpCode(user_id=user.id, code=TEST_ACCOUNT_OTP))
+            existing_otp = session.query(OtpCode).filter(OtpCode.user_id == user.id, OtpCode.used == 0).first()
+            if existing_otp:
+                existing_otp.code = TEST_ACCOUNT_OTP
+                existing_otp.created_at = datetime.utcnow()
+            else:
+                session.add(OtpCode(user_id=user.id, code=TEST_ACCOUNT_OTP))
         return {"message": "OTP sent", "email": email}
 
     with session_scope() as session:
@@ -337,19 +411,23 @@ def request_otp(email: str = Query(...)):
 
         user_id = user.id
         code = secrets.token_hex(3).upper()  # 6-char hex code
-        session.add(OtpCode(user_id=user_id, code=code))
+        existing_otp = session.query(OtpCode).filter(OtpCode.user_id == user_id, OtpCode.used == 0).first()
+        if existing_otp:
+            existing_otp.code = code
+            existing_otp.created_at = datetime.utcnow()
+        else:
+            session.add(OtpCode(user_id=user_id, code=code))
 
     try:
-        resend.Emails.send({
-            "from": RESEND_FROM_EMAIL,
-            "to": [email],
-            "subject": "Your Trends Research login code",
-            "html": f"<p>Your one-time login code is: <strong>{code}</strong></p>"
-                   f"<p>This code expires in 10 minutes.</p>",
-        })
+        _send_email(
+            to_email=email,
+            subject="Your Trends Research login code",
+            html_body=f"<p>Your one-time login code is: <strong>{code}</strong></p>"
+                      f"<p>This code expires in 10 minutes.</p>",
+        )
     except Exception as e:
         logger.error(f"Failed to send OTP email to {email}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to send OTP email")
+        raise HTTPException(status_code=500, detail=f"Failed to send OTP email: {type(e).__name__}: {e}")
 
     return {"message": "OTP sent", "email": email}
 
@@ -401,16 +479,18 @@ def validate_token(token: str = Query(...)):
 
 
 @app.get("/auth/users")
-def list_users():
-    """List all whitelisted users."""
+def list_users(authorization: str = Header(None)):
+    """List all whitelisted users. Admin only."""
+    _require_admin(authorization)
     with session_scope() as session:
         rows = session.query(User.email, User.role, User.created_at).order_by(User.created_at).all()
     return [{"email": r.email, "role": r.role, "created_at": r.created_at} for r in rows]
 
 
 @app.post("/auth/users")
-def add_user(user: UserCreate):
-    """Add a whitelisted user."""
+def add_user(user: UserCreate, authorization: str = Header(None)):
+    """Add a whitelisted user. Admin only."""
+    _require_admin(authorization)
     if user.role not in ("admin", "trends"):
         raise HTTPException(status_code=400, detail="Role must be 'admin' or 'trends'")
     try:
@@ -422,8 +502,9 @@ def add_user(user: UserCreate):
 
 
 @app.put("/auth/users")
-def update_user_role(email: str = Query(...), role: str = Query(...)):
-    """Update a user's role."""
+def update_user_role(email: str = Query(...), role: str = Query(...), authorization: str = Header(None)):
+    """Update a user's role. Admin only."""
+    _require_admin(authorization)
     if role not in ("admin", "trends"):
         raise HTTPException(status_code=400, detail="Role must be 'admin' or 'trends'")
     with session_scope() as session:
@@ -435,8 +516,9 @@ def update_user_role(email: str = Query(...), role: str = Query(...)):
 
 
 @app.delete("/auth/users")
-def delete_user(email: str = Query(...)):
-    """Remove a whitelisted user."""
+def delete_user(email: str = Query(...), authorization: str = Header(None)):
+    """Remove a whitelisted user. Admin only."""
+    _require_admin(authorization)
     with session_scope() as session:
         user = session.query(User).filter(User.email == email).first()
         if not user:
@@ -445,8 +527,12 @@ def delete_user(email: str = Query(...)):
     return {"message": "User removed", "email": email}
 
 
-@app.get("/")
-def root():
+@app.get("/", include_in_schema=False)
+async def root():
+    """Serve the React SPA at the root URL."""
+    _index = os.path.join(_frontend_dist, "index.html")
+    if os.path.isdir(_frontend_dist) and os.path.isfile(_index):
+        return FileResponse(_index)
     return {"message": "Trends Research API v2.0 is running"}
 
 
@@ -652,11 +738,10 @@ async def import_tokens(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     geo: str = Query("US"),
+    authorization: str = Header(None),
 ):
-    """
-    Import a Google Trends JSON file downloaded manually when the API returns 429.
-    Parses widget tokens and fetches data using those tokens directly.
-    """
+    """Import a Google Trends JSON file. Admin only."""
+    _require_admin(authorization)
     try:
         content = await file.read()
         text = content.decode("utf-8")
@@ -1562,8 +1647,9 @@ def _provider_label(platform: str) -> str:
 
 
 @app.get("/admin/token_usage")
-def get_token_usage():
-    """Return token/units consumption for ensembledata and gethookedai only."""
+def get_token_usage(authorization: str = Header(None)):
+    """Return token/units consumption. Admin only."""
+    _require_admin(authorization)
     try:
         with session_scope() as session:
             # Recent usage rows (limit 1000)
@@ -1623,8 +1709,9 @@ def get_token_usage():
 
 
 @app.post("/admin/azure/setup_schema")
-def setup_azure_schema(background_tasks: BackgroundTasks):
-    """Run the Azure SQL schema setup (create tables & indexes)."""
+def setup_azure_schema(background_tasks: BackgroundTasks, authorization: str = Header(None)):
+    """Run the Azure SQL schema setup. Admin only."""
+    _require_admin(authorization)
     try:
         from src.db.setup_azure import run_schema
         background_tasks.add_task(run_schema)
@@ -1637,14 +1724,10 @@ def setup_azure_schema(background_tasks: BackgroundTasks):
 def run_azure_migration(
     background_tasks: BackgroundTasks,
     dry_run: bool = Query(False, description="Preview changes without executing"),
+    authorization: str = Header(None),
 ):
-    """Run the database migration to sync Azure SQL with the latest models.
-
-    This is **idempotent** — it only creates tables and indexes that do not
-    already exist.  Safe to run multiple times.
-
-    Set ``dry_run=true`` to preview the SQL without executing.
-    """
+    """Run the database migration. Admin only."""
+    _require_admin(authorization)
     try:
         from src.db.migrate import run_migration
 
@@ -1672,8 +1755,9 @@ def run_azure_migration(
 
 
 @app.get("/admin/azure/status")
-def azure_status():
-    """Check Azure SQL connectivity and return table row counts."""
+def azure_status(authorization: str = Header(None)):
+    """Check Azure SQL connectivity. Admin only."""
+    _require_admin(authorization)
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1")).scalar()
@@ -1698,8 +1782,9 @@ def azure_status():
 
 
 @app.get("/admin/azure/diagnose")
-def azure_diagnose():
-    """Run a full connection diagnostic (resets engine and retests everything)."""
+def azure_diagnose(authorization: str = Header(None)):
+    """Run a full connection diagnostic. Admin only."""
+    _require_admin(authorization)
     try:
         diag = run_connection_diagnose()
         return diag.summary_dict()
@@ -1714,8 +1799,68 @@ def azure_diagnose():
 # ---------------------------------------------------------------------------
 @app.get("/health")
 async def health_check():
-    """Lightweight health check for load balancers and container orchestration."""
-    return {"status": "healthy", "service": "trends-research-app"}
+    """Health check that also pings the database to prevent Azure SQL
+    serverless auto-pause (which causes ~60s cold-start delays)."""
+    db_ok = False
+    try:
+        eng = get_engine()
+        if eng is not None:
+            with eng.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            db_ok = True
+    except Exception:
+        pass
+    return {
+        "status": "healthy",
+        "service": "trends-research-app",
+        "database": "connected" if db_ok else "unavailable",
+    }
+
+
+@app.get("/debug/env")
+async def debug_env():
+    """Temporary debug endpoint — remove after deployment is verified."""
+    return {
+        "KEY_VAULT_NAME": os.environ.get("KEY_VAULT_NAME", "NOT SET"),
+        "RESEND_API_KEY_set": bool(os.getenv("RESEND_API_KEY")),
+        "RESEND_API_KEY_prefix": (os.getenv("RESEND_API_KEY", ""))[:8] + "..." if os.getenv("RESEND_API_KEY") else "EMPTY",
+        "RESEND_FROM_EMAIL": os.getenv("RESEND_FROM_EMAIL", "NOT SET"),
+        "AZURE_SQL_SERVER_set": bool(os.getenv("AZURE_SQL_SERVER")),
+        "AZURE_SQL_USER_set": bool(os.getenv("AZURE_SQL_USER")),
+        "db_engine_ok": engine is not None,
+    }
+
+
+@app.get("/debug/test_otp")
+async def debug_test_otp(email: str = Query("test@test.com")):
+    """Temporary debug endpoint to test OTP flow step by step."""
+    result = {"steps": []}
+    try:
+        result["steps"].append("1. Starting")
+        with session_scope() as session:
+            result["steps"].append("2. Session opened")
+            user = session.query(User).filter(User.email == email).first()
+            result["steps"].append(f"3. User query done: {'found' if user else 'NOT FOUND'}")
+            if not user:
+                result["error"] = f"User {email} not in users table"
+                return result
+            result["steps"].append(f"4. User id={user.id}, role={user.role}")
+            code = secrets.token_hex(3).upper()
+            session.add(OtpCode(user_id=user.id, code=code))
+            result["steps"].append("5. OTP code created")
+        result["steps"].append("6. Session committed")
+        result["steps"].append(f"7. Email from={EMAIL_FROM}")
+        _send_email(
+            to_email=email,
+            subject="Test OTP",
+            html_body=f"<p>Code: <strong>{code}</strong></p>",
+        )
+        result["steps"].append("8. Email sent!")
+    except Exception as e:
+        result["error"] = f"{type(e).__name__}: {e}"
+        import traceback
+        result["traceback"] = traceback.format_exc()
+    return result
 
 
 # ---------------------------------------------------------------------------

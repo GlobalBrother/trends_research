@@ -106,8 +106,13 @@ function getTopKeywords(rows: TrendRow[], n = 5): string[] {
 function getGeoDistribution(rows: TrendRow[]) {
   const counts: Record<string, number> = {};
   for (const r of rows) {
-    const g = r.geo || "Global";
-    counts[g] = (counts[g] || 0) + 1;
+    const raw = r.geo || "Global";
+    const geos: string[] = Array.isArray(raw)
+      ? (raw as string[]).map(String)
+      : [String(raw)];
+    for (const g of geos) {
+      counts[g || "Global"] = (counts[g || "Global"] || 0) + 1;
+    }
   }
   const sorted = Object.entries(counts).sort(([, a], [, b]) => b - a);
   const max = sorted[0]?.[1] || 1;
@@ -120,8 +125,13 @@ function getGeoDistribution(rows: TrendRow[]) {
 function getPlatformBreakdown(rows: TrendRow[]) {
   const counts: Record<string, number> = {};
   for (const r of rows) {
-    const p = r.platform || "Unknown";
-    counts[p] = (counts[p] || 0) + 1;
+    const raw = r.platform || "Unknown";
+    const platforms: string[] = Array.isArray(raw)
+      ? (raw as string[]).map(String)
+      : [String(raw)];
+    for (const p of platforms) {
+      counts[p] = (counts[p] || 0) + 1;
+    }
   }
   const total = rows.length || 1;
   return Object.entries(counts)
@@ -560,7 +570,18 @@ export default function TrendExplorer() {
       ? (trends.reduce((s, r) => s + (r.virality_score ?? 0), 0) / trends.length).toFixed(1)
       : "\u2014";
   const uniqueKeywords = new Set(trends.map((r) => r.keyword).filter(Boolean)).size;
-  const platformCount = new Set(trends.map((r) => r.platform).filter(Boolean)).size;
+  const platformCount = (() => {
+    const set = new Set<string>();
+    for (const r of trends) {
+      const raw = r.platform;
+      if (Array.isArray(raw)) {
+        for (const p of raw) set.add(String(p));
+      } else if (raw) {
+        set.add(String(raw));
+      }
+    }
+    return set.size;
+  })();
 
   return (
     <div className="p-4 lg:p-6 space-y-4">
@@ -848,8 +869,10 @@ export default function TrendExplorer() {
                   key={i}
                   className="flex items-center gap-2 text-xs py-1.5 border-b border-border/30 last:border-0"
                 >
-                  <span className="flex-1 truncate font-medium">{t.title || t.keyword || "\u2014"}</span>
-                  <span className="text-muted-foreground shrink-0">{t.platform}</span>
+                     <span className="flex-1 truncate font-medium">{t.topic || t.title || t.keyword || "—"}</span>
+                  <span className="text-muted-foreground shrink-0">
+                    {Array.isArray(t.platform) ? (t.platform as string[]).join(", ") : t.platform}
+                  </span>
                   <span className="font-mono shrink-0">
                     {t.virality_score != null ? Number(t.virality_score).toFixed(1) : "\u2014"}
                   </span>

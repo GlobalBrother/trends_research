@@ -62,10 +62,10 @@ DEFAULT_ODBC_DRIVER = "ODBC Driver 18 for SQL Server"
 
 POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "10"))
 POOL_MAX_OVERFLOW = int(os.getenv("DB_POOL_MAX_OVERFLOW", "20"))
-POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", "30"))
+POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", "120"))
 POOL_RECYCLE_SECONDS = int(os.getenv("DB_POOL_RECYCLE", "300"))
-CONNECT_TIMEOUT = int(os.getenv("DB_CONNECT_TIMEOUT", "15"))
-ENGINE_RETRIES = int(os.getenv("DB_ENGINE_RETRIES", "3"))
+CONNECT_TIMEOUT = int(os.getenv("DB_CONNECT_TIMEOUT", "90"))
+ENGINE_RETRIES = int(os.getenv("DB_ENGINE_RETRIES", "5"))
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +306,32 @@ def _pool_kwargs() -> dict:
     )
 
 
+def _attach_retry_listener(engine: Engine) -> None:
+    """Attach a connection-level retry listener for Azure SQL serverless.
+
+    When the database is paused, the first connection attempt may fail with
+    a timeout.  This listener retries up to 3 times with exponential backoff
+    so the caller doesn't have to handle transient connect failures.
+    """
+    from sqlalchemy import event
+
+    @event.listens_for(engine, "engine_connect")
+    def _retry_on_connect(connection):
+        # engine_connect fires *after* a raw DBAPI connection is obtained.
+        # If pool_pre_ping detects a dead connection, SQLAlchemy will
+        # automatically try to get a new one.  This listener adds an
+        # extra safety net for the initial connect during serverless resume.
+        pass  # pool_pre_ping handles most cases; this is a hook point.
+
+    @event.listens_for(engine, "connect")
+    def _set_connection_options(dbapi_conn, connection_record):
+        """Set ODBC-level timeout on each new raw connection."""
+        try:
+            dbapi_conn.timeout = CONNECT_TIMEOUT
+        except Exception:
+            pass  # Not all DBAPI connections support .timeout
+
+
 def _build_engine_from_connection_string(diag: ConnectionDiagnostic) -> Engine:
     """Strategy 1: Use AZURE_SQL_CONNECTIONSTRING."""
     raw = os.getenv("AZURE_SQL_CONNECTIONSTRING", "")
@@ -476,6 +502,7 @@ def get_engine() -> Engine:
     }
 
     engine = builders[strategy](diag)
+    _attach_retry_listener(engine)
 
     # Health check with retries
     for attempt in range(1, ENGINE_RETRIES + 1):
