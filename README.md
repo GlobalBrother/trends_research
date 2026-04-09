@@ -163,6 +163,69 @@ python -m src.db.doctor
 
 ---
 
+## 📋 Daily Meeting Notes
+
+### 2026-04-08 — Sprint Session
+
+**Participants:** Development Team
+
+#### 1. Deployment Pipeline Fix (Docker)
+- **Problem:** `deploy.sh` failed with `DOCKER_COMMAND_ERROR` — Docker daemon not available in WSL environment.
+- **Solution:** Added runtime check (`docker info`); when Docker is unavailable, the script falls back to `az acr build` (ACR Tasks) which builds and pushes the image server-side without needing a local Docker daemon. Original local build/push flow preserved when Docker is available.
+- **Files changed:** `deploy.sh`
+
+#### 2. Azure Resource Auto-Provisioning
+- **Problem:** `az webapp restart` failed with `ResourceNotFound` — the App Service `trends-research-app` did not exist in the resource group.
+- **Solution:** Replaced bare restart with existence checks for Resource Group, App Service Plan, and Web App. If the Web App doesn't exist, the script now creates it automatically with `az webapp create`, configures `WEBSITES_PORT`, and sets storage settings. If it already exists, it updates the container image and restarts.
+- **New configurable env vars:** `APP_SERVICE_PLAN`, `APP_SERVICE_SKU`, `LOCATION` (with sensible defaults).
+- **Files changed:** `deploy.sh`
+
+#### 3. Resource Group Configuration
+- **Change:** Updated default `RESOURCE_GROUP` from `trends-research-rg` to `GB_Reporting_RG` to match the existing Azure infrastructure.
+- **Files changed:** `deploy.sh`
+
+#### 4. Performance Optimization — Scraping Speed
+- **Problem:** Frontend reported "Failed to fetch trends: timeout of 60000ms exceeded" — scraping was too slow (sequential execution).
+- **Solution (multi-level parallelization):**
+  - **Comprehensive scrape** (`trend_collector.py`): All 8 scrapers (Google Trends, YouTube, TikTok, Instagram, Threads, Reddit, HackerNews, News) now run concurrently via `ThreadPoolExecutor` instead of sequentially.
+  - **Non-blocking GET endpoints** (`main.py`): `/trending_now`, `/youtube_trends`, `/hackernews_trends`, `/reddit_trends`, `/news_trends` now return existing (possibly stale) data immediately and trigger a background refresh thread if data is stale. Per-platform locks prevent duplicate concurrent scrapes.
+  - **Parallelized per-keyword API calls** in all 4 EnsembleData scrapers (`youtube_scraper.py`, `tiktok_scraper.py`, `instagram_scraper.py`, `threads_scraper.py`): keywords fetched concurrently (up to 4 workers) with `threading.Event` stop mechanism for API rate limits.
+- **Frontend timeout:** Adjusted from 60s → 300s → settled at 120s (2 min) since responses are now much faster.
+- **Files changed:** `src/collector/trend_collector.py`, `src/api/main.py`, `src/scrapers/ensembledata/youtube_scraper.py`, `src/scrapers/ensembledata/tiktok_scraper.py`, `src/scrapers/ensembledata/instagram_scraper.py`, `src/scrapers/ensembledata/threads_scraper.py`, `frontend/src/lib/api.ts`
+
+#### 5. Admin UI — Independent Scraper Loading States
+- **Problem:** All scrape buttons in the admin Settings page shared a single loading boolean — triggering one scraper disabled/spun all buttons.
+- **Solution:** Replaced shared `syncing` boolean with a per-scraper `scrapingMap` state (`Record<string, boolean>`). Each button now tracks its own loading independently, allowing multiple scrapers to run in parallel from the UI.
+- **Files changed:** `frontend/src/pages/Settings.tsx`
+
+#### 6. Per-Platform Scraper Connectivity Test
+- **Problem:** No way to diagnose why a specific scraper fails without reading server logs.
+- **Solution:**
+  - **Backend:** Added `GET /test_scraper/{platform}` endpoint that tests each of the 8 platforms individually by making minimal API calls. Returns `{ok, message}` with normalized human-readable errors for common failures (missing API keys, auth errors, rate limits, timeouts, connection issues).
+  - **Frontend:** Added a "Test" button (stethoscope icon) next to each platform's "Scrape" button with per-platform loading state and inline result banner (green for success, red for error with the normalized message).
+- **Files changed:** `src/api/main.py`, `frontend/src/lib/api.ts`, `frontend/src/pages/Settings.tsx`
+
+#### Summary of All Files Modified Today
+| File | Changes |
+|------|---------|
+| `deploy.sh` | Docker fallback, auto-provisioning, resource group update |
+| `src/api/main.py` | Non-blocking endpoints, `/test_scraper/{platform}` endpoint |
+| `src/collector/trend_collector.py` | Parallel comprehensive scrape |
+| `src/scrapers/ensembledata/youtube_scraper.py` | Parallel per-keyword fetching |
+| `src/scrapers/ensembledata/tiktok_scraper.py` | Parallel per-keyword fetching |
+| `src/scrapers/ensembledata/instagram_scraper.py` | Parallel per-keyword fetching |
+| `src/scrapers/ensembledata/threads_scraper.py` | Parallel per-keyword fetching |
+| `frontend/src/lib/api.ts` | Timeout adjustment, `testScraper()` function |
+| `frontend/src/pages/Settings.tsx` | Independent loading states, test buttons |
+
+#### Next Steps / Action Items
+- [ ] Rebuild frontend (`pnpm build`) and redeploy (`bash deploy.sh`)
+- [ ] Verify all 8 scraper test buttons work end-to-end in production
+- [ ] Monitor scraping performance improvements with parallelization
+- [ ] Consider adding WebSocket progress reporting for long-running scrapes
+
+---
+
 ## 📜 License
 
 Private repository — © 2026 Global Brother SRL. All rights reserved.

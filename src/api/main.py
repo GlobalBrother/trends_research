@@ -4,6 +4,7 @@ import logging
 import os
 import secrets
 import sys
+import threading
 import time
 import traceback
 from datetime import datetime, timedelta
@@ -339,6 +340,38 @@ def _needs_scrape(df: pd.DataFrame, platform_col_value: str, hours: int = 24,
     return datetime.now() - last.to_pydatetime() > timedelta(hours=hours)
 
 # ---------------------------------------------------------------------------
+# Background scrape helper — fire-and-forget refresh without blocking the
+# HTTP response.  A lock per platform prevents duplicate concurrent scrapes.
+# ---------------------------------------------------------------------------
+_scrape_locks: dict[str, threading.Lock] = {}
+_scrape_locks_guard = threading.Lock()
+
+
+def _trigger_background_scrape(platform_key: str, scrape_fn):
+    """Run *scrape_fn* in a daemon thread if one isn't already running for
+    *platform_key*.  Returns immediately."""
+    with _scrape_locks_guard:
+        if platform_key not in _scrape_locks:
+            _scrape_locks[platform_key] = threading.Lock()
+        lock = _scrape_locks[platform_key]
+
+    if not lock.acquire(blocking=False):
+        logger.debug("Scrape already running for %s — skipping", platform_key)
+        return
+
+    def _run():
+        try:
+            scrape_fn()
+        except Exception:
+            logger.error("Background scrape failed for %s", platform_key, exc_info=True)
+        finally:
+            lock.release()
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+
+
+# ---------------------------------------------------------------------------
 # Platform endpoint helper (reduces massive duplication)
 # ---------------------------------------------------------------------------
 
@@ -350,12 +383,12 @@ def _platform_endpoint(
     scrape_fn=None,
     freshness_hours: int = 24,
 ) -> dict:
-    """Generic handler: check freshness -> optionally scrape -> filter -> process -> return."""
+    """Generic handler: return existing data immediately; if stale, trigger a
+    background scrape so the *next* request gets fresh data."""
     raw = collector.collect_all(geo=geo, **collect_kwargs)
 
     if scrape_fn and _needs_scrape(raw, platform_db_name, freshness_hours, niche_name):
-        if scrape_fn():
-            raw = collector.collect_all(geo=geo, **collect_kwargs)
+        _trigger_background_scrape(platform_db_name, scrape_fn)
 
     if raw.empty:
         return {"data": []}
@@ -838,8 +871,10 @@ def get_trending_now(geo: str = Query("US"), trend_type: str = Query("daily")):
     raw = collector.collect_all(geo=geo, include_trending_now=True)
 
     if _needs_scrape(raw, "Google Trends", hours=12):
-        if collector.run_trending_now_scraper(geo=geo, trend_type=trend_type):
-            raw = collector.collect_all(geo=geo, include_trending_now=True)
+        _trigger_background_scrape(
+            f"trending_now_{geo}",
+            lambda: collector.run_trending_now_scraper(geo=geo, trend_type=trend_type),
+        )
 
     if raw.empty:
         return {"data": []}
@@ -857,36 +892,29 @@ def get_trending_now(geo: str = Query("US"), trend_type: str = Query("daily")):
 
 @app.get("/youtube_trends")
 def get_youtube_trends(niche_name: str = Query(...), geo: Optional[str] = Query(None)):
-    # YouTube trends are always niche-specific in our implementation
     raw_data = collector.collect_all(geo=geo, include_youtube=True)
-    
+
     needs_scrape = True
     if not raw_data.empty and 'platform' in raw_data.columns:
         yt_data = raw_data[raw_data['platform'] == "YouTube"]
         if not yt_data.empty:
-            # Check if we have data for this niche (based on keywords)
             niche_keywords = _get_niche_keywords_from_db(niche_name)
-            # Find if any keyword from this niche was recently scraped for YouTube
-            # This is a bit loose but works for our purposes
             niche_yt_data = yt_data[yt_data['keyword'].isin(niche_keywords)]
-            
             if not niche_yt_data.empty:
                 last_extracted = pd.to_datetime(niche_yt_data['extracted_at']).max()
                 if datetime.now() - last_extracted.to_pydatetime() < timedelta(hours=24):
                     needs_scrape = False
-    
+
     if needs_scrape:
         niche_keywords = _get_niche_keywords_from_db(niche_name)
-        # Use top 5 keywords to avoid too many requests
-        success = collector.run_youtube_trends_scraper(keywords=niche_keywords[:5])
-        if success:
-            raw_data = collector.collect_all(include_youtube=True)
+        _trigger_background_scrape(
+            f"youtube_{niche_name}",
+            lambda: collector.run_youtube_trends_scraper(keywords=niche_keywords[:5]),
+        )
 
     if not raw_data.empty:
         yt_data = raw_data[raw_data['platform'] == "YouTube"].copy()
         if not yt_data.empty:
-            # Re-filter for current niche to ensure relevance
-            # We use niche_discovery to be robust
             processed_data = niche.filter_by_niche(yt_data, niche_name)
             if not processed_data.empty:
                 processed_data = analytics.process_trends(processed_data)
@@ -954,6 +982,126 @@ def get_scrape_errors(platform: Optional[str] = Query(None)):
     if df.empty:
         return {"data": []}
     return {"data": _sanitize(df)}
+
+
+# ---------------------------------------------------------------------------
+# Test scraper connectivity — per-platform health check
+# ---------------------------------------------------------------------------
+
+@app.get("/test_scraper/{platform}")
+def test_scraper(platform: str, authorization: str = Header(None)):
+    """Test whether a specific scraper platform is reachable and properly configured.
+
+    Returns ``{"ok": true/false, "message": "..."}`` with a normalized
+    human-readable explanation when something is wrong.
+    """
+    _require_admin(authorization)
+    platform_lower = platform.lower()
+
+    try:
+        if platform_lower == "google_trends":
+            # Google Trends uses Scrapy — just verify the spider module is importable
+            try:
+                spider_dir = os.path.join(PROJECT_ROOT, "src", "scrapers", "google_trends_scraper")
+                if spider_dir not in sys.path:
+                    sys.path.insert(0, spider_dir)
+                from google_trends.spiders.trends_spider import TrendsSpider  # noqa: F401
+                return {"ok": True, "message": "Google Trends spider is available."}
+            except ImportError as e:
+                return {"ok": False, "message": f"Google Trends spider not installed: {e}"}
+
+        elif platform_lower == "reddit":
+            token = os.getenv("ENSEMBLEDATA_TOKEN", "")
+            if not token:
+                return {"ok": False, "message": "ENSEMBLEDATA_TOKEN is not set. Configure it in the .env file."}
+            from ensembledata.api import EDClient
+            client = EDClient(token=token)
+            result = client.reddit.search_subreddits(query="test", limit=1)
+            _ = result.data
+            return {"ok": True, "message": f"Reddit API is reachable. Units charged: {result.units_charged}"}
+
+        elif platform_lower == "hackernews":
+            import urllib.request
+            req = urllib.request.Request(
+                "https://hacker-news.firebaseio.com/v0/topstories.json",
+                headers={"User-Agent": "TrendsResearch/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+            if isinstance(data, list) and len(data) > 0:
+                return {"ok": True, "message": f"Hacker News API is reachable. {len(data)} top stories available."}
+            return {"ok": False, "message": "Hacker News API returned unexpected data."}
+
+        elif platform_lower == "youtube":
+            token = os.getenv("ENSEMBLEDATA_TOKEN", "")
+            if not token:
+                return {"ok": False, "message": "ENSEMBLEDATA_TOKEN is not set. Configure it in the .env file."}
+            from ensembledata.api import EDClient
+            client = EDClient(token=token)
+            result = client.youtube.search(query="test", max_results=1)
+            _ = result.data
+            return {"ok": True, "message": f"YouTube API is reachable. Units charged: {result.units_charged}"}
+
+        elif platform_lower == "news":
+            api_key = os.getenv("NEWS_API_KEY", "")
+            if not api_key or api_key == "YOUR_NEWSAPI_KEY":
+                return {"ok": False, "message": "NEWS_API_KEY is not set. Get a key from newsapi.org and add it to .env."}
+            import urllib.request
+            url = f"https://newsapi.org/v2/everything?q=test&pageSize=1&apiKey={api_key}"
+            req = urllib.request.Request(url, headers={"User-Agent": "TrendsResearch/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+            if data.get("status") == "ok":
+                return {"ok": True, "message": f"NewsAPI is reachable. {data.get('totalResults', 0)} results available."}
+            return {"ok": False, "message": f"NewsAPI error: {data.get('message', 'Unknown error')}"}
+
+        elif platform_lower == "tiktok":
+            token = os.getenv("ENSEMBLEDATA_TOKEN", "")
+            if not token:
+                return {"ok": False, "message": "ENSEMBLEDATA_TOKEN is not set. Configure it in the .env file."}
+            from ensembledata.api import EDClient
+            client = EDClient(token=token)
+            result = client.tiktok.keyword.search(keyword="test", period=7, max_cursor=0)
+            _ = result.data
+            return {"ok": True, "message": f"TikTok API is reachable. Units charged: {result.units_charged}"}
+
+        elif platform_lower == "instagram":
+            token = os.getenv("ENSEMBLEDATA_TOKEN", "")
+            if not token:
+                return {"ok": False, "message": "ENSEMBLEDATA_TOKEN is not set. Configure it in the .env file."}
+            from ensembledata.api import EDClient
+            client = EDClient(token=token)
+            result = client.instagram.search(query="test")
+            _ = result.data
+            return {"ok": True, "message": f"Instagram API is reachable. Units charged: {result.units_charged}"}
+
+        elif platform_lower == "threads":
+            token = os.getenv("ENSEMBLEDATA_TOKEN", "")
+            if not token:
+                return {"ok": False, "message": "ENSEMBLEDATA_TOKEN is not set. Configure it in the .env file."}
+            from ensembledata.api import EDClient
+            client = EDClient(token=token)
+            result = client.threads.search(query="test")
+            _ = result.data
+            return {"ok": True, "message": f"Threads API is reachable. Units charged: {result.units_charged}"}
+
+        else:
+            return {"ok": False, "message": f"Unknown platform: {platform}"}
+
+    except Exception as exc:
+        # Normalize common error patterns
+        err = str(exc)
+        if "401" in err or "Unauthorized" in err or "Invalid token" in err.lower():
+            return {"ok": False, "message": f"Authentication failed for {platform}. Check your API key/token."}
+        if "403" in err or "Forbidden" in err:
+            return {"ok": False, "message": f"Access denied for {platform}. Your API key may lack permissions or be expired."}
+        if "429" in err or "rate limit" in err.lower():
+            return {"ok": False, "message": f"Rate limit exceeded for {platform}. Try again later."}
+        if "timeout" in err.lower() or "timed out" in err.lower():
+            return {"ok": False, "message": f"{platform} API timed out. The service may be temporarily unavailable."}
+        if "connection" in err.lower() or "unreachable" in err.lower() or "dns" in err.lower():
+            return {"ok": False, "message": f"Cannot connect to {platform} API. Check your network connection."}
+        return {"ok": False, "message": f"{platform} error: {err}"}
 
 
 # ---------------------------------------------------------------------------

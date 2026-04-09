@@ -10,6 +10,8 @@ import logging
 import os
 import re
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 from dotenv import load_dotenv
@@ -104,8 +106,11 @@ def scrape_instagram(keywords, geo="Global"):
         return
 
     client = EDClient(token=token)
+    stop_event = threading.Event()
 
-    for kw in keywords:
+    def _scrape_keyword(kw):
+        if stop_event.is_set():
+            return
         try:
             result = client.instagram.search(text=kw)
             raw = result.data or {}
@@ -113,7 +118,6 @@ def scrape_instagram(keywords, geo="Global"):
             items = []
 
             if isinstance(raw, dict):
-                # --- hashtags ---
                 for entry in raw.get("hashtags", []):
                     ht = entry.get("hashtag", entry) if isinstance(entry, dict) else entry
                     if not isinstance(ht, dict):
@@ -127,7 +131,6 @@ def scrape_instagram(keywords, geo="Global"):
                         "_raw": entry,
                     })
 
-                # --- users ---
                 for entry in raw.get("users", []):
                     usr = entry.get("user", entry) if isinstance(entry, dict) else entry
                     if not isinstance(usr, dict):
@@ -142,7 +145,6 @@ def scrape_instagram(keywords, geo="Global"):
                         "_raw": entry,
                     })
 
-                # --- places ---
                 for entry in raw.get("places", []):
                     pl = entry.get("place", entry) if isinstance(entry, dict) else entry
                     if not isinstance(pl, dict):
@@ -166,13 +168,11 @@ def scrape_instagram(keywords, geo="Global"):
 
             count = 0
             for item in items[:50]:
-                # --- save to normalized content tables ---
                 try:
                     _save_instagram_post(item, keyword=kw, geo=geo)
                 except Exception:
                     logger.error("Failed saving instagram content for kw=%s", kw, exc_info=True)
 
-                # --- save to shared trends table for dashboard ---
                 user = item.get("user", {}) or {}
                 username = user.get("username", "")
                 caption = ""
@@ -212,11 +212,15 @@ def scrape_instagram(keywords, geo="Global"):
             save_error(PLATFORM, kw, None, 0, str(e))
             if e.status_code == 495:
                 logger.warning("Daily API limit reached. Stopping Instagram scraper.")
-                break
-            logger.error("Error for '%s': %s", kw, e, exc_info=True)
+                stop_event.set()
+            else:
+                logger.error("Error for '%s': %s", kw, e, exc_info=True)
         except Exception as e:
             save_error(PLATFORM, kw, None, 0, str(e))
             logger.error("Error for '%s': %s", kw, e, exc_info=True)
+
+    with ThreadPoolExecutor(max_workers=min(len(keywords), 4)) as pool:
+        list(pool.map(_scrape_keyword, keywords))
 
 
 if __name__ == "__main__":

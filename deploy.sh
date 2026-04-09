@@ -9,7 +9,7 @@ ACR_NAME="${ACR_NAME:-trendsresearchacr}"
 IMAGE_NAME="${IMAGE_NAME:-trends-research-app}"
 TAG="${1:-latest}"
 APP_NAME="${APP_NAME:-trends-research-app}"
-RESOURCE_GROUP="${RESOURCE_GROUP:-trends-research-rg}"
+RESOURCE_GROUP="${RESOURCE_GROUP:-GB_Reporting_RG}"
 
 ACR_LOGIN_SERVER="${ACR_NAME}.azurecr.io"
 FULL_IMAGE="${ACR_LOGIN_SERVER}/${IMAGE_NAME}:${TAG}"
@@ -56,8 +56,53 @@ else
   fi
 fi
 
-echo ">>> Restarting App Service..."
-az webapp restart --name "${APP_NAME}" --resource-group "${RESOURCE_GROUP}"
+APP_SERVICE_PLAN="${APP_SERVICE_PLAN:-trends-research-plan}"
+APP_SERVICE_SKU="${APP_SERVICE_SKU:-B1}"
+
+# Ensure the resource group exists
+if ! az group show --name "${RESOURCE_GROUP}" &>/dev/null; then
+  echo ">>> Creating resource group ${RESOURCE_GROUP}..."
+  az group create --name "${RESOURCE_GROUP}" --location "${LOCATION:-westeurope}" --output none
+fi
+
+# Ensure the App Service Plan exists
+if ! az appservice plan show --name "${APP_SERVICE_PLAN}" --resource-group "${RESOURCE_GROUP}" &>/dev/null; then
+  echo ">>> Creating App Service Plan ${APP_SERVICE_PLAN}..."
+  az appservice plan create \
+    --name "${APP_SERVICE_PLAN}" \
+    --resource-group "${RESOURCE_GROUP}" \
+    --sku "${APP_SERVICE_SKU}" \
+    --is-linux \
+    --output none
+fi
+
+# Ensure the Web App exists; create or just restart
+if az webapp show --name "${APP_NAME}" --resource-group "${RESOURCE_GROUP}" &>/dev/null; then
+  echo ">>> Updating container image and restarting App Service..."
+  az webapp config container set \
+    --name "${APP_NAME}" \
+    --resource-group "${RESOURCE_GROUP}" \
+    --container-image-name "${FULL_IMAGE}" \
+    --container-registry-url "https://${ACR_LOGIN_SERVER}" \
+    --output none
+  az webapp restart --name "${APP_NAME}" --resource-group "${RESOURCE_GROUP}"
+else
+  echo ">>> Creating Web App ${APP_NAME}..."
+  az webapp create \
+    --name "${APP_NAME}" \
+    --resource-group "${RESOURCE_GROUP}" \
+    --plan "${APP_SERVICE_PLAN}" \
+    --container-image-name "${FULL_IMAGE}" \
+    --container-registry-url "https://${ACR_LOGIN_SERVER}" \
+    --output none
+
+  echo ">>> Configuring app settings..."
+  az webapp config appsettings set \
+    --name "${APP_NAME}" \
+    --resource-group "${RESOURCE_GROUP}" \
+    --settings WEBSITES_PORT=8000 WEBSITES_ENABLE_APP_SERVICE_STORAGE=false \
+    --output none
+fi
 
 echo ""
 echo "============================================="

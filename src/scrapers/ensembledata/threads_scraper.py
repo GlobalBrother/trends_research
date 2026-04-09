@@ -9,6 +9,8 @@ import json
 import logging
 import os
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 from dotenv import load_dotenv
@@ -106,8 +108,11 @@ def scrape_threads(keywords, geo="Global"):
         return
 
     client = EDClient(token=token)
+    stop_event = threading.Event()
 
-    for kw in keywords:
+    def _scrape_keyword(kw):
+        if stop_event.is_set():
+            return
         try:
             result = client.threads.search_keyword(name=kw)
             items = result.data or []
@@ -125,13 +130,11 @@ def scrape_threads(keywords, geo="Global"):
                     post = thread if isinstance(thread, dict) else item
                 inner = post.get("post", post) if isinstance(post, dict) else post
 
-                # --- save to normalized content tables ---
                 try:
                     _save_threads_post(inner, keyword=kw, geo=geo)
                 except Exception:
                     logger.error("Failed saving threads content for kw=%s", kw, exc_info=True)
 
-                # --- save to shared trends table for dashboard ---
                 caption = ""
                 if isinstance(inner.get("caption"), dict):
                     caption = inner["caption"].get("text", "")
@@ -185,11 +188,15 @@ def scrape_threads(keywords, geo="Global"):
             save_error(PLATFORM, kw, None, 0, str(e))
             if e.status_code == 495:
                 logger.warning("Daily API limit reached. Stopping Threads scraper.")
-                break
-            logger.error("Error for '%s': %s", kw, e, exc_info=True)
+                stop_event.set()
+            else:
+                logger.error("Error for '%s': %s", kw, e, exc_info=True)
         except Exception as e:
             save_error(PLATFORM, kw, None, 0, str(e))
             logger.error("Error for '%s': %s", kw, e, exc_info=True)
+
+    with ThreadPoolExecutor(max_workers=min(len(keywords), 4)) as pool:
+        list(pool.map(_scrape_keyword, keywords))
 
 
 if __name__ == "__main__":

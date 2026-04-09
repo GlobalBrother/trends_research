@@ -18,6 +18,7 @@ import logging
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 import pandas as pd
@@ -311,18 +312,29 @@ class TrendCollector:
         timeframe: str = "today 12-m",
         category: int = 0,
     ) -> bool:
-        """Trigger all scrapers for a specific niche in sequence."""
+        """Trigger all scrapers for a specific niche **in parallel**."""
         logger.info("Starting comprehensive scrape for niche: %s", niche_name)
 
-        self.run_google_trends_scraper(keywords, geo=geo, timeframe=timeframe, category=category)
-        self.run_youtube_trends_scraper(keywords, geo=geo)
-
+        tasks = [
+            ("google_trends", lambda: self.run_google_trends_scraper(
+                keywords, geo=geo, timeframe=timeframe, category=category)),
+            ("youtube", lambda: self.run_youtube_trends_scraper(keywords, geo=geo)),
+            ("reddit", lambda: self.run_reddit_scraper(keywords=keywords, geo=geo)),
+            ("hackernews", lambda: self.run_hackernews_scraper(keywords=keywords, geo=geo)),
+            ("news", lambda: self.run_news_scraper(query=niche_name, geo=geo)),
+        ]
         for platform in SOCIAL_PLATFORMS:
-            self.run_social_trends_scraper(platform, keywords, geo=geo)
+            p = platform  # capture loop variable
+            tasks.append((platform, lambda _p=p: self.run_social_trends_scraper(_p, keywords, geo=geo)))
 
-        self.run_reddit_scraper(keywords=keywords, geo=geo)
-        self.run_hackernews_scraper(keywords=keywords, geo=geo)
-        self.run_news_scraper(query=niche_name, geo=geo)
+        with ThreadPoolExecutor(max_workers=min(len(tasks), 6)) as pool:
+            futures = {pool.submit(fn): name for name, fn in tasks}
+            for future in as_completed(futures):
+                name = futures[future]
+                try:
+                    future.result()
+                except Exception:
+                    logger.error("Scraper %s failed during comprehensive scrape", name, exc_info=True)
 
         logger.info("Comprehensive scrape for %s finished.", niche_name)
         return True

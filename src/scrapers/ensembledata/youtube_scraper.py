@@ -10,6 +10,8 @@ import logging
 import os
 import re
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 from dotenv import load_dotenv
@@ -155,8 +157,11 @@ def scrape_youtube(keywords, geo="Global", depth=1, period="month", sorting="vie
         return
 
     client = EDClient(token=token)
+    stop_event = threading.Event()
 
-    for kw in keywords:
+    def _scrape_keyword(kw):
+        if stop_event.is_set():
+            return
         try:
             result = client.youtube.keyword_search(
                 keyword=kw, depth=depth, period=period, sorting=sorting,
@@ -179,13 +184,11 @@ def scrape_youtube(keywords, geo="Global", depth=1, period="month", sorting="vie
 
             count = 0
             for v in items[:50]:
-                # --- save to normalized content tables ---
                 try:
                     _save_youtube_video(v, keyword=kw, geo=geo)
                 except Exception:
                     logger.error("Failed saving youtube content for kw=%s", kw, exc_info=True)
 
-                # --- save to shared trends table for dashboard ---
                 title = v.get("title", "") if isinstance(v.get("title"), str) else ""
                 views = _parse_int(v.get("viewCount") or v.get("view_count") or v.get("views") or 0)
                 topic = title[:120] if title else f"Video {v.get('videoId', '')}"
@@ -219,11 +222,15 @@ def scrape_youtube(keywords, geo="Global", depth=1, period="month", sorting="vie
             save_error(PLATFORM, kw, None, 0, str(e))
             if e.status_code == 495:
                 logger.warning("Daily API limit reached. Stopping YouTube scraper.")
-                break
-            logger.error("Error for '%s': %s", kw, e, exc_info=True)
+                stop_event.set()
+            else:
+                logger.error("Error for '%s': %s", kw, e, exc_info=True)
         except Exception as e:
             save_error(PLATFORM, kw, None, 0, str(e))
             logger.error("Error for '%s': %s", kw, e, exc_info=True)
+
+    with ThreadPoolExecutor(max_workers=min(len(keywords), 4)) as pool:
+        list(pool.map(_scrape_keyword, keywords))
 
 
 if __name__ == "__main__":

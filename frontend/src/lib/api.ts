@@ -8,7 +8,7 @@ import axios, { type AxiosInstance } from "axios";
 
 const client: AxiosInstance = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? "",
-  timeout: 60_000,
+  timeout: 120_000,
   headers: { "Content-Type": "application/json" },
 });
 
@@ -235,6 +235,10 @@ export const triggerScrape = (body: ScrapeRequest) =>
 /** Trigger ads scraping */
 export const triggerAdsScrape = (keywords: string, max_pages?: number) =>
   client.post<{ message: string }>("/scrape_ads", null, { params: { keywords, max_pages } });
+
+/** Test scraper connectivity */
+export const testScraper = (platform: string) =>
+  client.get<{ ok: boolean; message: string }>(`/test_scraper/${platform}`);
 
 /** Scrape errors */
 export const getScrapeErrors = (platform?: string) =>

@@ -9,6 +9,8 @@ import json
 import logging
 import os
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 from dotenv import load_dotenv
@@ -102,8 +104,11 @@ def scrape_tiktok(keywords, geo="Global", period="30"):
         return
 
     client = EDClient(token=token)
+    stop_event = threading.Event()
 
-    for kw in keywords:
+    def _scrape_keyword(kw):
+        if stop_event.is_set():
+            return
         try:
             result = client.tiktok.keyword_search(keyword=kw, period=period)
             raw = result.data or []
@@ -122,13 +127,11 @@ def scrape_tiktok(keywords, geo="Global", period="30"):
                 if not isinstance(v, dict):
                     continue
 
-                # --- save to normalized content tables ---
                 try:
                     _save_tiktok_video(v, keyword=kw, geo=geo)
                 except Exception:
                     logger.error("Failed saving tiktok content for kw=%s", kw, exc_info=True)
 
-                # --- save to shared trends table for dashboard ---
                 stats = v.get("statistics", {})
                 likes = stats.get("digg_count") or v.get("like_count") or v.get("diggCount") or 0
                 comments = stats.get("comment_count") or v.get("comment_count") or v.get("commentCount") or 0
@@ -175,11 +178,15 @@ def scrape_tiktok(keywords, geo="Global", period="30"):
             save_error(PLATFORM, kw, None, 0, str(e))
             if e.status_code == 495:
                 logger.warning("Daily API limit reached. Stopping TikTok scraper.")
-                break
-            logger.error("Error for '%s': %s", kw, e, exc_info=True)
+                stop_event.set()
+            else:
+                logger.error("Error for '%s': %s", kw, e, exc_info=True)
         except Exception as e:
             save_error(PLATFORM, kw, None, 0, str(e))
             logger.error("Error for '%s': %s", kw, e, exc_info=True)
+
+    with ThreadPoolExecutor(max_workers=min(len(keywords), 4)) as pool:
+        list(pool.map(_scrape_keyword, keywords))
 
 
 if __name__ == "__main__":

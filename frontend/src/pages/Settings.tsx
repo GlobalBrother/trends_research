@@ -46,6 +46,7 @@ import {
   triggerMigration,
   triggerDiagnose,
   triggerScrape,
+  testScraper,
   listUsers,
   addUser,
   updateUserRole,
@@ -109,10 +110,13 @@ export default function Settings() {
     }
   };
 
-  const { loading: syncing, execute: doSync } = useLazyApi(
+  const { execute: doSync } = useLazyApi(
     (args: { niche: string; scraper_type: string }) =>
       triggerScrape({ niche: args.niche, geo: "US", scraper_type: args.scraper_type })
   );
+  const [scrapingMap, setScrapingMap] = useState<Record<string, boolean>>({});
+  const [testingMap, setTestingMap] = useState<Record<string, boolean>>({});
+  const [testResultMap, setTestResultMap] = useState<Record<string, { ok: boolean; message: string } | null>>({});
 
   const DATA_SOURCES = [
     { name: "Google Trends", scraper: "google_trends" },
@@ -340,20 +344,56 @@ export default function Settings() {
                   </div>
                   <div className="col-span-5 flex items-center justify-end gap-1.5">
                     <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-[10px] gap-1"
+                      disabled={!!testingMap[source.scraper]}
+                      onClick={async () => {
+                        setTestingMap((prev) => ({ ...prev, [source.scraper]: true }));
+                        setTestResultMap((prev) => ({ ...prev, [source.scraper]: null }));
+                        try {
+                          const res = await testScraper(source.scraper);
+                          const result = res.data;
+                          setTestResultMap((prev) => ({ ...prev, [source.scraper]: result }));
+                          if (result.ok) {
+                            toast.success(`${source.name}: ${result.message}`);
+                          } else {
+                            toast.error(`${source.name}: ${result.message}`);
+                          }
+                        } catch {
+                          const errResult = { ok: false, message: "Request failed. Server may be unreachable." };
+                          setTestResultMap((prev) => ({ ...prev, [source.scraper]: errResult }));
+                          toast.error(`${source.name}: Request failed`);
+                        } finally {
+                          setTestingMap((prev) => ({ ...prev, [source.scraper]: false }));
+                        }
+                      }}
+                    >
+                      {testingMap[source.scraper] ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Stethoscope className="w-3 h-3" />
+                      )}
+                      Test
+                    </Button>
+                    <Button
                       variant="ghost"
                       size="sm"
                       className="h-7 text-[10px] gap-1"
-                      disabled={syncing}
+                      disabled={!!scrapingMap[source.scraper]}
                       onClick={async () => {
+                        setScrapingMap((prev) => ({ ...prev, [source.scraper]: true }));
                         try {
                           await doSync({ niche: "technology", scraper_type: source.scraper });
                           toast.success(`${source.name} scrape started`);
                         } catch {
                           toast.error(`Failed to start ${source.name} scrape`);
+                        } finally {
+                          setScrapingMap((prev) => ({ ...prev, [source.scraper]: false }));
                         }
                       }}
                     >
-                      {syncing ? (
+                      {scrapingMap[source.scraper] ? (
                         <Loader2 className="w-3 h-3 animate-spin" />
                       ) : (
                         <Play className="w-3 h-3" />
@@ -361,6 +401,22 @@ export default function Settings() {
                       Scrape
                     </Button>
                   </div>
+                  {testResultMap[source.scraper] && (
+                    <div className={`col-span-12 text-[10px] px-2 py-1.5 rounded border ${
+                      testResultMap[source.scraper]!.ok
+                        ? "bg-success/5 border-success/20 text-success"
+                        : "bg-destructive/5 border-destructive/20 text-destructive"
+                    }`}>
+                      <span className="flex items-center gap-1.5">
+                        {testResultMap[source.scraper]!.ok ? (
+                          <CheckCircle2 className="w-3 h-3 flex-shrink-0" />
+                        ) : (
+                          <XCircle className="w-3 h-3 flex-shrink-0" />
+                        )}
+                        {testResultMap[source.scraper]!.message}
+                      </span>
+                    </div>
+                  )}
                 </div>
               );
             })}
