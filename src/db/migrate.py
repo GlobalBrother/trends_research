@@ -108,6 +108,58 @@ _INDEXES = [
     ("idx_ads_keyword",                 "ads_insight",      "search_keyword"),
     ("idx_ads_extracted",               "ads_insight",      "extracted_at"),
     ("idx_ads_hookd_id",                "ads_insight",      "hookd_id"),
+
+    # Trend Clusters
+    ("idx_cluster_stage",               "trend_clusters",   "lifecycle_stage"),
+    ("idx_cluster_last_seen",           "trend_clusters",   "last_seen"),
+    ("idx_cluster_primary_platform",    "trend_clusters",   "primary_platform"),
+
+    # Trend Signals
+    ("idx_signal_cluster",              "trend_signals",    "cluster_id"),
+    ("idx_signal_platform",             "trend_signals",    "platform"),
+    ("idx_signal_timestamp",            "trend_signals",    "signal_timestamp"),
+
+    # Trend Insights
+    ("idx_insight_score",               "trend_insights",   "ad_opportunity_score"),
+    ("idx_insight_confidence",          "trend_insights",   "confidence_score"),
+
+    # Trend Ad Matches
+    ("idx_match_cluster",               "trend_ad_matches", "cluster_id"),
+    ("idx_match_ad",                    "trend_ad_matches", "ads_insight_id"),
+    ("idx_match_score",                 "trend_ad_matches", "match_score"),
+
+    # Insight Feedback
+    ("idx_feedback_cluster",            "insight_feedback", "cluster_id"),
+    ("idx_feedback_insight",            "insight_feedback", "insight_id"),
+
+    # Backtest Runs
+    ("idx_backtest_created",            "backtest_runs",    "created_at"),
+
+    # Report Briefs
+    ("idx_report_type",                 "report_briefs",    "report_type"),
+    ("idx_report_created",              "report_briefs",    "created_at"),
+
+    # Canonical Trend Signals
+    ("idx_canonical_source_bucket",     "canonical_trend_signals", "source, time_bucket_start"),
+    ("idx_canonical_entity",            "canonical_trend_signals", "source, entity_id"),
+    ("idx_canonical_country",           "canonical_trend_signals", "country"),
+    ("idx_canonical_idempotency",       "canonical_trend_signals", "idempotency_key"),
+
+    # Trend Evidence
+    ("idx_evidence_signal",             "trend_evidence",   "signal_id"),
+    ("idx_evidence_content",            "trend_evidence",   "content_id"),
+
+    # Source Cursors
+    ("idx_cursor_source",               "source_cursors",   "source"),
+
+    # Scrape Runs
+    ("idx_scrape_run_source_started",   "scrape_runs",      "source, started_at"),
+    ("idx_scrape_run_status",           "scrape_runs",      "status"),
+
+    # Scrape Dead Letters
+    ("idx_dead_letter_source",          "scrape_dead_letters", "source"),
+    ("idx_dead_letter_status",          "scrape_dead_letters", "status"),
+    ("idx_dead_letter_run",             "scrape_dead_letters", "scrape_run_id"),
 ]
 
 

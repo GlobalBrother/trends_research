@@ -1,0 +1,20 @@
+{
+  "source": "Google Trends",
+  "acquisition_mode": "html",
+  "schedule": "hourly",
+  "backfill_window_hours": 144,
+  "granularity": "hour",
+  "geo_matrix": ["US", "Global", "GB", "CA", "AU"],
+  "language_matrix": ["en"],
+  "pagination": {
+    "strategy": "widget_tokens",
+    "persist_cursor": true,
+    "cursor_scope": ["country", "language", "category"]
+  },
+  "rate_limit": {
+    "concurrency": 1,
+    "download_delay_seconds": 12,
+    "retry_times": 5,
+    "retry_http_codes": [429, 500, 502, 503, 504]
+  }
+}

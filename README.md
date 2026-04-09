@@ -133,24 +133,313 @@ docker compose up --build
 
 ---
 
-## 🛤️ Future Roadmap & Next Steps
+## Product Development Plan
 
-Based on the current project state, here are the proposed next steps:
+The next stage of this platform is not just collecting more trends. The goal is
+to turn detected trends into reliable ad intelligence that media buyers,
+strategists, and creative teams can use to create better ads with higher
+confidence.
 
-1.  **🤖 LLM-Powered Insights:**
-    - Integrate GPT-4/Claude to summarize trend clusters.
-    - Generate "Market Opportunities" automatically from virality scores and sentiment.
-2.  **📈 Advanced Scrapers:**
-    - Add Pinterest, Lemon8, and X (Twitter) as data sources.
-    - Deep-scrape comments to perform fine-grained audience sentiment analysis.
-3.  **🔔 Real-time Notifications:**
-    - Implement Webhooks and Slack/Discord integrations for instant alerts on viral trends.
-4.  **🤝 Collaborative Research:**
-    - Enable shared workspaces for teams to tag, comment, and collaborate on specific trends.
-5.  **📑 Professional Exporting:**
-    - Generate automated PDF/PowerPoint reports for stakeholders.
-6.  **⚡ Task Queue Scalability:**
-    - Migrate to Celery/Redis for managing large-scale, distributed scraping jobs.
+### 1. Product Goal
+
+Build a trend intelligence platform that answers four questions for ad teams:
+
+1. What is rising now?
+2. Why is it rising?
+3. Is it commercially relevant for paid media?
+4. What should we do with it in creative, targeting, timing, and platform mix?
+
+This means the platform must evolve from a trend dashboard into a
+decision-support system for ad planning.
+
+### 2. Current Foundation
+
+The repository already contains the main building blocks:
+
+- Multi-source ingestion across Google Trends, YouTube, Reddit, Hacker News,
+  TikTok, Instagram, Threads, NewsAPI, and GetHookdAI ad data.
+- A backend analytics pipeline for sentiment, clustering, and virality scoring.
+- An ads ingestion path and tracked-brand workflow for ad library research.
+- A frontend trend explorer, ads workspace, and report surfaces that can be
+  extended into a real insight workflow.
+
+The main gap is not scraping. The main gap is transforming raw trend signals
+into structured, explainable, and measurable ad recommendations.
+
+### 3. Strategic Priorities
+
+#### A. Stabilize the platform as a research system
+
+Before adding more intelligence, the data pipeline must be dependable.
+
+Key work:
+
+- Formalize canonical schemas for `trend`, `content`, `ad`, `brand`, and
+  `insight`.
+- Add data quality checks for duplicates, missing geo, missing timestamps,
+  stale platform data, and scrape error rates.
+- Add platform freshness and source confidence scoring.
+- Track scrape latency, API credit usage, stale data windows, and failure
+  patterns.
+- Finish production deployment hardening so releases are routine.
+
+Reason:
+
+- If the inputs are noisy, the insight layer will produce confident but weak
+  output.
+
+#### B. Build a real trend-to-insight engine
+
+The platform needs a first-class insight layer, not just charts and tables.
+
+For each aggregated trend cluster, generate structured fields such as:
+
+- `trend_strength`
+- `confidence_score`
+- `audience_intent`
+- `creative_angle_candidates`
+- `platform_fit`
+- `ad_timing_window`
+- `saturation_risk`
+- `brand_safety_risk`
+- `monetization_potential`
+
+Each insight should also include explanations:
+
+- Why the trend is rising
+- Which platforms support it
+- What type of audience response is visible
+- Why it is relevant for ads
+- Why the system is confident or uncertain
+
+Rule:
+
+- Insights should be grounded in platform signals first. LLM output can explain
+  them later, but should not be the primary source of truth.
+
+#### C. Link trends to ad evidence
+
+The most important product step is connecting emerging trends to real ads
+already running in the market.
+
+Key work:
+
+- Match trend clusters to ads from the `ads_insight` dataset.
+- Use keyword overlap, semantic similarity, timing overlap, and category or
+  brand proximity to create trend-to-ad relationships.
+- Surface, for each trend:
+  - which brands are already advertising into it
+  - which formats are dominant
+  - which CTAs are common
+  - which ads look high-performing
+  - whether the opportunity is early, crowded, or declining
+
+This is the bridge from "interesting trend" to "usable ad opportunity."
+
+#### D. Build an Ad Opportunity Engine
+
+The platform should not stop at showing data. It should rank opportunities.
+
+Recommended scoring direction:
+
+`ad_opportunity_score = trend_strength + commercial_relevance + audience_signal + creative_reusability - saturation - safety_risk`
+
+For each ranked opportunity, output:
+
+- Opportunity title
+- Audience summary
+- Recommended platform(s)
+- Recommended creative hook(s)
+- Suggested CTA direction
+- Best timing window
+- Example competitor ads
+- Risk notes
+
+Recommended opportunity classes:
+
+- Emerging opportunity
+- Fast-follower opportunity
+- Overcrowded trend
+- Unsafe or volatile trend
+- Evergreen topic with renewed momentum
+
+#### E. Rework the frontend around workflows
+
+The UI should support how ad teams actually work, not just how data is stored.
+
+Key work:
+
+- Extend Trend Explorer with:
+  - insight summaries
+  - "why this matters for ads"
+  - creative directions
+  - linked competitor ads
+  - risk and confidence indicators
+- Extend My Ads with:
+  - competitor comparison
+  - missed-trend alerts
+  - CTA benchmarking
+  - format benchmarking
+  - brand-to-trend fit analysis
+- Replace placeholder reports with real generated briefing outputs:
+  - weekly opportunity digests
+  - trend deep dives
+  - campaign planning briefs
+  - competitor creative summaries
+
+#### F. Add LLMs only after structured insights exist
+
+LLMs should summarize, explain, and package insights. They should not invent
+the core signal.
+
+Best uses:
+
+- Executive summaries
+- Natural-language insight narratives
+- Ad angle suggestions
+- Report generation
+- Persona and messaging hypotheses
+
+Constraint:
+
+- Confidence and ranking must come from deterministic signals, not from LLM
+  language quality.
+
+### 4. Data Model Additions
+
+To support a real insight layer, add these entities:
+
+#### `trend_clusters`
+
+- canonical cluster id
+- cluster title
+- cluster keywords
+- first seen
+- last seen
+- confidence
+- lifecycle stage
+
+#### `trend_signals`
+
+- cluster id
+- platform
+- volume
+- growth
+- engagement
+- sentiment
+- freshness
+- geo spread
+
+#### `trend_insights`
+
+- cluster id
+- ad opportunity score
+- audience summary
+- creative angles
+- platform recommendations
+- risks
+- explanation JSON
+
+#### `trend_ad_matches`
+
+- cluster id
+- ad id
+- match score
+- match reason
+- matched at
+
+#### `insight_feedback`
+
+- user rating
+- marked useful or not useful
+- used in campaign or not
+- actual outcome if available
+
+This feedback loop is required if the system is expected to improve its
+accuracy over time.
+
+### 5. Accuracy Framework
+
+If the platform is intended to guide ad creation, "accuracy" must be defined
+explicitly.
+
+Recommended dimensions:
+
+- Trend detection accuracy
+- Commercial relevance accuracy
+- Timing accuracy
+- Brand safety accuracy
+- Creative recommendation usefulness
+
+Recommended evaluation process:
+
+1. Build a labeled historical dataset of trend clusters.
+2. Mark which clusters became commercially relevant.
+3. Mark which platforms were best suited to each cluster.
+4. Mark which trends became saturated too quickly.
+5. Backtest the ranking and recommendation engine weekly.
+6. Track false positives and false negatives.
+7. Collect direct feedback from strategists and campaign teams.
+
+Without this, the system can be informative but not dependable.
+
+### 6. Recommended Execution Sequence
+
+#### Phase 1: Foundation and confidence
+
+- Formalize schemas and quality checks.
+- Add confidence, freshness, and source trust metrics.
+- Improve monitoring, diagnostics, and scheduled ingestion reliability.
+
+#### Phase 2: Cluster-level intelligence
+
+- Introduce cluster-level storage and APIs.
+- Store structured trend signals and cluster metadata.
+- Move from row-level trend output toward canonical trend entities.
+
+#### Phase 3: Trend-to-ad linkage
+
+- Match trend clusters against ad library data.
+- Add competitor ad evidence to trend views.
+- Expose saturation, CTA, and format patterns.
+
+#### Phase 4: Opportunity ranking
+
+- Implement the first `ad_opportunity_score`.
+- Add explainable recommendations and risk notes.
+- Rank opportunities by utility for ad teams rather than by virality alone.
+
+#### Phase 5: Reporting and workflow UX
+
+- Replace placeholder report views with real generated reports.
+- Add weekly briefs, opportunity digests, and campaign planning summaries.
+- Add saved views and collaboration after the core workflow is stable.
+
+#### Phase 6: LLM synthesis and optimization
+
+- Add LLM-based summarization on top of structured insights.
+- Add prompt logging and output auditing.
+- Tune scoring using feedback and historical performance data.
+
+### 7. Immediate Next Steps for This Repository
+
+The most practical near-term implementation order is:
+
+1. Refactor the backend around cluster-level insight objects.
+2. Add a trend-to-ad matching layer on top of `ads_insight`.
+3. Create a new API surface for structured insights and opportunity scoring.
+4. Replace the placeholder Reports page with real generated opportunity briefs.
+5. Add feedback capture and backtesting before expanding aggressively into new
+   sources.
+
+### 8. Working Principle
+
+The platform should always prefer:
+
+- explainable signals over opaque scoring
+- measured usefulness over impressive-looking summaries
+- commercial relevance over raw virality
+- feedback-driven improvement over intuition-only roadmap decisions
 
 ---
 
@@ -160,6 +449,12 @@ Check your database connectivity and Azure configuration:
 ```bash
 python -m src.db.doctor
 ```
+
+Additional implementation docs:
+
+- `docs/canonical-schemas.md`
+- `docs/insights-api.md`
+- `docs/release-checklist.md`
 
 ---
 

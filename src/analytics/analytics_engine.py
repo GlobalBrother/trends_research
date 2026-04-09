@@ -329,6 +329,10 @@ class AnalyticsEngine:
         if df.empty:
             return df
 
+        df = df.copy()
+        if "extracted_at" in df.columns:
+            df.loc[:, "extracted_at"] = pd.to_datetime(df["extracted_at"], errors="coerce")
+
         # 1. Topic aggregation (clustering)
         df = self.group_topics(df)
 

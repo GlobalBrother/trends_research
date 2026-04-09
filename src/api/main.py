@@ -63,12 +63,15 @@ if project_root not in sys.path:
 from src.config import CORS_ORIGINS, CACHE_TTL_SECONDS, PROJECT_ROOT
 from src.collector.trend_collector import TrendCollector
 from src.analytics.analytics_engine import AnalyticsEngine
+from src.insights import InsightPipeline
 from src.niche.niche_discovery import NicheDiscovery
 from src.db.connection import get_engine, get_session, session_scope, get_session_factory, get_last_diagnostic, diagnose as run_connection_diagnose
 from src.db.sql_compat import get_platform_id, get_platform_name, insert_niche_if_not_exists, verify_otp
 from src.db.models import (
     Base, User, OtpCode, AuthToken, Niche, TokenUsage, ScrapeError as ScrapeErrorModel,
     AdsInsight, Content, ContentMetric, Author, Platform, Trend, MyBrand,
+    TrendCluster, TrendSignal, TrendInsight, TrendAdMatch, InsightFeedback,
+    BacktestRun, ReportBrief,
 )
 
 # Try to import GetHookdAI ads scraper
@@ -181,6 +184,7 @@ if os.path.isdir(_frontend_dist):
 collector = TrendCollector()
 analytics = AnalyticsEngine()
 niche = NicheDiscovery()
+insights = InsightPipeline(analytics=analytics)
 
 # ---------------------------------------------------------------------------
 # Auth: users & OTP tables
@@ -274,6 +278,14 @@ class ScrapeRequest(BaseModel):
     timeframe: str = "today 12-m"
     category: int = 0
     scraper_type: str = "all"
+
+
+class InsightFeedbackRequest(BaseModel):
+    useful: bool
+    rating: int | None = None
+    used_in_campaign: bool = False
+    outcome: str | None = None
+    notes: str | None = None
 
 # ---------------------------------------------------------------------------
 # JSON helpers
@@ -679,6 +691,21 @@ def _run_and_log(func, log_platform, log_keywords, log_geo, **kwargs):
     else:
         _log_token_usage(log_platform, keyword=log_keywords, units=1.0, geo=log_geo)
     return result
+
+
+def _cluster_snapshot_stale(session, max_age_hours: int = 6) -> bool:
+    latest = session.query(func.max(TrendCluster.updated_at)).scalar()
+    if latest is None:
+        return True
+    return (datetime.utcnow() - latest).total_seconds() > (max_age_hours * 3600)
+
+
+def _ensure_cluster_snapshot(force: bool = False) -> dict:
+    with session_scope() as session:
+        if not force and not _cluster_snapshot_stale(session):
+            return {"refreshed": False}
+        result = insights.sync(session)
+        return {"refreshed": True, **result}
 
 
 def _get_niche_keywords_from_db(niche_name: str) -> list:
@@ -1109,11 +1136,314 @@ def test_scraper(platform: str, authorization: str = Header(None)):
 # ---------------------------------------------------------------------------
 
 # Map of table names to ORM model classes for safe dynamic access
+def _decode_json_field(value, fallback=None):
+    if value in (None, "", "null"):
+        return [] if fallback is None else fallback
+    if isinstance(value, (list, dict)):
+        return value
+    try:
+        return json.loads(value)
+    except Exception:
+        return fallback if fallback is not None else value
+
+
+@app.get("/schemas/canonical")
+def get_canonical_schemas():
+    return insights.canonical_schemas()
+
+
+@app.get("/monitoring/platform_health")
+def get_platform_health(force_refresh: bool = Query(False)):
+    _ensure_cluster_snapshot(force=force_refresh)
+    with session_scope() as session:
+        return insights.build_monitoring_snapshot(session)
+
+
+@app.post("/clusters/refresh")
+def refresh_clusters(background_tasks: BackgroundTasks):
+    background_tasks.add_task(_ensure_cluster_snapshot, True)
+    return {"message": "Cluster refresh started in background"}
+
+
+@app.get("/clusters")
+def get_clusters(
+    stage: Optional[str] = Query(None),
+    platform: Optional[str] = Query(None),
+    date: Optional[str] = Query(None),
+    limit: int = Query(100),
+    force_refresh: bool = Query(False),
+):
+    _ensure_cluster_snapshot(force=force_refresh)
+    with session_scope() as session:
+        q = session.query(TrendCluster, TrendInsight).outerjoin(TrendInsight, TrendInsight.cluster_id == TrendCluster.id)
+        if stage:
+            q = q.filter(TrendCluster.lifecycle_stage == stage)
+        if platform:
+            q = q.filter(TrendCluster.platforms.contains(platform))
+        if date:
+            parsed = pd.to_datetime(date, errors="coerce")
+            if pd.notna(parsed):
+                q = q.filter(TrendCluster.last_seen >= parsed.to_pydatetime())
+        rows = q.order_by(TrendCluster.last_seen.desc()).limit(limit).all()
+
+    data = []
+    for cluster, insight in rows:
+        data.append({
+            "id": cluster.id,
+            "cluster_key": cluster.cluster_key,
+            "title": cluster.title,
+            "keywords": _decode_json_field(cluster.cluster_keywords, []),
+            "platforms": _decode_json_field(cluster.platforms, []),
+            "primary_platform": cluster.primary_platform,
+            "first_seen": cluster.first_seen,
+            "last_seen": cluster.last_seen,
+            "lifecycle_stage": cluster.lifecycle_stage,
+            "confidence_score": cluster.confidence_score,
+            "freshness_score": cluster.freshness_score,
+            "source_confidence": cluster.source_confidence,
+            "trend_strength": cluster.trend_strength,
+            "quality_score": cluster.quality_score,
+            "ad_opportunity_score": insight.ad_opportunity_score if insight else None,
+            "audience_intent": insight.audience_intent if insight else None,
+            "timing_window": insight.ad_timing_window if insight else None,
+            "brand_safety_risk": insight.brand_safety_risk if insight else None,
+            "saturation_risk": insight.saturation_risk if insight else None,
+        })
+    return {"data": _sanitize(pd.DataFrame(data)) if data else [], "example_response": {"id": 1, "title": "AI agents", "lifecycle_stage": "emerging"}}
+
+
+@app.get("/clusters/{cluster_id}")
+def get_cluster(cluster_id: int, force_refresh: bool = Query(False)):
+    _ensure_cluster_snapshot(force=force_refresh)
+    with session_scope() as session:
+        row = (
+            session.query(TrendCluster, TrendInsight)
+            .outerjoin(TrendInsight, TrendInsight.cluster_id == TrendCluster.id)
+            .filter(TrendCluster.id == cluster_id)
+            .first()
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+        cluster, insight = row
+        feedback_rows = (
+            session.query(
+                func.count(InsightFeedback.id).label("count"),
+                func.avg(InsightFeedback.rating).label("avg_rating"),
+                func.sum(InsightFeedback.useful).label("useful_votes"),
+            )
+            .filter(InsightFeedback.cluster_id == cluster_id)
+            .first()
+        )
+    return {
+        "id": cluster.id,
+        "cluster_key": cluster.cluster_key,
+        "title": cluster.title,
+        "keywords": _decode_json_field(cluster.cluster_keywords, []),
+        "platforms": _decode_json_field(cluster.platforms, []),
+        "lifecycle_stage": cluster.lifecycle_stage,
+        "confidence_score": cluster.confidence_score,
+        "freshness_score": cluster.freshness_score,
+        "source_confidence": cluster.source_confidence,
+        "trend_strength": cluster.trend_strength,
+        "quality_score": cluster.quality_score,
+        "explanation": _decode_json_field(cluster.explanation_json, {}),
+        "insight": None if not insight else {
+            "ad_opportunity_score": insight.ad_opportunity_score,
+            "audience_intent": insight.audience_intent,
+            "creative_angle_candidates": _decode_json_field(insight.creative_angle_candidates, []),
+            "platform_fit": _decode_json_field(insight.platform_fit, []),
+            "ad_timing_window": insight.ad_timing_window,
+            "saturation_risk": insight.saturation_risk,
+            "brand_safety_risk": insight.brand_safety_risk,
+            "monetization_potential": insight.monetization_potential,
+            "explanation": _decode_json_field(insight.explanation_json, {}),
+        },
+        "feedback_summary": {
+            "count": int(feedback_rows.count or 0),
+            "avg_rating": None if feedback_rows.avg_rating is None else round(float(feedback_rows.avg_rating), 2),
+            "useful_votes": int(feedback_rows.useful_votes or 0),
+        },
+    }
+
+
+@app.get("/clusters/{cluster_id}/signals")
+def get_cluster_signals(cluster_id: int):
+    _ensure_cluster_snapshot()
+    with session_scope() as session:
+        rows = session.query(TrendSignal).filter(TrendSignal.cluster_id == cluster_id).order_by(TrendSignal.signal_timestamp.desc()).all()
+    return {
+        "data": [
+            {
+                "id": row.id,
+                "platform": row.platform,
+                "topic": row.topic,
+                "keyword": row.keyword,
+                "geo": row.geo,
+                "signal_timestamp": row.signal_timestamp,
+                "volume": row.volume,
+                "growth": row.growth,
+                "engagement": row.engagement,
+                "sentiment": row.sentiment,
+                "freshness": row.freshness,
+                "source_confidence": row.source_confidence,
+                "quality_flags": _decode_json_field(row.quality_flags, []),
+            }
+            for row in rows
+        ]
+    }
+
+
+@app.get("/clusters/{cluster_id}/ads")
+def get_cluster_ads(cluster_id: int, limit: int = Query(10)):
+    _ensure_cluster_snapshot()
+    with session_scope() as session:
+        rows = (
+            session.query(TrendAdMatch, AdsInsight)
+            .join(AdsInsight, AdsInsight.id == TrendAdMatch.ads_insight_id)
+            .filter(TrendAdMatch.cluster_id == cluster_id)
+            .order_by(TrendAdMatch.match_score.desc())
+            .limit(limit)
+            .all()
+        )
+    return {
+        "data": [
+            {
+                "match_score": match.match_score,
+                "match_reason": _decode_json_field(match.match_reason, {}),
+                "ad": {
+                    "id": ad.id,
+                    "brand_name": ad.brand_name,
+                    "platform": ad.platform,
+                    "display_format": ad.display_format,
+                    "title": ad.title,
+                    "body": ad.body,
+                    "cta_type": ad.cta_type,
+                    "performance_score": ad.performance_score,
+                    "performance_score_title": ad.performance_score_title,
+                    "days_active": ad.days_active,
+                    "share_url": ad.share_url,
+                },
+            }
+            for match, ad in rows
+        ]
+    }
+
+
+@app.get("/clusters/{cluster_id}/evidence")
+def get_cluster_evidence(cluster_id: int):
+    _ensure_cluster_snapshot()
+    with session_scope() as session:
+        cluster = session.query(TrendCluster).filter(TrendCluster.id == cluster_id).first()
+        insight = session.query(TrendInsight).filter(TrendInsight.cluster_id == cluster_id).first()
+        if not cluster:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+        rows = (
+            session.query(TrendAdMatch, AdsInsight)
+            .join(AdsInsight, AdsInsight.id == TrendAdMatch.ads_insight_id)
+            .filter(TrendAdMatch.cluster_id == cluster_id)
+            .all()
+        )
+    brand_counts = {}
+    format_counts = {}
+    cta_counts = {}
+    for _, ad in rows:
+        if ad.brand_name:
+            brand_counts[ad.brand_name] = brand_counts.get(ad.brand_name, 0) + 1
+        if ad.display_format:
+            format_counts[ad.display_format] = format_counts.get(ad.display_format, 0) + 1
+        if ad.cta_type:
+            cta_counts[ad.cta_type] = cta_counts.get(ad.cta_type, 0) + 1
+    return {
+        "cluster_id": cluster_id,
+        "brands": sorted(brand_counts.items(), key=lambda item: item[1], reverse=True)[:5],
+        "formats": sorted(format_counts.items(), key=lambda item: item[1], reverse=True)[:5],
+        "ctas": sorted(cta_counts.items(), key=lambda item: item[1], reverse=True)[:5],
+        "insight_components": _decode_json_field(insight.explanation_json, {}).get("components", {}) if insight else {},
+    }
+
+
+@app.post("/clusters/{cluster_id}/feedback")
+def submit_cluster_feedback(cluster_id: int, body: InsightFeedbackRequest):
+    _ensure_cluster_snapshot()
+    with session_scope() as session:
+        cluster = session.query(TrendCluster).filter(TrendCluster.id == cluster_id).first()
+        if not cluster:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+        insight = session.query(TrendInsight).filter(TrendInsight.cluster_id == cluster_id).first()
+        session.add(InsightFeedback(
+            cluster_id=cluster_id,
+            insight_id=insight.id if insight else None,
+            useful=1 if body.useful else 0,
+            rating=body.rating,
+            used_in_campaign=1 if body.used_in_campaign else 0,
+            outcome=body.outcome,
+            notes=body.notes,
+        ))
+    return {"message": "Feedback recorded"}
+
+
+@app.get("/reports/generated")
+def get_generated_reports(force_refresh: bool = Query(False)):
+    _ensure_cluster_snapshot(force=force_refresh)
+    with session_scope() as session:
+        rows = session.query(ReportBrief).order_by(ReportBrief.created_at.desc()).limit(20).all()
+    return {
+        "data": [
+            {
+                "id": row.id,
+                "report_type": row.report_type,
+                "title": row.title,
+                "cluster_id": row.cluster_id,
+                "content": _decode_json_field(row.content_json, {}),
+                "created_at": row.created_at,
+            }
+            for row in rows
+        ]
+    }
+
+
+@app.post("/reports/generate")
+def generate_reports():
+    result = _ensure_cluster_snapshot(force=True)
+    return {"message": "Reports generated", **result}
+
+
+@app.get("/backtests")
+def get_backtests(force_refresh: bool = Query(False)):
+    if force_refresh:
+        _ensure_cluster_snapshot(force=True)
+    with session_scope() as session:
+        rows = session.query(BacktestRun).order_by(BacktestRun.created_at.desc()).limit(20).all()
+    return {
+        "data": [
+            {
+                "id": row.id,
+                "run_label": row.run_label,
+                "window_start": row.window_start,
+                "window_end": row.window_end,
+                "total_clusters": row.total_clusters,
+                "matched_clusters": row.matched_clusters,
+                "avg_opportunity_score": row.avg_opportunity_score,
+                "precision_proxy": row.precision_proxy,
+                "recall_proxy": row.recall_proxy,
+                "summary": _decode_json_field(row.summary_json, {}),
+                "created_at": row.created_at,
+            }
+            for row in rows
+        ]
+    }
+
+
 _TABLE_MODEL_MAP = {
     "content": Content,
     "trends": Trend,
     "ads_insight": AdsInsight,
     "scrape_errors": ScrapeErrorModel,
+    "trend_clusters": TrendCluster,
+    "trend_signals": TrendSignal,
+    "trend_insights": TrendInsight,
+    "trend_ad_matches": TrendAdMatch,
+    "insight_feedback": InsightFeedback,
 }
 
 

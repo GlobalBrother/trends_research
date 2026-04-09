@@ -112,6 +112,128 @@ export interface AdsInsightFilters {
   date_range: { min: string | null; max: string | null };
 }
 
+export interface ClusterRow {
+  id: number;
+  cluster_key: string;
+  title: string;
+  keywords: string[];
+  platforms: string[];
+  primary_platform?: string;
+  first_seen?: string;
+  last_seen?: string;
+  lifecycle_stage: string;
+  confidence_score: number;
+  freshness_score: number;
+  source_confidence: number;
+  trend_strength: number;
+  quality_score: number;
+  ad_opportunity_score?: number | null;
+  audience_intent?: string | null;
+  timing_window?: string | null;
+  brand_safety_risk?: number | null;
+  saturation_risk?: number | null;
+}
+
+export interface ClusterDetail extends ClusterRow {
+  explanation: Record<string, unknown>;
+  insight: null | {
+    ad_opportunity_score: number;
+    audience_intent: string;
+    creative_angle_candidates: string[];
+    platform_fit: Array<{ platform: string; supporting_signals: number; linked_ads: number; fit_score: number }>;
+    ad_timing_window: string;
+    saturation_risk: number;
+    brand_safety_risk: number;
+    monetization_potential: number;
+    explanation: Record<string, unknown>;
+  };
+  feedback_summary: {
+    count: number;
+    avg_rating: number | null;
+    useful_votes: number;
+  };
+}
+
+export interface ClusterSignal {
+  id: number;
+  platform: string;
+  topic: string;
+  keyword: string;
+  geo: string;
+  signal_timestamp: string;
+  volume: number;
+  growth: number;
+  engagement: number;
+  sentiment: number;
+  freshness: number;
+  source_confidence: number;
+  quality_flags: string[];
+}
+
+export interface ClusterAdMatch {
+  match_score: number;
+  match_reason: Record<string, number>;
+  ad: {
+    id: number;
+    brand_name?: string;
+    platform?: string;
+    display_format?: string;
+    title?: string;
+    body?: string;
+    cta_type?: string;
+    performance_score?: number;
+    performance_score_title?: string;
+    days_active?: number;
+    share_url?: string;
+  };
+}
+
+export interface GeneratedReport {
+  id: number;
+  report_type: string;
+  title: string;
+  cluster_id?: number | null;
+  content: Record<string, unknown>;
+  created_at?: string;
+}
+
+export interface BacktestRun {
+  id: number;
+  run_label: string;
+  window_start?: string;
+  window_end?: string;
+  total_clusters: number;
+  matched_clusters: number;
+  avg_opportunity_score: number;
+  precision_proxy: number;
+  recall_proxy: number;
+  summary: Record<string, unknown>;
+  created_at?: string;
+}
+
+export interface MonitoringSnapshot {
+  generated_at: string;
+  total_trends: number;
+  duplicate_count: number;
+  missing_geo_count: number;
+  missing_timestamp_count: number;
+  stale_platforms: string[];
+  platforms: Array<{
+    platform: string;
+    trend_count: number;
+    duplicate_rate: number;
+    missing_geo_rate: number;
+    missing_timestamp_rate: number;
+    last_seen?: string;
+    stale_hours?: number | null;
+    freshness_score: number;
+    source_confidence: number;
+    scrape_error_count_7d: number;
+    api_units_7d: number;
+    api_requests_7d: number;
+  }>;
+}
+
 export interface TokenUsageRow {
   platform: string;
   keyword?: string;
@@ -235,6 +357,54 @@ export const triggerScrape = (body: ScrapeRequest) =>
 /** Trigger ads scraping */
 export const triggerAdsScrape = (keywords: string, max_pages?: number) =>
   client.post<{ message: string }>("/scrape_ads", null, { params: { keywords, max_pages } });
+
+/** Canonical schemas */
+export const getCanonicalSchemas = () =>
+  client.get<Record<string, unknown>>("/schemas/canonical");
+
+/** Monitoring snapshot */
+export const getPlatformHealth = (force_refresh = false) =>
+  client.get<MonitoringSnapshot>("/monitoring/platform_health", { params: { force_refresh } });
+
+/** Cluster insights */
+export const refreshClusters = () =>
+  client.post<{ message: string }>("/clusters/refresh");
+
+export const getClusters = (params?: { stage?: string; platform?: string; date?: string; limit?: number; force_refresh?: boolean }) =>
+  client.get<{ data: ClusterRow[]; example_response?: Record<string, unknown> }>("/clusters", { params });
+
+export const getCluster = (clusterId: number, force_refresh = false) =>
+  client.get<ClusterDetail>(`/clusters/${clusterId}`, { params: { force_refresh } });
+
+export const getClusterSignals = (clusterId: number) =>
+  client.get<{ data: ClusterSignal[] }>(`/clusters/${clusterId}/signals`);
+
+export const getClusterAds = (clusterId: number, limit = 10) =>
+  client.get<{ data: ClusterAdMatch[] }>(`/clusters/${clusterId}/ads`, { params: { limit } });
+
+export const getClusterEvidence = (clusterId: number) =>
+  client.get<{
+    cluster_id: number;
+    brands: [string, number][];
+    formats: [string, number][];
+    ctas: [string, number][];
+    insight_components: Record<string, number>;
+  }>(`/clusters/${clusterId}/evidence`);
+
+export const submitClusterFeedback = (
+  clusterId: number,
+  body: { useful: boolean; rating?: number | null; used_in_campaign?: boolean; outcome?: string; notes?: string }
+) => client.post<{ message: string }>(`/clusters/${clusterId}/feedback`, body);
+
+/** Reports + backtests */
+export const getGeneratedReports = (force_refresh = false) =>
+  client.get<{ data: GeneratedReport[] }>("/reports/generated", { params: { force_refresh } });
+
+export const generateReports = () =>
+  client.post<{ message: string }>("/reports/generate");
+
+export const getBacktests = (force_refresh = false) =>
+  client.get<{ data: BacktestRun[] }>("/backtests", { params: { force_refresh } });
 
 /** Test scraper connectivity */
 export const testScraper = (platform: string) =>

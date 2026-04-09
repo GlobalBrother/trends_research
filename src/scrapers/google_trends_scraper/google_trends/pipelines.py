@@ -26,6 +26,8 @@ from src.db.models import Trend, ScrapeError, ScrapeLog
 from src.db.sql_compat import (
     is_duplicate_trend, upsert_scrape_log, get_platform_id,
 )
+from src.ingestion import IngestionService
+from src.scrapers.ensembledata.db_helper import archive_source_response, save_trend
 
 from .items import (
     BaseItem, GoogleTrendsItem, TrendingNowItem,
@@ -72,6 +74,15 @@ class DatabasePipeline:
     def open_spider(self, spider):
         self._session = get_session()
         self._pending = 0
+        self._ingestion = IngestionService()
+        platform_name = getattr(spider, "name", "google_trends").replace("_", " ").title()
+        acquisition_mode = "rss" if getattr(spider, "name", "") == "trending_now" else "html"
+        self._run = self._ingestion.start_run(
+            platform_name,
+            acquisition_mode=acquisition_mode,
+            country=getattr(spider, "geo", ""),
+            language="en",
+        )
 
     def close_spider(self, spider):
         """Flush any remaining buffered items and close the session."""
@@ -82,6 +93,7 @@ class DatabasePipeline:
             self._session.rollback()
         finally:
             self._session.close()
+            self._ingestion.finish_run(self._run)
 
     # ------------------------------------------------------------------
     # Freshness check (reuses the spider-level session)
@@ -156,6 +168,7 @@ class DatabasePipeline:
                     url=item.get('url'), status=item.get('status'),
                     reason=item.get('reason'), extracted_at=item.get('extracted_at'),
                 ))
+                self._run.record_error("scrape_error")
                 self._flush_if_needed()
                 return item
 
@@ -164,6 +177,12 @@ class DatabasePipeline:
             geo = item.get('geo', '')
             extracted_at = item.get('extracted_at')
             results = item.get('results', [])
+            archive_source_response(
+                data_type or "scrapy_item",
+                dict(item),
+                metadata={"keyword": keyword, "geo": geo, "spider": getattr(spider, "name", "")},
+            )
+            self._run.fetched_count += len(results)
 
             for res in results:
                 platform = None
@@ -171,6 +190,9 @@ class DatabasePipeline:
                 growth = 0
                 url = res.get('url')
                 extra_data = {}
+                entity_type = "topic"
+                entity_id = str(res.get("id") or res.get("video_id") or res.get("url") or res.get("query") or res.get("title") or "")
+                sampled_refs = []
 
                 if data_type == 'trending_searches':
                     platform = "Google Trends"
@@ -188,6 +210,7 @@ class DatabasePipeline:
                         growth = 250
                 elif data_type == 'youtube_trends':
                     platform = "YouTube"
+                    entity_type = "video"
                     topic = res.get('title')
                     growth = self._parse_views(res.get('views')) or 0
                     extra_data['published'] = res.get('published')
@@ -195,6 +218,7 @@ class DatabasePipeline:
                     extra_data['channel'] = res.get('channel')
                     extra_data['duration'] = res.get('duration')
                     extra_data['description'] = res.get('description')
+                    entity_id = str(res.get("video_id") or entity_id)
                 elif data_type in ['threads_trends', 'instagram_trends', 'tiktok_trends']:
                     platform_map = {
                         'threads_trends': 'Threads',
@@ -202,24 +226,28 @@ class DatabasePipeline:
                         'tiktok_trends': 'TikTok',
                     }
                     platform = platform_map.get(data_type)
+                    entity_type = "post"
                     topic = res.get('topic')
                     growth = res.get('engagement', 0)
                     extra_data['posts'] = res.get('posts')
                     extra_data['replies'] = res.get('replies')
                 elif data_type == 'hackernews_trends':
                     platform = "HackerNews"
+                    entity_type = "story"
                     topic = res.get('title')
                     growth = res.get('score', 0) * 10
                     extra_data['engagement'] = res.get('descendants', 0) * 5
                     extra_data['author'] = res.get('by')
                 elif data_type == 'reddit_trends':
                     platform = "Reddit"
+                    entity_type = "post"
                     topic = res.get('title')
                     growth = res.get('score', 0) * 5
                     extra_data['engagement'] = res.get('num_comments', 0) * 10
                     extra_data['subreddit'] = res.get('subreddit')
                 elif data_type == 'news_trends':
                     platform = "News"
+                    entity_type = "article"
                     topic = res.get('title')
                     growth = res.get('popularity', 50) * 10
                     extra_data['source'] = res.get('source')
@@ -250,32 +278,54 @@ class DatabasePipeline:
                             'geoName': r.get('geoName'),
                             'region_value': reg_growth,
                         }
-                        if not is_duplicate_trend(session, platform_id, reg_topic, keyword, geo):
-                            session.add(Trend(
-                                platform_id=platform_id, topic=reg_topic, growth=reg_growth,
-                                keyword=keyword, geo=geo, extracted_at=extracted_at,
-                                extra_data=json.dumps(reg_extra),
-                            ))
+                        save_trend(
+                            platform=platform,
+                            topic=reg_topic,
+                            growth=reg_growth,
+                            keyword=keyword,
+                            geo=geo,
+                            extra_data=reg_extra,
+                            entity_type="region_interest",
+                            entity_id=str(r.get("geoCode") or reg_topic),
+                            sampled_content_refs=[{
+                                "id": str(r.get("geoCode") or reg_topic),
+                                "title": reg_topic[:250],
+                                "snippet": json.dumps(reg_extra),
+                            }],
+                            fetch_metadata={"keyword": keyword, "granularity": "day"},
+                            raw_payload=r,
+                            run=self._run,
+                        )
                     self._flush_if_needed()
                     continue
 
                 if platform and topic:
-                    platform_id = get_platform_id(session, platform)
-                    if is_duplicate_trend(session, platform_id, topic, keyword, geo):
-                        continue
                     if url:
                         extra_data['url'] = url
-                    session.add(Trend(
-                        platform_id=platform_id, topic=topic, growth=growth,
-                        keyword=keyword, geo=geo, extracted_at=extracted_at,
-                        extra_data=json.dumps(extra_data),
-                    ))
-
-                    if url:
-                        upsert_scrape_log(session, platform, url, 200, extracted_at)
-
-                    identifier = f"{keyword}_{geo}" if geo else keyword
-                    upsert_scrape_log(session, platform, identifier, 200, extracted_at)
+                    if url or topic:
+                        sampled_refs.append(
+                            {
+                                "id": entity_id or topic[:64],
+                                "url": url or "",
+                                "title": topic[:250],
+                                "snippet": (extra_data.get("description") or extra_data.get("source") or "")[:280],
+                            }
+                        )
+                    save_trend(
+                        platform=platform,
+                        topic=topic,
+                        growth=growth,
+                        keyword=keyword,
+                        geo=geo,
+                        url=url,
+                        extra_data=extra_data,
+                        entity_type=entity_type,
+                        entity_id=entity_id,
+                        sampled_content_refs=sampled_refs,
+                        fetch_metadata={"keyword": keyword, "granularity": "hour"},
+                        raw_payload=res,
+                        run=self._run,
+                    )
 
             self._flush_if_needed()
 

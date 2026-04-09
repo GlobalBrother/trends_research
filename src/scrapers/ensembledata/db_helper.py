@@ -29,40 +29,103 @@ from src.db.sql_compat import (
     is_duplicate_trend, upsert_scrape_log, get_platform_id,
     upsert_author, upsert_content, upsert_content_metrics, upsert_hashtags,
 )
+from src.ingestion import CanonicalSignalInput, EvidenceInput, IngestionRun, IngestionService
 
 logger = logging.getLogger(__name__)
+ingestion = IngestionService()
 
 
 # ---------------------------------------------------------------------------
 # Single-trend write (kept for backward compatibility)
 # ---------------------------------------------------------------------------
 
-def save_trend(platform, topic, growth, keyword, geo, url=None, extra_data=None):
-    """Insert a trend row, skipping duplicates by (platform_id, topic, keyword, geo)."""
-    extracted_at = datetime.now()
+def save_trend(
+    platform,
+    topic,
+    growth,
+    keyword,
+    geo,
+    url=None,
+    extra_data=None,
+    *,
+    language="en",
+    entity_type="topic",
+    entity_id=None,
+    sampled_content_refs=None,
+    fetch_metadata=None,
+    raw_payload=None,
+    run: IngestionRun | None = None,
+):
+    """Insert a canonical trend signal and mirror it to the legacy trend table."""
+    extracted_at = datetime.utcnow()
     try:
         ed = extra_data.copy() if extra_data else {}
         if url:
             ed["url"] = url
 
+        refs = list(sampled_content_refs or [])
+        if not refs and url:
+            refs.append(
+                {
+                    "id": entity_id or topic[:64],
+                    "url": url,
+                    "title": topic[:250],
+                    "snippet": (ed.get("description") or ed.get("caption") or "")[:280],
+                }
+            )
+
+        signal = CanonicalSignalInput(
+            source=platform,
+            entity_type=entity_type,
+            entity_id=str(entity_id or ed.get("external_id") or url or topic[:120]),
+            label=topic,
+            country=geo or "Global",
+            language=language,
+            retrieved_at=extracted_at,
+            granularity=fetch_metadata.get("granularity", "hour") if fetch_metadata else "hour",
+            metrics={
+                "volume": ed.get("views") or ed.get("traffic"),
+                "growth_rate": growth,
+                "rank": ed.get("rank"),
+                "engagement": ed.get("engagement") or ed.get("likes") or ed.get("score"),
+                "velocity": ed.get("velocity"),
+            },
+            sampled_content_refs=refs,
+            fetch_metadata={
+                "keyword": keyword,
+                "quota_cost": ed.get("quota_cost") or ed.get("units_charged"),
+                **(fetch_metadata or {}),
+                **({"response_hash": ingestion.compute_idempotency_key_static(platform, str(entity_id or topic), geo or "Global", extracted_at.replace(minute=0, second=0, microsecond=0))} if raw_payload is None else {}),
+            },
+        )
+        evidence_items = [
+            EvidenceInput(
+                evidence_type="content_ref",
+                external_ref=str(ref.get("id") or ref.get("external_ref") or ""),
+                url=ref.get("url") or "",
+                title=ref.get("title") or topic[:250],
+                snippet=ref.get("snippet") or "",
+                metadata={k: v for k, v in ref.items() if k not in {"id", "external_ref", "url", "title", "snippet"}},
+            )
+            for ref in refs
+        ]
+        status = ingestion.ingest_signal(
+            signal,
+            evidence_items=evidence_items,
+            raw_payload=raw_payload if raw_payload is not None else {"topic": topic, "keyword": keyword, "extra_data": ed},
+            run=run,
+            mirror_to_legacy=True,
+        )
         with session_scope() as session:
-            platform_id = get_platform_id(session, platform)
-
-            if is_duplicate_trend(session, platform_id, topic, keyword, geo):
-                logger.debug("Skipped duplicate trend: platform=%s, topic=%.60s, keyword=%s", platform, topic, keyword)
-                return
-
-            session.add(Trend(
-                platform_id=platform_id, topic=topic, growth=growth,
-                keyword=keyword, geo=geo, extracted_at=extracted_at,
-                extra_data=json.dumps(ed) if ed else None,
-            ))
             upsert_scrape_log(
                 session, platform,
                 f"{keyword}_{geo}" if geo else keyword,
                 200, extracted_at,
             )
-            logger.debug("Saved trend: platform=%s, topic=%.60s, keyword=%s", platform, topic, keyword)
+        if status["duplicate"]:
+            logger.debug("Skipped duplicate trend signal: platform=%s, topic=%.60s, keyword=%s", platform, topic, keyword)
+        else:
+            logger.debug("Saved trend signal: platform=%s, topic=%.60s, keyword=%s", platform, topic, keyword)
     except Exception:
         logger.error("Failed to save trend: platform=%s, keyword=%s", platform, keyword, exc_info=True)
         raise
@@ -72,7 +135,7 @@ def save_trend(platform, topic, growth, keyword, geo, url=None, extra_data=None)
 # Batch trend write (new — reduces N commits to 1)
 # ---------------------------------------------------------------------------
 
-def save_trends_batch(trends: list[dict]):
+def save_trends_batch(trends: list[dict], *, run: IngestionRun | None = None):
     """Insert multiple trends in a single transaction.
 
     Each dict in *trends* must contain keys:
@@ -82,37 +145,27 @@ def save_trends_batch(trends: list[dict]):
     """
     if not trends:
         return
-    extracted_at = datetime.now()
     saved = 0
     try:
-        with session_scope() as session:
-            for t in trends:
-                platform = t["platform"]
-                topic = t["topic"]
-                keyword = t.get("keyword", "")
-                geo = t.get("geo", "")
-                growth = t.get("growth", 0)
-                url = t.get("url")
-                extra_data = t.get("extra_data")
-
-                ed = extra_data.copy() if extra_data else {}
-                if url:
-                    ed["url"] = url
-
-                platform_id = get_platform_id(session, platform)
-                if is_duplicate_trend(session, platform_id, topic, keyword, geo):
-                    continue
-
-                session.add(Trend(
-                    platform_id=platform_id, topic=topic, growth=growth,
-                    keyword=keyword, geo=geo, extracted_at=extracted_at,
-                    extra_data=json.dumps(ed) if ed else None,
-                ))
-                upsert_scrape_log(
-                    session, platform,
-                    f"{keyword}_{geo}" if geo else keyword,
-                    200, extracted_at,
-                )
+        for t in trends:
+            before = run.inserted_count if run else 0
+            save_trend(
+                platform=t["platform"],
+                topic=t["topic"],
+                growth=t.get("growth", 0),
+                keyword=t.get("keyword", ""),
+                geo=t.get("geo", ""),
+                url=t.get("url"),
+                extra_data=t.get("extra_data"),
+                language=t.get("language", "en"),
+                entity_type=t.get("entity_type", "topic"),
+                entity_id=t.get("entity_id"),
+                sampled_content_refs=t.get("sampled_content_refs"),
+                fetch_metadata=t.get("fetch_metadata"),
+                raw_payload=t.get("raw_payload"),
+                run=run,
+            )
+            if not run or run.inserted_count > before:
                 saved += 1
         logger.info("Batch saved %d/%d trends.", saved, len(trends))
     except Exception:
@@ -189,7 +242,7 @@ def save_token_usage(platform, keyword, units_charged, geo=""):
 # Scrape errors
 # ---------------------------------------------------------------------------
 
-def save_error(platform, keyword, url, status, reason):
+def save_error(platform, keyword, url, status, reason, *, payload=None, run: IngestionRun | None = None):
     """Insert a scrape error row."""
     try:
         with session_scope() as session:
@@ -199,6 +252,24 @@ def save_error(platform, keyword, url, status, reason):
                 extracted_at=datetime.now(),
             ))
             logger.debug("Saved error: platform=%s, keyword=%s, reason=%.80s", platform, keyword, reason)
+        ingestion.archive_dead_letter(
+            source=platform,
+            error_type=f"http_{status}" if status else "scrape_error",
+            error_message=str(reason),
+            payload=payload or {"keyword": keyword, "url": url, "status": status, "reason": reason},
+            run=run,
+            cursor_key=f"{keyword}_{url}" if url else keyword,
+        )
     except Exception:
         logger.error("Failed to save error row: platform=%s, keyword=%s", platform, keyword, exc_info=True)
         raise
+
+
+def archive_source_response(source: str, payload, metadata: dict | None = None) -> int:
+    """Archive a raw source response for replay/debugging."""
+    return ingestion.archive_payload(
+        source_table="source_response",
+        source_id=0,
+        payload=payload,
+        metadata={"source": source, **(metadata or {})},
+    )
