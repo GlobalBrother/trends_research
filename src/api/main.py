@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy import text, func
+from sqlalchemy import func, literal, select
 from sqlalchemy.exc import IntegrityError
 
 from src.runtime.secrets import init_runtime_secrets
@@ -1845,9 +1845,10 @@ def get_ads_insight_filters():
 
     with session_scope() as session:
         # Date range
-        row = session.execute(
-            text("SELECT MIN(start_date), MAX(start_date) FROM ads_insight")
-        ).fetchone()
+        row = session.query(
+            func.min(AdsInsight.start_date),
+            func.max(AdsInsight.start_date),
+        ).one()
         result["date_range"] = {"min": row[0], "max": row[1]} if row else {"min": None, "max": None}
 
     return result
@@ -2206,7 +2207,7 @@ def azure_status(authorization: str = Header(None)):
     _require_admin(authorization)
     try:
         with engine.connect() as conn:
-            conn.execute(text("SELECT 1")).scalar()
+            conn.execute(select(literal(1))).scalar()
         counts = {}
         with session_scope() as session:
             for mapper in Base.registry.mappers:
@@ -2252,7 +2253,7 @@ async def health_check():
         eng = get_engine()
         if eng is not None:
             with eng.connect() as conn:
-                conn.execute(text("SELECT 1"))
+                conn.execute(select(literal(1)))
             db_ok = True
     except Exception:
         pass

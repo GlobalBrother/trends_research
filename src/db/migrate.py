@@ -1,27 +1,15 @@
 """
-Database migration — bring existing Azure SQL tables in sync with models.py.
+Database migration - bring existing Azure SQL tables in sync with models.py.
 
-This script is **idempotent**: it can be run multiple times safely.  It will
-only create indexes, columns, or tables that do not already exist.
-
-It handles two categories of changes:
-
-1. **New tables** — created via ``Base.metadata.create_all(checkfirst=True)``.
-2. **New indexes on existing tables** — created via raw ``CREATE INDEX`` with
-   ``IF NOT EXISTS`` guards (T-SQL compatible).
-3. **New columns on existing tables** — added via ``ALTER TABLE ... ADD`` with
-   existence checks.
+This script is idempotent: it can be run multiple times safely. It creates
+missing tables and indexes using SQLAlchemy metadata rather than raw SQL.
 
 Usage
 -----
 From the project root::
 
     python -m src.db.migrate          # run the migration
-    python -m src.db.migrate --dry    # preview SQL without executing
-
-Or via the API::
-
-    POST /admin/azure/migrate
+    python -m src.db.migrate --dry    # preview actions without executing
 """
 
 import argparse
@@ -37,134 +25,13 @@ from src.runtime.secrets import init_runtime_secrets
 
 init_runtime_secrets()
 
-from sqlalchemy import text, inspect
+from sqlalchemy import inspect
 
-from src.db.connection import get_engine, session_scope
+from src.db.connection import get_engine
 from src.db.models import Base
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Index definitions — every index declared in models.py
-#
-# Format: (index_name, table_name, column_list_csv)
-#
-# These are written as raw SQL so we can use T-SQL's conditional syntax
-# which is not supported by SQLAlchemy's DDL layer for existing tables.
-# ---------------------------------------------------------------------------
-
-_INDEXES = [
-    # Authors
-    ("idx_authors_platform",            "authors",          "platform_id"),
-    ("idx_authors_external",            "authors",          "platform_id, external_author_id"),
-
-    # Content
-    ("idx_content_platform",            "content",          "platform_id"),
-    ("idx_content_keyword",             "content",          "keyword"),
-    ("idx_content_external",            "content",          "platform_id, external_id"),
-    ("idx_content_created",             "content",          "created_at"),
-    ("idx_content_author",              "content",          "author_id"),
-
-    # Content Metrics
-    ("idx_metrics_content",             "content_metrics",  "content_id"),
-
-    # Trends
-    ("idx_trends_platform_id",          "trends",           "platform_id"),
-    ("idx_trends_keyword",              "trends",           "keyword"),
-    ("idx_trends_geo",                  "trends",           "geo"),
-    ("idx_trends_extracted_at",         "trends",           "extracted_at"),
-    ("idx_trends_dedup",                "trends",           "platform_id, keyword, geo, extracted_at"),
-    ("idx_trends_api_query",            "trends",           "platform_id, geo, extracted_at"),
-
-    # Scrape Errors
-    ("idx_error_platform",              "scrape_errors",    "platform"),
-    ("idx_error_extracted_at",          "scrape_errors",    "extracted_at"),
-
-    # Scrape Log
-    ("idx_log_platform_id",             "scrape_log",       "platform, identifier"),
-    ("idx_log_extracted",               "scrape_log",       "platform, identifier, status, extracted_at"),
-
-    # OTP Codes
-    ("idx_otp_user",                    "otp_codes",        "user_id"),
-    ("idx_otp_lookup",                  "otp_codes",        "user_id, code, used, created_at"),
-
-    # Auth Tokens
-    ("idx_authtoken_token",             "auth_tokens",      "token"),
-    ("idx_authtoken_user_expires",      "auth_tokens",      "user_id, expires_at"),
-
-    # Token Usage
-    ("idx_tokenusage_platform",         "token_usage",      "platform"),
-    ("idx_tokenusage_created",          "token_usage",      "created_at"),
-    ("idx_tokenusage_platform_created", "token_usage",      "platform, created_at"),
-
-    # Raw Data Archive
-    ("idx_raw_source",                  "raw_data_archive", "source_table, source_id"),
-
-    # Niches
-    ("idx_niches_name",                 "niches",           "niche_name"),
-
-    # Ads Insight
-    ("idx_ads_keyword",                 "ads_insight",      "search_keyword"),
-    ("idx_ads_extracted",               "ads_insight",      "extracted_at"),
-    ("idx_ads_hookd_id",                "ads_insight",      "hookd_id"),
-
-    # Trend Clusters
-    ("idx_cluster_stage",               "trend_clusters",   "lifecycle_stage"),
-    ("idx_cluster_last_seen",           "trend_clusters",   "last_seen"),
-    ("idx_cluster_primary_platform",    "trend_clusters",   "primary_platform"),
-
-    # Trend Signals
-    ("idx_signal_cluster",              "trend_signals",    "cluster_id"),
-    ("idx_signal_platform",             "trend_signals",    "platform"),
-    ("idx_signal_timestamp",            "trend_signals",    "signal_timestamp"),
-
-    # Trend Insights
-    ("idx_insight_score",               "trend_insights",   "ad_opportunity_score"),
-    ("idx_insight_confidence",          "trend_insights",   "confidence_score"),
-
-    # Trend Ad Matches
-    ("idx_match_cluster",               "trend_ad_matches", "cluster_id"),
-    ("idx_match_ad",                    "trend_ad_matches", "ads_insight_id"),
-    ("idx_match_score",                 "trend_ad_matches", "match_score"),
-
-    # Insight Feedback
-    ("idx_feedback_cluster",            "insight_feedback", "cluster_id"),
-    ("idx_feedback_insight",            "insight_feedback", "insight_id"),
-
-    # Backtest Runs
-    ("idx_backtest_created",            "backtest_runs",    "created_at"),
-
-    # Report Briefs
-    ("idx_report_type",                 "report_briefs",    "report_type"),
-    ("idx_report_created",              "report_briefs",    "created_at"),
-
-    # Canonical Trend Signals
-    ("idx_canonical_source_bucket",     "canonical_trend_signals", "source, time_bucket_start"),
-    ("idx_canonical_entity",            "canonical_trend_signals", "source, entity_id"),
-    ("idx_canonical_country",           "canonical_trend_signals", "country"),
-    ("idx_canonical_idempotency",       "canonical_trend_signals", "idempotency_key"),
-
-    # Trend Evidence
-    ("idx_evidence_signal",             "trend_evidence",   "signal_id"),
-    ("idx_evidence_content",            "trend_evidence",   "content_id"),
-
-    # Source Cursors
-    ("idx_cursor_source",               "source_cursors",   "source"),
-
-    # Scrape Runs
-    ("idx_scrape_run_source_started",   "scrape_runs",      "source, started_at"),
-    ("idx_scrape_run_status",           "scrape_runs",      "status"),
-
-    # Scrape Dead Letters
-    ("idx_dead_letter_source",          "scrape_dead_letters", "source"),
-    ("idx_dead_letter_status",          "scrape_dead_letters", "status"),
-    ("idx_dead_letter_run",             "scrape_dead_letters", "scrape_run_id"),
-]
-
-
-# ---------------------------------------------------------------------------
-# Migration logic
-# ---------------------------------------------------------------------------
 
 class MigrationResult:
     """Collects migration actions for reporting."""
@@ -193,63 +60,33 @@ class MigrationResult:
         }
 
 
+def _get_existing_tables(engine) -> set[str]:
+    insp = inspect(engine)
+    return set(insp.get_table_names())
+
+
 def _get_existing_indexes(engine) -> set[str]:
-    """Return a set of all index names that already exist in the database.
-
-    Works for both Azure SQL (MSSQL) and SQLite (for testing).
-    """
-    dialect = engine.dialect.name
-    existing = set()
-
-    try:
-        insp = inspect(engine)
-        for table_name in insp.get_table_names():
-            for idx in insp.get_indexes(table_name):
+    insp = inspect(engine)
+    existing: set[str] = set()
+    for table_name in insp.get_table_names():
+        for idx in insp.get_indexes(table_name):
+            if idx.get("name"):
                 existing.add(idx["name"])
-    except Exception:
-        # Fallback: query sys.indexes directly (MSSQL-specific)
-        if dialect in ("mssql", "mssql+pyodbc"):
-            try:
-                with engine.connect() as conn:
-                    rows = conn.execute(text(
-                        "SELECT name FROM sys.indexes WHERE name IS NOT NULL"
-                    )).fetchall()
-                    existing = {r[0] for r in rows}
-            except Exception as e:
-                logger.warning("Could not query sys.indexes: %s", e)
-
     return existing
 
 
-def _get_existing_tables(engine) -> set[str]:
-    """Return a set of all table names that already exist in the database."""
-    try:
-        insp = inspect(engine)
-        return set(insp.get_table_names())
-    except Exception:
-        return set()
+def _iter_model_indexes():
+    for table in Base.metadata.sorted_tables:
+        for index in table.indexes:
+            if index.name:
+                yield table.name, index
 
 
 def run_migration(dry_run: bool = False) -> MigrationResult:
-    """Run the full migration: create missing tables, then add missing indexes.
-
-    Parameters
-    ----------
-    dry_run : bool
-        If True, log all SQL statements but do not execute them.
-
-    Returns
-    -------
-    MigrationResult
-        A summary of all actions taken.
-    """
+    """Run the full migration: create missing tables, then add missing indexes."""
     result = MigrationResult()
     engine = get_engine()
-    dialect = engine.dialect.name
 
-    # ------------------------------------------------------------------
-    # Step 1: Create any tables that don't exist yet
-    # ------------------------------------------------------------------
     logger.info("Step 1: Checking for missing tables...")
     existing_tables_before = _get_existing_tables(engine)
     model_tables = set(Base.metadata.tables.keys())
@@ -259,55 +96,38 @@ def run_migration(dry_run: bool = False) -> MigrationResult:
         logger.info("  Missing tables to create: %s", ", ".join(sorted(missing_tables)))
         if not dry_run:
             Base.metadata.create_all(engine, checkfirst=True)
-        for t in sorted(missing_tables):
-            result.tables_created.append(t)
-            logger.info("  [%s] CREATE TABLE %s", "DRY-RUN" if dry_run else "OK", t)
+        for table_name in sorted(missing_tables):
+            result.tables_created.append(table_name)
+            logger.info("  [%s] CREATE TABLE %s", "DRY-RUN" if dry_run else "OK", table_name)
     else:
         logger.info("  All %d tables already exist.", len(model_tables))
 
-    # ------------------------------------------------------------------
-    # Step 2: Create missing indexes on existing tables
-    # ------------------------------------------------------------------
     logger.info("Step 2: Checking for missing indexes...")
     existing_indexes = _get_existing_indexes(engine)
     logger.info("  Found %d existing indexes in the database.", len(existing_indexes))
 
-    for idx_name, table_name, columns in _INDEXES:
+    for table_name, index in _iter_model_indexes():
+        idx_name = index.name
         if idx_name in existing_indexes:
             result.indexes_skipped.append(idx_name)
             logger.debug("  [SKIP] %s already exists on %s", idx_name, table_name)
             continue
 
-        # Build the CREATE INDEX statement with T-SQL conditional guard
-        if dialect in ("mssql", "mssql+pyodbc"):
-            # T-SQL: Use IF NOT EXISTS guard for safety
-            sql = (
-                f"IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = '{idx_name}') "
-                f"CREATE NONCLUSTERED INDEX [{idx_name}] ON [{table_name}] ({columns})"
-            )
-        else:
-            # SQLite / PostgreSQL: Use IF NOT EXISTS syntax
-            sql = f"CREATE INDEX IF NOT EXISTS [{idx_name}] ON [{table_name}] ({columns})"
+        columns = ", ".join(column.name for column in index.columns)
+        logger.info("  [%s] %s ON %s (%s)", "DRY-RUN" if dry_run else "CREATE", idx_name, table_name, columns)
 
-        logger.info("  [%s] %s ON %s (%s)",
-                     "DRY-RUN" if dry_run else "CREATE", idx_name, table_name, columns)
-
-        if not dry_run:
-            try:
-                with engine.connect() as conn:
-                    conn.execute(text(sql))
-                    conn.commit()
-                result.indexes_created.append(idx_name)
-            except Exception as e:
-                err_msg = f"Failed to create index {idx_name}: {e}"
-                logger.error("  [ERROR] %s", err_msg)
-                result.errors.append(err_msg)
-        else:
+        if dry_run:
             result.indexes_created.append(f"{idx_name} (dry-run)")
+            continue
 
-    # ------------------------------------------------------------------
-    # Done
-    # ------------------------------------------------------------------
+        try:
+            index.create(bind=engine, checkfirst=True)
+            result.indexes_created.append(idx_name)
+        except Exception as exc:
+            err_msg = f"Failed to create index {idx_name}: {exc}"
+            logger.error("  [ERROR] %s", err_msg)
+            result.errors.append(err_msg)
+
     result.finished_at = datetime.utcnow()
     logger.info(
         "Migration complete: %d tables created, %d indexes created, %d indexes skipped, %d errors.",
@@ -319,10 +139,6 @@ def run_migration(dry_run: bool = False) -> MigrationResult:
     return result
 
 
-# ---------------------------------------------------------------------------
-# CLI entry point
-# ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
@@ -330,7 +146,7 @@ if __name__ == "__main__":
     )
 
     parser = argparse.ArgumentParser(description="Migrate Azure SQL schema to match models.py")
-    parser.add_argument("--dry", action="store_true", help="Preview SQL without executing")
+    parser.add_argument("--dry", action="store_true", help="Preview actions without executing")
     args = parser.parse_args()
 
     result = run_migration(dry_run=args.dry)
@@ -350,15 +166,15 @@ if __name__ == "__main__":
 
     if summary["tables_created"]:
         print("\nNew tables:")
-        for t in summary["tables_created"]:
-            print(f"  + {t}")
+        for table_name in summary["tables_created"]:
+            print(f"  + {table_name}")
 
     if summary["indexes_created"]:
         print("\nNew indexes:")
-        for i in summary["indexes_created"]:
-            print(f"  + {i}")
+        for index_name in summary["indexes_created"]:
+            print(f"  + {index_name}")
 
     if summary["errors"]:
         print("\nErrors:")
-        for e in summary["errors"]:
-            print(f"  ! {e}")
+        for error in summary["errors"]:
+            print(f"  ! {error}")

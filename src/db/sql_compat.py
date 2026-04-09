@@ -2,7 +2,7 @@
 SQL compatibility layer for Azure SQL Server.
 
 Uses SQLAlchemy ORM models exclusively — no raw SQL.
-Optimized for reduced round-trips: EXISTS checks, bulk lookups, and
+Optimized for reduced round-trips: first-row existence checks, bulk lookups, and
 session-reuse patterns.
 """
 
@@ -14,7 +14,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from sqlalchemy import func, and_, exists, text
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from src.db.models import (
@@ -82,28 +82,25 @@ def upsert_scrape_log(session: Session, platform, identifier, status, extracted_
 
 
 # ---------------------------------------------------------------------------
-# Duplicate check for trends (optimized with EXISTS)
+# Duplicate check for trends (dialect-safe first-row existence query)
 # ---------------------------------------------------------------------------
 
 def is_duplicate_trend(session: Session, platform_id, topic, keyword, geo) -> bool:
     """Check if a trend already exists today.
 
-    Uses an EXISTS subquery instead of loading the full row, which is
-    significantly faster on large tables — the DB can stop scanning as
-    soon as it finds one matching row.
+    Uses a first-row lookup instead of ``SELECT EXISTS (...)`` because
+    SQL Server rejects that syntax while SQLite accepts it. This still
+    short-circuits at the database level via ``TOP 1`` / ``LIMIT 1``.
     """
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    return session.query(
-        exists().where(
-            and_(
-                Trend.platform_id == platform_id,
-                Trend.topic == topic,
-                Trend.keyword == keyword,
-                Trend.geo == geo,
-                Trend.extracted_at > today,
-            )
-        )
-    ).scalar()
+    row = session.query(Trend.id).filter(
+        Trend.platform_id == platform_id,
+        Trend.topic == topic,
+        Trend.keyword == keyword,
+        Trend.geo == geo,
+        Trend.extracted_at > today,
+    ).first()
+    return row is not None
 
 
 # ---------------------------------------------------------------------------
@@ -111,12 +108,11 @@ def is_duplicate_trend(session: Session, platform_id, topic, keyword, geo) -> bo
 # ---------------------------------------------------------------------------
 
 def insert_niche_if_not_exists(session: Session, niche_name, keyword):
-    """Insert a niche keyword if it doesn't exist (uses EXISTS check)."""
-    already = session.query(
-        exists().where(
-            and_(Niche.niche_name == niche_name, Niche.keyword == keyword)
-        )
-    ).scalar()
+    """Insert a niche keyword if it doesn't exist."""
+    already = session.query(Niche.id).filter(
+        Niche.niche_name == niche_name,
+        Niche.keyword == keyword,
+    ).first()
     if not already:
         session.add(Niche(niche_name=niche_name, keyword=keyword))
 
@@ -128,15 +124,15 @@ def insert_niche_if_not_exists(session: Session, niche_name, keyword):
 def verify_otp(session: Session, user_id, code):
     """Find a valid (unused, unexpired) OTP. Returns OtpCode or None.
 
-    Uses ``func.getutcdate()`` so the 10-minute window is evaluated
-    server-side in UTC, matching the ``server_default=func.now()`` on
-    ``OtpCode.created_at`` (which is UTC on Azure SQL).
+    Uses a UTC cutoff timestamp computed in Python, keeping the query in
+    ORM style and avoiding backend-specific SQL functions.
     """
+    cutoff = datetime.utcnow() - timedelta(minutes=10)
     return session.query(OtpCode).filter(
         OtpCode.user_id == user_id,
         OtpCode.code == code,
         OtpCode.used == 0,
-        OtpCode.created_at > func.dateadd(text("minute"), -10, func.getutcdate()),
+        OtpCode.created_at > cutoff,
     ).order_by(OtpCode.created_at.desc()).first()
 
 

@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from typing import Generator, Optional
 from urllib.parse import quote_plus
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, literal, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from src.runtime.secrets import init_runtime_secrets
@@ -506,7 +506,7 @@ def get_engine() -> Engine:
     for attempt in range(1, ENGINE_RETRIES + 1):
         try:
             with engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
+                conn.execute(select(literal(1)))
             diag.connected = True
             diag.log(
                 f"Connection verified (pool_size={POOL_SIZE}, "
@@ -588,7 +588,7 @@ def test_connection() -> tuple[bool, str]:
     try:
         engine = get_engine()
         with engine.connect() as conn:
-            row = conn.execute(text("SELECT 1")).fetchone()
+            row = conn.execute(select(literal(1))).fetchone()
             if row:
                 server = os.getenv("AZURE_SQL_SERVER", "Azure SQL")
                 db = os.getenv("AZURE_SQL_DB", os.getenv("AZURE_SQL_DATABASE", ""))
@@ -720,15 +720,16 @@ def diagnose() -> ConnectionDiagnostic:
     try:
         engine = get_engine()
         with engine.connect() as conn:
-            row = conn.execute(text("SELECT 1")).fetchone()
+            row = conn.execute(select(literal(1))).fetchone()
             if row:
                 diag.connected = True
                 diag.log("  SELECT 1 → SUCCESS")
 
                 # Bonus: get DB version
                 try:
-                    ver = conn.execute(text("SELECT @@VERSION")).scalar()
-                    diag.log(f"  Server version: {ver[:80]}...")
+                    ver_info = conn.dialect.server_version_info
+                    if ver_info:
+                        diag.log(f"  Server version: {'.'.join(str(part) for part in ver_info)}")
                 except Exception:
                     pass
     except Exception as e:

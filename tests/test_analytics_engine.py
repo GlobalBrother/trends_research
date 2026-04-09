@@ -48,6 +48,10 @@ class TestAnalyzeSentiment:
 # ── calculate_virality_score ──────────────────────────────────────────────
 
 class TestCalculateViralityScore:
+    def test_sigmoid_handles_extreme_inputs_without_overflow(self, engine):
+        assert engine._sigmoid(1e6) == pytest.approx(1.0)
+        assert engine._sigmoid(-1e6) == pytest.approx(0.0)
+
     def test_basic_score(self, engine):
         score = engine.calculate_virality_score(growth_rate=500, engagement=1000)
         assert 1 <= score <= 100

@@ -121,7 +121,13 @@ class AnalyticsEngine:
     @staticmethod
     def _sigmoid(x: float) -> float:
         """Sigmoid function used to scale the virality score to [0, 1]."""
-        return 1.0 / (1.0 + np.exp(-SIGMOID_STEEPNESS * (x - SIGMOID_MIDPOINT)))
+        z = SIGMOID_STEEPNESS * (x - SIGMOID_MIDPOINT)
+        if z >= 0:
+            exp_neg_z = np.exp(-z)
+            return 1.0 / (1.0 + exp_neg_z)
+
+        exp_z = np.exp(z)
+        return exp_z / (1.0 + exp_z)
 
     def calculate_virality_score(
         self,
