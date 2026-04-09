@@ -28,6 +28,49 @@ provider "azurerm" {
 # Current client config (for Key Vault access policies)
 data "azurerm_client_config" "current" {}
 
+locals {
+  required_app_secrets = merge(
+    var.azure_sql_connectionstring != "" ? {
+      "AZURE-SQL-CONNECTIONSTRING" = var.azure_sql_connectionstring
+    } : {},
+    var.azure_sql_server != "" ? {
+      "AZURE-SQL-SERVER" = var.azure_sql_server
+    } : {},
+    var.azure_sql_database != "" ? {
+      "AZURE-SQL-DATABASE" = var.azure_sql_database
+    } : {},
+    var.azure_sql_user != "" ? {
+      "AZURE-SQL-USER" = var.azure_sql_user
+    } : {},
+    var.azure_sql_pass != "" ? {
+      "AZURE-SQL-PASS" = var.azure_sql_pass
+    } : {},
+    var.ensembledata_token != "" ? {
+      "ENSEMBLEDATA-TOKEN" = var.ensembledata_token
+    } : {},
+    var.news_api_key != "" ? {
+      "NEWS-API-KEY" = var.news_api_key
+    } : {},
+    var.gethookedai_token != "" ? {
+      "GETHOOKEDAI-TOKEN" = var.gethookedai_token
+    } : {},
+    var.resend_api_key != "" ? {
+      "RESEND-API-KEY" = var.resend_api_key
+    } : {},
+    var.resend_from_email != "" ? {
+      "RESEND-FROM-EMAIL" = var.resend_from_email
+    } : {},
+    var.test_account_email != "" ? {
+      "TEST-ACCOUNT-EMAIL" = var.test_account_email
+    } : {},
+    var.test_account_otp != "" ? {
+      "TEST-ACCOUNT-OTP" = var.test_account_otp
+    } : {},
+  )
+
+  effective_app_secrets = merge(local.required_app_secrets, var.app_secrets)
+}
+
 # ---------------------------------------------------------------------------
 # Resource Group (existing — managed externally, imported into state)
 # ---------------------------------------------------------------------------
@@ -189,7 +232,7 @@ resource "azurerm_key_vault" "main" {
 # as for_each keys. The secret *values* remain protected — only the map keys
 # (e.g. "AZURE-SQL-SERVER") are exposed as resource instance addresses.
 resource "azurerm_key_vault_secret" "app_secrets" {
-  for_each     = nonsensitive(var.app_secrets)
+  for_each     = nonsensitive(local.effective_app_secrets)
   name         = each.key
   value        = each.value
   key_vault_id = azurerm_key_vault.main.id
@@ -285,8 +328,8 @@ resource "azurerm_email_communication_service" "main" {
 
 # Azure-managed domain — no DNS verification needed
 resource "azurerm_email_communication_service_domain" "managed" {
-  name             = "AzureManagedDomain"
-  email_service_id = azurerm_email_communication_service.main.id
+  name              = "AzureManagedDomain"
+  email_service_id  = azurerm_email_communication_service.main.id
   domain_management = "AzureManaged"
 }
 

@@ -135,10 +135,90 @@ variable "key_vault_name" {
 }
 
 variable "app_secrets" {
-  description = "Map of secret names (hyphenated) to values for Key Vault"
+  description = "Additional secret names (hyphenated) to values for Key Vault. Merged with the explicit app secret variables below."
   type        = map(string)
   sensitive   = true
   default     = {}
+}
+
+variable "azure_sql_connectionstring" {
+  description = "Optional full Azure SQL connection string stored as AZURE-SQL-CONNECTIONSTRING in Key Vault"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "azure_sql_server" {
+  description = "Azure SQL server host stored as AZURE-SQL-SERVER in Key Vault"
+  type        = string
+  default     = ""
+}
+
+variable "azure_sql_database" {
+  description = "Azure SQL database name stored as AZURE-SQL-DATABASE in Key Vault"
+  type        = string
+  default     = ""
+}
+
+variable "azure_sql_user" {
+  description = "Optional SQL auth username stored as AZURE-SQL-USER in Key Vault"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "azure_sql_pass" {
+  description = "Optional SQL auth password stored as AZURE-SQL-PASS in Key Vault"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "ensembledata_token" {
+  description = "EnsembleData API token stored as ENSEMBLEDATA-TOKEN in Key Vault"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "news_api_key" {
+  description = "NewsAPI key stored as NEWS-API-KEY in Key Vault"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "gethookedai_token" {
+  description = "GetHookdAI token stored as GETHOOKEDAI-TOKEN in Key Vault"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "resend_api_key" {
+  description = "Resend API key stored as RESEND-API-KEY in Key Vault"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "resend_from_email" {
+  description = "Resend sender address stored as RESEND-FROM-EMAIL in Key Vault"
+  type        = string
+  default     = ""
+}
+
+variable "test_account_email" {
+  description = "Optional seeded test account email stored as TEST-ACCOUNT-EMAIL in Key Vault"
+  type        = string
+  default     = ""
+}
+
+variable "test_account_otp" {
+  description = "Optional seeded test account OTP stored as TEST-ACCOUNT-OTP in Key Vault"
+  type        = string
+  sensitive   = true
+  default     = ""
 }
 
 # ---------------------------------------------------------------------------

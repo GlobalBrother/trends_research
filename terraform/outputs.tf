@@ -66,6 +66,30 @@ output "managed_identity_client_id" {
   value       = azurerm_user_assigned_identity.app.client_id
 }
 
+output "required_key_vault_secret_names" {
+  description = "Key Vault secret names expected by the app and provisioned from Terraform variables"
+  sensitive   = true
+  value = sort(distinct(concat(
+    keys(local.required_app_secrets),
+    [
+      "ACS-CONNECTION-STRING",
+      "ACS-SENDER-ADDRESS",
+    ],
+  )))
+}
+
+output "all_key_vault_secret_names" {
+  description = "All Key Vault secret names provisioned by Terraform, including optional extras from app_secrets"
+  sensitive   = true
+  value = sort(distinct(concat(
+    keys(local.effective_app_secrets),
+    [
+      "ACS-CONNECTION-STRING",
+      "ACS-SENDER-ADDRESS",
+    ],
+  )))
+}
+
 output "acs_sender_domain" {
   description = "Azure Communication Services sender domain"
   value       = azurerm_email_communication_service_domain.managed.from_sender_domain

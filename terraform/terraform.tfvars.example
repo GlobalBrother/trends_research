@@ -44,17 +44,35 @@ managed_identity_name = "trendsApp"
 # ---------------------------------------------------------------------------
 key_vault_name = "kv-trends-app-prod"
 
-# Secrets to store in Key Vault (use hyphenated names)
-# NOTE: SQL user/pass removed — using Entra ID (Managed Identity) for DB auth.
-# The app auto-detects no AZURE_SQL_USER/PASS and uses Azure AD tokens instead.
-app_secrets = {
-  "AZURE-SQL-SERVER"    = "gb-ads-sql-server.database.windows.net"
-  "AZURE-SQL-DATABASE"  = "Trends_DB"
-  "GETHOOKEDAI-TOKEN"   = "CHANGE_ME"
-  "RESEND-API-KEY"      = "CHANGE_ME"
-  "RESEND-FROM-EMAIL"   = "noreply@yourdomain.com"
-  "NEWS-API-KEY"        = "CHANGE_ME"
-}
+# Explicit app secrets stored in Key Vault.
+# The runtime secret loader maps Key Vault names like ENSEMBLEDATA-TOKEN
+# to environment variables like ENSEMBLEDATA_TOKEN.
+#
+# Recommended DB mode: Entra ID / Managed Identity
+azure_sql_server   = "gb-ads-sql-server.database.windows.net"
+azure_sql_database = "Trends_DB"
+
+# Optional DB mode instead of the two settings above:
+# azure_sql_connectionstring = "Server=tcp:...;Database=...;..."
+#
+# Optional SQL auth mode instead of Managed Identity:
+# azure_sql_user = "sql-admin-user"
+# azure_sql_pass = "CHANGE_ME"
+
+ensembledata_token = "CHANGE_ME"
+news_api_key       = "CHANGE_ME"
+gethookedai_token  = "CHANGE_ME"
+
+# Optional email fallback if ACS is unavailable
+resend_api_key    = "CHANGE_ME"
+resend_from_email = "noreply@yourdomain.com"
+
+# Optional seeded auth/testing values
+test_account_email = ""
+test_account_otp   = "000000"
+
+# Extra secrets not modeled explicitly above can still be added here.
+app_secrets = {}
 
 # ---------------------------------------------------------------------------
 # App Service
