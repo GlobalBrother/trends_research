@@ -4,13 +4,12 @@
  * Design: KPI strip → Main trend chart + Activity → Top Trends + Momentum
  *         → Ads Insight section (HookedAI data)
  */
-import { useMemo, useState, useCallback } from "react";
+import { lazy, Suspense, useCallback, useMemo, useState } from "react";
 import {
   TrendingUp,
   Activity,
   BarChart3,
   Globe,
-  Zap,
   Loader2,
   AlertCircle,
   RefreshCw,
@@ -23,27 +22,8 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronDown,
-  MousePointerClick,
-  Clock,
   X,
 } from "lucide-react";
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  AreaChart,
-  Area,
-  BarChart,
-  Bar,
-  Cell,
-  PieChart,
-  Pie,
-  Legend,
-} from "recharts";
 import { useApi } from "@/hooks/useApi";
 import {
   Select,
@@ -63,6 +43,9 @@ import {
   type AdsInsightRow,
   type AdsInsightParams,
 } from "@/lib/api";
+
+const DashboardTrendPanels = lazy(() => import("@/components/dashboard/DashboardTrendPanels"));
+const DashboardAdsCharts = lazy(() => import("@/components/dashboard/DashboardAdsCharts"));
 
 const HERO_IMG =
   "https://d2xsxph8kpxj0f.cloudfront.net/310519663454788231/FytdQNpTpcXmkbaLV4kBSe/hero-data-grid_2468fa04.png";
@@ -217,36 +200,6 @@ function daysActiveDistribution(rows: AdsInsightRow[]) {
   return Object.entries(buckets).map(([name, value]) => ({ name, value }));
 }
 
-const PERF_COLORS: Record<string, string> = {
-  winning: "oklch(0.65 0.17 165)",
-  optimized: "oklch(0.50 0.20 260)",
-  scaling: "oklch(0.72 0.17 70)",
-  growing: "oklch(0.60 0.22 25)",
-  testing: "oklch(0.55 0.015 260)",
-  unknown: "oklch(0.75 0.01 260)",
-};
-
-const PIE_COLORS = [
-  "oklch(0.50 0.20 260)",
-  "oklch(0.65 0.17 165)",
-  "oklch(0.72 0.17 70)",
-  "oklch(0.55 0.18 300)",
-  "oklch(0.60 0.22 25)",
-  "oklch(0.60 0.22 340)",
-  "oklch(0.55 0.25 320)",
-  "oklch(0.65 0.15 170)",
-  "oklch(0.45 0.15 200)",
-  "oklch(0.70 0.12 100)",
-];
-
-const PLATFORM_COLORS_ADS: Record<string, string> = {
-  Facebook: "oklch(0.50 0.20 260)",
-  Instagram: "oklch(0.60 0.22 340)",
-  Messenger: "oklch(0.55 0.18 300)",
-  Threads: "oklch(0.55 0.25 320)",
-  "Audience_network": "oklch(0.65 0.15 170)",
-};
-
 const PAGE_SIZE_OPTIONS = [
   { label: "100", value: "100" },
   { label: "250", value: "250" },
@@ -255,42 +208,13 @@ const PAGE_SIZE_OPTIONS = [
   { label: "All", value: "0" },
 ];
 
-/* ── Custom Pie Label ────────────────────────────────────────────────────── */
+/* ── Lazy Panel Fallback ─────────────────────────────────────────────────── */
 
-function renderCustomPieLabel({
-  cx,
-  cy,
-  midAngle,
-  innerRadius,
-  outerRadius,
-  name,
-  percent,
-}: {
-  cx: number;
-  cy: number;
-  midAngle: number;
-  innerRadius: number;
-  outerRadius: number;
-  name: string;
-  percent: number;
-}) {
-  if (percent < 0.03) return null; // hide labels for tiny slices
-  const RADIAN = Math.PI / 180;
-  const radius = outerRadius + 22;
-  const x = cx + radius * Math.cos(-midAngle * RADIAN);
-  const y = cy + radius * Math.sin(-midAngle * RADIAN);
+function PanelFallback({ height = "h-52" }: { height?: string }) {
   return (
-    <text
-      x={x}
-      y={y}
-      fill="oklch(0.45 0.015 260)"
-      textAnchor={x > cx ? "start" : "end"}
-      dominantBaseline="central"
-      fontSize={10}
-      fontWeight={500}
-    >
-      {name} {(percent * 100).toFixed(0)}%
-    </text>
+    <div className={`bg-card border border-border p-4 flex items-center justify-center ${height}`}>
+      <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+    </div>
   );
 }
 
@@ -593,192 +517,17 @@ export default function Dashboard() {
         ))}
       </div>
 
-      {/* Main content: Chart + Activity */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* Trend Over Time Chart */}
-        <div className="lg:col-span-8 bg-card border border-border p-4">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h2 className="text-sm font-semibold">Trend Volume Over Time</h2>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Monthly data points by platform
-              </p>
-            </div>
-            <div className="flex items-center gap-4 text-xs flex-wrap">
-              {platforms.map((p) => (
-                <span key={p} className="flex items-center gap-1.5">
-                  <span
-                    className="w-3 h-0.5 rounded"
-                    style={{ backgroundColor: PLATFORM_COLORS[p] || "oklch(0.6 0.1 200)" }}
-                  />
-                  {p}
-                </span>
-              ))}
-            </div>
-          </div>
-          <div className="h-64">
-            {chartData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.91 0.005 260)" />
-                  <XAxis dataKey="date" tick={{ fontSize: 11 }} stroke="oklch(0.55 0.015 260)" />
-                  <YAxis tick={{ fontSize: 11 }} stroke="oklch(0.55 0.015 260)" />
-                  <Tooltip
-                    contentStyle={{
-                      fontSize: 12,
-                      borderRadius: 4,
-                      border: "1px solid oklch(0.91 0.005 260)",
-                    }}
-                  />
-                  {platforms.map((p) => (
-                    <Line
-                      key={p}
-                      type="monotone"
-                      dataKey={p}
-                      stroke={PLATFORM_COLORS[p] || "oklch(0.6 0.1 200)"}
-                      strokeWidth={2}
-                      dot={false}
-                    />
-                  ))}
-                </LineChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="h-full flex items-center justify-center text-sm text-muted-foreground">
-                {isLoading ? (
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                ) : (
-                  "No trend data available. Run a scrape to populate."
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Top Trends Feed */}
-        <div className="lg:col-span-4 bg-card border border-border p-4">
-          <h2 className="text-sm font-semibold mb-3">Top Signals</h2>
-          <div className="space-y-2.5">
-            {isLoading ? (
-              <div className="flex justify-center py-8">
-                <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
-              </div>
-            ) : top.length > 0 ? (
-              top.map((t, i) => (
-                <div key={i} className="flex items-center gap-3 py-1.5 border-b border-border/50 last:border-0">
-                  <span className="text-xs font-mono text-muted-foreground w-4">{i + 1}</span>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-medium truncate">{t.name}</p>
-                    <p className="text-[10px] text-muted-foreground">{t.platform}</p>
-                  </div>
-                  <span className="text-xs font-mono font-semibold">
-                    {typeof t.score === "number" ? t.score.toFixed(1) : t.score}
-                  </span>
-                </div>
-              ))
-            ) : (
-              <p className="text-xs text-muted-foreground py-4 text-center">
-                No trends yet. Run a scrape to get started.
-              </p>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Bottom panels: Top Trends Table + Momentum */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* Top Trends Table */}
-        <div className="lg:col-span-7 bg-card border border-border p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold">Trend Details</h2>
-            <span className="section-label">{trends.length} records</span>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-border">
-                  <th className="text-left py-2 text-xs font-medium text-muted-foreground">Topic</th>
-                  <th className="text-left py-2 text-xs font-medium text-muted-foreground">Platform</th>
-                  <th className="text-right py-2 text-xs font-medium text-muted-foreground">Virality</th>
-                  <th className="text-right py-2 text-xs font-medium text-muted-foreground">Geo</th>
-                </tr>
-              </thead>
-              <tbody>
-                {isLoading ? (
-                  <tr>
-                    <td colSpan={4} className="py-8 text-center">
-                      <Loader2 className="w-5 h-5 animate-spin mx-auto text-muted-foreground" />
-                    </td>
-                  </tr>
-                ) : top.length > 0 ? (
-                  top.map((trend, i) => (
-                    <tr
-                      key={i}
-                      className="border-b border-border/50 last:border-0 hover:bg-muted/30 transition-colors"
-                    >
-                      <td className="py-2.5 font-medium text-xs">{trend.name}</td>
-                      <td className="py-2.5 text-muted-foreground text-xs">{trend.platform}</td>
-                      <td className="py-2.5 text-right font-mono font-medium text-xs">
-                        {typeof trend.score === "number" ? trend.score.toFixed(1) : trend.score}
-                      </td>
-                      <td className="py-2.5 text-right text-xs text-muted-foreground">{trend.geo}</td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan={4} className="py-6 text-center text-xs text-muted-foreground">
-                      No data available
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* Momentum Score */}
-        <div className="lg:col-span-5 bg-card border border-border p-4">
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <h2 className="text-sm font-semibold">Weekly Momentum</h2>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                New trend entries per week
-              </p>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <Zap className="w-4 h-4 text-warning" />
-              <span className="text-lg font-bold font-mono">{latestMomentum}</span>
-            </div>
-          </div>
-          <div className="h-40">
-            {momentumData.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={momentumData}>
-                  <defs>
-                    <linearGradient id="momentumGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="oklch(0.50 0.20 260)" stopOpacity={0.3} />
-                      <stop offset="100%" stopColor="oklch(0.50 0.20 260)" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <XAxis dataKey="date" tick={{ fontSize: 10 }} stroke="oklch(0.55 0.015 260)" />
-                  <YAxis tick={{ fontSize: 10 }} stroke="oklch(0.55 0.015 260)" />
-                  <Tooltip contentStyle={{ fontSize: 12, borderRadius: 4 }} />
-                  <Area
-                    type="monotone"
-                    dataKey="score"
-                    stroke="oklch(0.50 0.20 260)"
-                    strokeWidth={2}
-                    fill="url(#momentumGrad)"
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
-                {isLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : "No momentum data yet"}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
+      <Suspense fallback={<PanelFallback height="h-[32rem]" />}>
+        <DashboardTrendPanels
+          isLoading={isLoading}
+          chartData={chartData}
+          platforms={platforms}
+          platformColors={PLATFORM_COLORS}
+          top={top}
+          momentumData={momentumData}
+          latestMomentum={latestMomentum}
+        />
+      </Suspense>
 
       {/* ═══════════════════════════════════════════════════════════════════
           ADS INSIGHT SECTION — HookedAI Data
@@ -1015,181 +764,16 @@ export default function Dashboard() {
         ))}
       </div>
 
-      {/* Ads Charts Row 1: Performance Distribution + Platform Breakdown + Format Breakdown */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* Performance Score Distribution */}
-        <div className="lg:col-span-4 bg-card border border-border p-4">
-          <h2 className="text-sm font-semibold mb-1">Performance Distribution</h2>
-          <p className="text-xs text-muted-foreground mb-3">Ads by performance tier</p>
-          <div className="h-52">
-            {perfDist.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={perfDist} layout="vertical">
-                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.91 0.005 260)" horizontal={false} />
-                  <XAxis type="number" tick={{ fontSize: 10 }} stroke="oklch(0.55 0.015 260)" />
-                  <YAxis
-                    dataKey="name"
-                    type="category"
-                    tick={{ fontSize: 10 }}
-                    stroke="oklch(0.55 0.015 260)"
-                    width={70}
-                  />
-                  <Tooltip contentStyle={{ fontSize: 12, borderRadius: 4 }} />
-                  <Bar dataKey="value" radius={[0, 3, 3, 0]}>
-                    {perfDist.map((entry, idx) => (
-                      <Cell
-                        key={idx}
-                        fill={PERF_COLORS[entry.name.toLowerCase()] || PIE_COLORS[idx % PIE_COLORS.length]}
-                      />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
-                {adsLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : "No ads data yet"}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Ads by Platform (Pie) — FIXED: individual platforms */}
-        <div className="lg:col-span-4 bg-card border border-border p-4">
-          <h2 className="text-sm font-semibold mb-1">Ads by Platform</h2>
-          <p className="text-xs text-muted-foreground mb-3">Individual platform presence across ads</p>
-          <div className="h-52">
-            {platformBreakdown.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={platformBreakdown}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={35}
-                    outerRadius={65}
-                    paddingAngle={2}
-                    dataKey="value"
-                    nameKey="name"
-                    label={renderCustomPieLabel}
-                    labelLine={true}
-                  >
-                    {platformBreakdown.map((entry, idx) => (
-                      <Cell
-                        key={idx}
-                        fill={PLATFORM_COLORS_ADS[entry.name] || PIE_COLORS[idx % PIE_COLORS.length]}
-                      />
-                    ))}
-                  </Pie>
-                  <Tooltip
-                    contentStyle={{ fontSize: 12, borderRadius: 4 }}
-                    formatter={(value: number, name: string) => [`${value} ads`, name]}
-                  />
-                </PieChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
-                {adsLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : "No ads data yet"}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Ad Format Breakdown */}
-        <div className="lg:col-span-4 bg-card border border-border p-4">
-          <h2 className="text-sm font-semibold mb-1">Ad Formats</h2>
-          <p className="text-xs text-muted-foreground mb-3">Creative format distribution</p>
-          <div className="h-52">
-            {formatBreakdown.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={formatBreakdown}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.91 0.005 260)" />
-                  <XAxis dataKey="name" tick={{ fontSize: 10 }} stroke="oklch(0.55 0.015 260)" />
-                  <YAxis tick={{ fontSize: 10 }} stroke="oklch(0.55 0.015 260)" />
-                  <Tooltip contentStyle={{ fontSize: 12, borderRadius: 4 }} />
-                  <Bar dataKey="value" radius={[3, 3, 0, 0]}>
-                    {formatBreakdown.map((_, idx) => (
-                      <Cell key={idx} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
-                {adsLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : "No ads data yet"}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Ads Charts Row 2: CTA Breakdown + Days Active Distribution */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* CTA Type Breakdown */}
-        <div className="lg:col-span-6 bg-card border border-border p-4">
-          <div className="flex items-center gap-2 mb-1">
-            <MousePointerClick className="w-4 h-4 text-muted-foreground" />
-            <h2 className="text-sm font-semibold">CTA Type Breakdown</h2>
-          </div>
-          <p className="text-xs text-muted-foreground mb-3">Call-to-action distribution across ads</p>
-          <div className="h-52">
-            {ctaDist.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={ctaDist} layout="vertical">
-                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.91 0.005 260)" horizontal={false} />
-                  <XAxis type="number" tick={{ fontSize: 10 }} stroke="oklch(0.55 0.015 260)" />
-                  <YAxis
-                    dataKey="name"
-                    type="category"
-                    tick={{ fontSize: 9 }}
-                    stroke="oklch(0.55 0.015 260)"
-                    width={90}
-                  />
-                  <Tooltip contentStyle={{ fontSize: 12, borderRadius: 4 }} />
-                  <Bar dataKey="value" radius={[0, 3, 3, 0]}>
-                    {ctaDist.map((_, idx) => (
-                      <Cell key={idx} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
-                {adsLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : "No ads data yet"}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Days Active Distribution */}
-        <div className="lg:col-span-6 bg-card border border-border p-4">
-          <div className="flex items-center gap-2 mb-1">
-            <Clock className="w-4 h-4 text-muted-foreground" />
-            <h2 className="text-sm font-semibold">Ad Longevity</h2>
-          </div>
-          <p className="text-xs text-muted-foreground mb-3">Distribution of how long ads have been running</p>
-          <div className="h-52">
-            {daysActiveDist.length > 0 ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={daysActiveDist}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.91 0.005 260)" />
-                  <XAxis dataKey="name" tick={{ fontSize: 10 }} stroke="oklch(0.55 0.015 260)" />
-                  <YAxis tick={{ fontSize: 10 }} stroke="oklch(0.55 0.015 260)" />
-                  <Tooltip contentStyle={{ fontSize: 12, borderRadius: 4 }} />
-                  <Bar dataKey="value" radius={[3, 3, 0, 0]}>
-                    {daysActiveDist.map((_, idx) => (
-                      <Cell key={idx} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
-                {adsLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : "No ads data yet"}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
+      <Suspense fallback={<PanelFallback height="h-[28rem]" />}>
+        <DashboardAdsCharts
+          adsLoading={adsLoading}
+          perfDist={perfDist}
+          platformBreakdown={platformBreakdown}
+          formatBreakdown={formatBreakdown}
+          ctaDist={ctaDist}
+          daysActiveDist={daysActiveDist}
+        />
+      </Suspense>
 
       {/* Top Performing Ads Table + Brand Intelligence */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">

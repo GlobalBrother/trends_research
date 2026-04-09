@@ -1,22 +1,31 @@
-import { useState, useEffect, useCallback } from "react";
+import { Suspense, lazy, useState, useEffect, useCallback } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import NotFound from "@/pages/NotFound";
 import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import DashboardLayout from "./components/layout/DashboardLayout";
-import Dashboard from "./pages/Dashboard";
-import TrendExplorer from "./pages/TrendExplorer";
-import ResearchProjects from "./pages/ResearchProjects";
-import Reports from "./pages/Reports";
-import SavedViews from "./pages/SavedViews";
-import Alerts from "./pages/Alerts";
-import Settings from "./pages/Settings";
-import MyAds from "./pages/MyAds";
-import Login from "./pages/Login";
 import { validateToken, isAdmin } from "./lib/api";
 import { Redirect } from "wouter";
+
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const TrendExplorer = lazy(() => import("./pages/TrendExplorer"));
+const ResearchProjects = lazy(() => import("./pages/ResearchProjects"));
+const Reports = lazy(() => import("./pages/Reports"));
+const SavedViews = lazy(() => import("./pages/SavedViews"));
+const Alerts = lazy(() => import("./pages/Alerts"));
+const Settings = lazy(() => import("./pages/Settings"));
+const MyAds = lazy(() => import("./pages/MyAds"));
+const Login = lazy(() => import("./pages/Login"));
+const NotFound = lazy(() => import("./pages/NotFound"));
+
+function RouteFallback() {
+  return (
+    <div className="flex items-center justify-center h-full min-h-[40vh] bg-background">
+      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" />
+    </div>
+  );
+}
 
 /** Wrapper that redirects non-admin users away from admin-only routes */
 function AdminRoute({ component: Component }: { component: React.ComponentType }) {
@@ -29,18 +38,20 @@ function AdminRoute({ component: Component }: { component: React.ComponentType }
 function AuthenticatedRouter() {
   return (
     <DashboardLayout>
-      <Switch>
-        <Route path="/" component={Dashboard} />
-        <Route path="/explorer" component={TrendExplorer} />
-        <Route path="/projects" component={ResearchProjects} />
-        <Route path="/reports" component={Reports} />
-        <Route path="/saved" component={SavedViews} />
-        <Route path="/alerts" component={Alerts} />
-        <Route path="/my-ads" component={MyAds} />
-        <Route path="/settings">{() => <AdminRoute component={Settings} />}</Route>
-        <Route path="/404" component={NotFound} />
-        <Route component={NotFound} />
-      </Switch>
+      <Suspense fallback={<RouteFallback />}>
+        <Switch>
+          <Route path="/" component={Dashboard} />
+          <Route path="/explorer" component={TrendExplorer} />
+          <Route path="/projects" component={ResearchProjects} />
+          <Route path="/reports" component={Reports} />
+          <Route path="/saved" component={SavedViews} />
+          <Route path="/alerts" component={Alerts} />
+          <Route path="/my-ads" component={MyAds} />
+          <Route path="/settings">{() => <AdminRoute component={Settings} />}</Route>
+          <Route path="/404" component={NotFound} />
+          <Route component={NotFound} />
+        </Switch>
+      </Suspense>
     </DashboardLayout>
   );
 }
@@ -82,14 +93,16 @@ function AppRouter() {
 
   if (!authed) {
     return (
-      <Switch>
-        <Route path="/login">
-          <Login onLogin={handleLogin} />
-        </Route>
-        <Route>
-          <Login onLogin={handleLogin} />
-        </Route>
-      </Switch>
+      <Suspense fallback={<RouteFallback />}>
+        <Switch>
+          <Route path="/login">
+            <Login onLogin={handleLogin} />
+          </Route>
+          <Route>
+            <Login onLogin={handleLogin} />
+          </Route>
+        </Switch>
+      </Suspense>
     );
   }
 
