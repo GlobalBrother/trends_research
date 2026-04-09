@@ -11,7 +11,6 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import pandas as pd
-from dotenv import load_dotenv
 from fastapi import FastAPI, File, Header, HTTPException, Query, BackgroundTasks, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -20,40 +19,9 @@ from pydantic import BaseModel
 from sqlalchemy import text, func
 from sqlalchemy.exc import IntegrityError
 
-# ---------------------------------------------------------------------------
-# Secret loading: Key Vault (production) → .env (local development)
-# ---------------------------------------------------------------------------
-def _init_secrets():
-    """Load secrets from Azure Key Vault if KEY_VAULT_NAME is set,
-    otherwise fall back to the local .env file."""
-    kv_name = os.environ.get("KEY_VAULT_NAME")
-    if kv_name:
-        try:
-            from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
-            from azure.keyvault.secrets import SecretClient
+from src.runtime.secrets import init_runtime_secrets
 
-            mi_client_id = os.environ.get("MANAGED_IDENTITY_CLIENT_ID")
-            credential = (
-                ManagedIdentityCredential(client_id=mi_client_id)
-                if mi_client_id
-                else DefaultAzureCredential()
-            )
-            client = SecretClient(
-                vault_url=f"https://{kv_name}.vault.azure.net",
-                credential=credential,
-            )
-            for prop in client.list_properties_of_secrets():
-                secret = client.get_secret(prop.name)
-                # Key Vault names use hyphens; env vars use underscores
-                os.environ[secret.name.replace("-", "_")] = secret.value
-            print(f"Loaded secrets from Key Vault: {kv_name}")
-        except Exception as exc:
-            print(f"Key Vault load failed ({exc}), falling back to .env")
-            load_dotenv()
-    else:
-        load_dotenv()
-
-_init_secrets()
+init_runtime_secrets()
 
 # Ensure project root is on sys.path so `src.*` imports work in any environment (e.g. WSL).
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -1032,7 +1000,7 @@ def test_scraper(platform: str, authorization: str = Header(None)):
                 spider_dir = os.path.join(PROJECT_ROOT, "src", "scrapers", "google_trends_scraper")
                 if spider_dir not in sys.path:
                     sys.path.insert(0, spider_dir)
-                from google_trends.spiders.trends_spider import TrendsSpider  # noqa: F401
+                from google_trends.spiders.trends_spider import GoogleTrendsSpider  # noqa: F401
                 return {"ok": True, "message": "Google Trends spider is available."}
             except ImportError as e:
                 return {"ok": False, "message": f"Google Trends spider not installed: {e}"}
@@ -1040,7 +1008,7 @@ def test_scraper(platform: str, authorization: str = Header(None)):
         elif platform_lower == "reddit":
             token = os.getenv("ENSEMBLEDATA_TOKEN", "")
             if not token:
-                return {"ok": False, "message": "ENSEMBLEDATA_TOKEN is not set. Configure it in the .env file."}
+                return {"ok": False, "message": "ENSEMBLEDATA_TOKEN is not set. Load it from Azure Key Vault or the runtime environment."}
             from ensembledata.api import EDClient
             client = EDClient(token=token)
             result = client.reddit.search_subreddits(query="test", limit=1)
@@ -1062,7 +1030,7 @@ def test_scraper(platform: str, authorization: str = Header(None)):
         elif platform_lower == "youtube":
             token = os.getenv("ENSEMBLEDATA_TOKEN", "")
             if not token:
-                return {"ok": False, "message": "ENSEMBLEDATA_TOKEN is not set. Configure it in the .env file."}
+                return {"ok": False, "message": "ENSEMBLEDATA_TOKEN is not set. Load it from Azure Key Vault or the runtime environment."}
             from ensembledata.api import EDClient
             client = EDClient(token=token)
             result = client.youtube.search(query="test", max_results=1)
@@ -1072,7 +1040,7 @@ def test_scraper(platform: str, authorization: str = Header(None)):
         elif platform_lower == "news":
             api_key = os.getenv("NEWS_API_KEY", "")
             if not api_key or api_key == "YOUR_NEWSAPI_KEY":
-                return {"ok": False, "message": "NEWS_API_KEY is not set. Get a key from newsapi.org and add it to .env."}
+                return {"ok": False, "message": "NEWS_API_KEY is not set. Load it from Azure Key Vault or the runtime environment."}
             import urllib.request
             url = f"https://newsapi.org/v2/everything?q=test&pageSize=1&apiKey={api_key}"
             req = urllib.request.Request(url, headers={"User-Agent": "TrendsResearch/1.0"})
@@ -1085,7 +1053,7 @@ def test_scraper(platform: str, authorization: str = Header(None)):
         elif platform_lower == "tiktok":
             token = os.getenv("ENSEMBLEDATA_TOKEN", "")
             if not token:
-                return {"ok": False, "message": "ENSEMBLEDATA_TOKEN is not set. Configure it in the .env file."}
+                return {"ok": False, "message": "ENSEMBLEDATA_TOKEN is not set. Load it from Azure Key Vault or the runtime environment."}
             from ensembledata.api import EDClient
             client = EDClient(token=token)
             result = client.tiktok.keyword.search(keyword="test", period=7, max_cursor=0)
@@ -1095,7 +1063,7 @@ def test_scraper(platform: str, authorization: str = Header(None)):
         elif platform_lower == "instagram":
             token = os.getenv("ENSEMBLEDATA_TOKEN", "")
             if not token:
-                return {"ok": False, "message": "ENSEMBLEDATA_TOKEN is not set. Configure it in the .env file."}
+                return {"ok": False, "message": "ENSEMBLEDATA_TOKEN is not set. Load it from Azure Key Vault or the runtime environment."}
             from ensembledata.api import EDClient
             client = EDClient(token=token)
             result = client.instagram.search(query="test")
@@ -1105,7 +1073,7 @@ def test_scraper(platform: str, authorization: str = Header(None)):
         elif platform_lower == "threads":
             token = os.getenv("ENSEMBLEDATA_TOKEN", "")
             if not token:
-                return {"ok": False, "message": "ENSEMBLEDATA_TOKEN is not set. Configure it in the .env file."}
+                return {"ok": False, "message": "ENSEMBLEDATA_TOKEN is not set. Load it from Azure Key Vault or the runtime environment."}
             from ensembledata.api import EDClient
             client = EDClient(token=token)
             result = client.threads.search(query="test")

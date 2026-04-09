@@ -34,7 +34,6 @@ import time
 from datetime import datetime
 
 import requests
-from dotenv import load_dotenv
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,16 +42,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "ensembledata"))
-from db_helper import save_trend, save_error
-
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "ensembledata"))
+from db_helper import save_trend, save_error
 from src.db.connection import session_scope
 from src.db.models import AdsInsight
+from src.runtime.secrets import init_runtime_secrets
 
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".env"))
+init_runtime_secrets()
 
 PLATFORM = "GetHookdAI"
 BASE_URL = "https://app.gethookd.ai/api/v1"

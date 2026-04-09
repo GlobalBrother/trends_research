@@ -11,11 +11,14 @@ import os
 import sys
 from datetime import datetime
 
-from dotenv import load_dotenv
 from ensembledata.api import EDClient
 from ensembledata.api.errors import EDError
 
 logger = logging.getLogger(__name__)
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 sys.path.insert(0, os.path.dirname(__file__))
 from db_helper import (
@@ -26,12 +29,9 @@ from db_helper import (
     save_content_normalized,
 )
 from src.ingestion import IngestionService
+from src.runtime.secrets import init_runtime_secrets
 
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".env"))
+init_runtime_secrets()
 
 PLATFORM = "Reddit"
 ingestion = IngestionService()

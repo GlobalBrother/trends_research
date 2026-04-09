@@ -32,14 +32,12 @@ from dataclasses import dataclass, field
 from typing import Generator, Optional
 from urllib.parse import quote_plus
 
-from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
+from src.runtime.secrets import init_runtime_secrets
 
-# When running on Azure, secrets are already in env vars via Key Vault.
-# override=False ensures .env values don't overwrite Key Vault secrets.
-load_dotenv(override=False)
+init_runtime_secrets()
 
 logger = logging.getLogger(__name__)
 
