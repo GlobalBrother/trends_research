@@ -5,7 +5,7 @@
  * Top bar: white, global search, date range, user menu
  */
 import { useState, useMemo, type ReactNode } from "react";
-import { LogOut } from "lucide-react";
+import { LogOut, Moon, Sun } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard,
@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import { isAdmin } from "@/lib/api";
+import { useTheme } from "@/contexts/ThemeContext";
 
 interface NavItem {
   href: string;
@@ -125,6 +126,7 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
 
 export default function DashboardLayout({ children }: { children: ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const { theme, toggleTheme } = useTheme();
 
   const authEmail = useMemo(() => localStorage.getItem("auth_email") || "user@company.com", []);
   const authInitials = useMemo(() => {
@@ -214,6 +216,25 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
           </div>
 
           <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1.5 bg-transparent"
+              onClick={toggleTheme}
+            >
+              {theme === "dark" ? (
+                <>
+                  <Sun className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline text-xs">Light</span>
+                </>
+              ) : (
+                <>
+                  <Moon className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline text-xs">Dark</span>
+                </>
+              )}
+            </Button>
+
             {/* Date range */}
             <Button
               variant="outline"

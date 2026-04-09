@@ -41,6 +41,7 @@ import {
 } from "@/components/ui/select";
 import { toast } from "sonner";
 import { useApi, useLazyApi } from "@/hooks/useApi";
+import { useTheme } from "@/contexts/ThemeContext";
 import {
   getAzureStatus,
   triggerMigration,
@@ -57,6 +58,7 @@ import {
 
 export default function Settings() {
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
+  const { theme, setTheme } = useTheme();
 
   // ── Database status ────────────────────────────────────────────────────
   const {
@@ -281,7 +283,10 @@ export default function Settings() {
                     Switch to dark theme
                   </p>
                 </div>
-                <Switch />
+                <Switch
+                  checked={theme === "dark"}
+                  onCheckedChange={(checked) => setTheme?.(checked ? "dark" : "light")}
+                />
               </div>
               <div className="space-y-1.5">
                 <Label className="text-sm">Default Time Range</Label>
@@ -428,14 +433,14 @@ export default function Settings() {
           <div className="bg-card border border-border p-5 space-y-4 max-w-2xl">
             <h2 className="text-sm font-semibold">API Keys</h2>
             <p className="text-xs text-muted-foreground">
-              Manage API keys for external data sources. Keys are stored in the server's .env file.
+              Manage API keys for external data sources. Keys are loaded from Azure Key Vault at runtime.
             </p>
             {[
-              { label: "NewsAPI Key", key: "NEWS_API_KEY", value: "Set in .env" },
-              { label: "EnsembleData Token", key: "ENSEMBLEDATA_TOKEN", value: "Set in .env" },
-              { label: "TikTok Client Key", key: "TIKTOK_CLIENT_KEY", value: "Set in .env" },
-              { label: "GetHookedAI Token", key: "GETHOOKEDAI_TOKEN", value: "Set in .env" },
-              { label: "Resend API Key", key: "RESEND_API_KEY", value: "Set in .env" },
+              { label: "NewsAPI Key", key: "NEWS_API_KEY", value: "Loaded from Key Vault" },
+              { label: "EnsembleData Token", key: "ENSEMBLEDATA_TOKEN", value: "Loaded from Key Vault" },
+              { label: "TikTok Client Key", key: "TIKTOK_CLIENT_KEY", value: "Loaded from Key Vault" },
+              { label: "GetHookedAI Token", key: "GETHOOKEDAI_TOKEN", value: "Loaded from Key Vault" },
+              { label: "Resend API Key", key: "RESEND_API_KEY", value: "Loaded from Key Vault" },
             ].map((apiKey) => (
               <div key={apiKey.key} className="space-y-1.5">
                 <Label className="text-xs font-medium">{apiKey.label}</Label>
@@ -461,7 +466,7 @@ export default function Settings() {
               </div>
             ))}
             <p className="text-[10px] text-muted-foreground">
-              To update keys, edit the <code className="font-mono">.env</code> file on the server and restart the API.
+              To update keys, rotate the corresponding Azure Key Vault secret and restart the API if the runtime does not reload secrets automatically.
             </p>
           </div>
         </TabsContent>
