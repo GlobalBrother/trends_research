@@ -10,19 +10,14 @@ import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard,
   Compass,
-  FolderKanban,
   FileBarChart,
-  Bookmark,
-  Bell,
   Settings,
-  Search,
   ChevronDown,
   Menu,
   X,
   TrendingUp,
   Megaphone,
 } from "lucide-react";
-import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
