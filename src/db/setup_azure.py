@@ -29,7 +29,7 @@ from src.db.connection import get_engine
 from src.db.migrate import run_migration
 
 
-def run_schema() -> None:
+def setup_azure_schema() -> None:
     """Create all tables from ORM metadata on Azure SQL, then add indexes."""
     engine = get_engine()
 
@@ -57,4 +57,4 @@ def run_schema() -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    run_schema()
+    setup_azure_schema()
