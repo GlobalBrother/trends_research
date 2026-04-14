@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/tooltip";
 import { toast } from "sonner";
 import { useApi, useLazyApi } from "@/hooks/useApi";
+import { useFilters } from "@/contexts/FilterContext";
 import {
   getNiches,
   getTrends,
@@ -140,8 +141,7 @@ function PanelFallback({ height = "h-[22rem]" }: { height?: string }) {
 
 export default function TrendExplorer() {
   const [keyword, setKeyword] = useState("");
-  const [selectedNiche, setSelectedNiche] = useState("all-niches");
-  const [selectedGeo, setSelectedGeo] = useState("global");
+  const { selectedNiche, setSelectedNiche, geo: selectedGeo, setSelectedNiche: _unused, setGeo: setSelectedGeo } = useFilters();
   const [selectedScraper, setSelectedScraper] = useState("all");
 
   const { data: nichesRaw } = useApi(() => getNiches(), []);
@@ -229,32 +229,6 @@ export default function TrendExplorer() {
               className="pl-8 h-8 text-sm"
             />
           </div>
-          <Select value={selectedNiche} onValueChange={setSelectedNiche}>
-            <SelectTrigger className="w-40 h-8 text-xs">
-              <SelectValue placeholder="Niche" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all-niches">All Niches</SelectItem>
-              {niches.map((niche) => (
-                <SelectItem key={niche} value={niche}>
-                  {niche}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={selectedGeo} onValueChange={setSelectedGeo}>
-            <SelectTrigger className="w-32 h-8 text-xs">
-              <SelectValue placeholder="Region" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="global">Global</SelectItem>
-              <SelectItem value="US">United States</SelectItem>
-              <SelectItem value="GB">United Kingdom</SelectItem>
-              <SelectItem value="DE">Germany</SelectItem>
-              <SelectItem value="IN">India</SelectItem>
-              <SelectItem value="RO">Romania</SelectItem>
-            </SelectContent>
-          </Select>
           <Select value={selectedScraper} onValueChange={setSelectedScraper}>
             <SelectTrigger className="w-36 h-8 text-xs">
               <SelectValue placeholder="Scraper" />

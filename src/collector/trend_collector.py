@@ -207,12 +207,50 @@ class TrendCollector:
     # ------------------------------------------------------------------
 
     def _run_scraper(self, spider_name: str, **kwargs) -> bool:
-        """Run a Scrapy spider with the given arguments."""
+        """Run a Scrapy spider with the given arguments, potentially in batches if keywords are provided."""
         base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
         project_dir = os.path.join(base_dir, "src", "scrapers", "google_trends_scraper")
 
+        keywords = kwargs.get("keywords", [])
+        if isinstance(keywords, str):
+            keywords = [k.strip() for k in keywords.split(",") if k.strip()]
+        
+        # Batching for keywords if they are too many
+        BATCH_SIZE = 5
+        if keywords and len(keywords) > BATCH_SIZE and spider_name in ("google_trends", "newsapi"):
+            keyword_batches = [keywords[i:i + BATCH_SIZE] for i in range(0, len(keywords), BATCH_SIZE)]
+            logger.info("Splitting %d keywords into %d batches for %s", len(keywords), len(keyword_batches), spider_name)
+            
+            success_count = 0
+            # Run up to 2 batches in parallel to avoid overwhelming the system/API
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                batch_kwargs = []
+                for batch in keyword_batches:
+                    k = kwargs.copy()
+                    k["keywords"] = batch
+                    batch_kwargs.append(k)
+                
+                futures = [pool.submit(self._run_single_scraper, spider_name, project_dir, **k) for k in batch_kwargs]
+                for f in as_completed(futures):
+                    if f.result():
+                        success_count += 1
+            
+            return success_count > 0
+        
+        return self._run_single_scraper(spider_name, project_dir, **kwargs)
+
+    def _run_single_scraper(self, spider_name: str, project_dir: str, **kwargs) -> bool:
+        """Helper to run a single Scrapy process."""
         geo = kwargs.get("geo", "US")
         category = str(kwargs.get("category", ""))
+        
+        # Extract meaningful label for the run
+        keywords = kwargs.get("keywords", [])
+        label = f"{spider_name}"
+        if keywords:
+            kw_str = ",".join(keywords) if isinstance(keywords, list) else str(keywords)
+            label += f" ({kw_str[:30]}...)" if len(kw_str) > 30 else f" ({kw_str})"
+
         run = self.ingestion.start_run(
             source=spider_name,
             acquisition_mode="api" if spider_name != "hackernews" else "scraping",
@@ -227,16 +265,21 @@ class TrendCollector:
             cmd.extend(["-a", f"{key}={value}"])
 
         try:
-            logger.info("Running scraper: %s in %s", " ".join(cmd), project_dir)
-            result = subprocess.run(cmd, cwd=project_dir, capture_output=False, text=True)
+            logger.info("Running scraper batch: %s", " ".join(cmd))
+            # Use subprocess.run with a timeout
+            result = subprocess.run(cmd, cwd=project_dir, capture_output=True, text=True, timeout=300)
 
             if result.returncode != 0:
-                logger.error("Scraper %s failed with return code %d", spider_name, result.returncode)
-                run.record_error(f"return_code_{result.returncode}")
+                logger.error("Scraper %s failed (code %d): %s", spider_name, result.returncode, result.stderr)
+                run.record_error(f"exit_code_{result.returncode}")
                 return False
 
-            logger.info("Scraper %s completed successfully.", spider_name)
+            logger.info("Scraper batch %s completed successfully.", spider_name)
             return True
+        except subprocess.TimeoutExpired:
+            logger.error("Scraper %s timed out after 5 minutes", spider_name)
+            run.record_error("TimeoutError")
+            return False
         except Exception as e:
             logger.error("Failed to run Scrapy scraper %s: %s", spider_name, e)
             run.record_error(type(e).__name__)

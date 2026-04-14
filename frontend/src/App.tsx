@@ -4,6 +4,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
+import { FilterProvider } from "./contexts/FilterContext";
 import DashboardLayout from "./components/layout/DashboardLayout";
 import { validateToken, isAdmin } from "./lib/api";
 import { Redirect } from "wouter";
@@ -107,10 +108,12 @@ function App() {
   return (
     <ErrorBoundary>
       <ThemeProvider defaultTheme="light" switchable>
-        <TooltipProvider>
-          <Toaster />
-          <AppRouter />
-        </TooltipProvider>
+        <FilterProvider>
+          <TooltipProvider>
+            <Toaster />
+            <AppRouter />
+          </TooltipProvider>
+        </FilterProvider>
       </ThemeProvider>
     </ErrorBoundary>
   );

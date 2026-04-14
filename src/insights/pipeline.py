@@ -47,7 +47,8 @@ MAX_MATCHES_PER_CLUSTER = int(os.getenv("INSIGHT_MAX_MATCHES_PER_CLUSTER", "15")
 MIN_MATCH_SCORE = float(os.getenv("INSIGHT_MIN_MATCH_SCORE", "0.28"))
 UNSAFE_TERMS = {
     "nsfw", "gambling", "violence", "weapon", "crypto scam", "hate", "adult",
-    "exploit", "fake", "misleading", "controversy",
+    "exploit", "fake", "misleading", "controversy", "scam", "fraud", "death",
+    "kill", "war", "illegal", "drug", "hack", "accident", "tragedy",
 }
 
 
@@ -843,14 +844,33 @@ class InsightPipeline:
         return round(_clamp((source_confidence * 0.4) + (freshness_score * 0.25) + (quality_score * 0.2) + (min(diversity, 5) * 3.0)), 2)
 
     def _lifecycle_stage(self, trend_strength: float, freshness_score: float, momentum: float, diversity: int, surprise: float) -> str:
-        if freshness_score < 30:
+        """Categorize the trend into a lifecycle stage based on various signals."""
+        
+        # 1. Cooling: Freshness has dropped significantly
+        if freshness_score < 35:
             return "cooling"
-        if trend_strength >= 80 and momentum >= 0 and diversity >= 3:
+        
+        # 2. Surging: High strength, positive momentum, and broad platform adoption
+        if trend_strength >= 75 and momentum >= 0.2 and diversity >= 3:
             return "surging"
-        if trend_strength >= 65 and freshness_score >= 60 and (momentum > 0 or surprise > 0.3):
+        
+        # 3. Breakout: High surprise (statistical outlier) but potentially early (low diversity)
+        if surprise > 0.6 and freshness_score >= 70 and momentum > 0:
+            return "breakout"
+            
+        # 4. Emerging: Rising strength and good freshness, but not yet broad adoption
+        if trend_strength >= 60 and freshness_score >= 65 and (momentum > 0 or surprise > 0.2):
             return "emerging"
-        if trend_strength >= 45 and freshness_score >= 45:
+            
+        # 5. Overcrowded: High strength but negative momentum (saturation peak)
+        if trend_strength >= 80 and momentum < -0.1:
+            return "overcrowded"
+            
+        # 6. Steady: Moderate metrics, sustained interest
+        if trend_strength >= 40 and freshness_score >= 40:
             return "steady"
+            
+        # Default
         return "watchlist"
 
     def _timing_overlap(self, cluster_last_seen: datetime, ad: AdsInsight) -> float:

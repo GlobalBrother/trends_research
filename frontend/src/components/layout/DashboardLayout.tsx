@@ -4,8 +4,8 @@
  * Sidebar: deep navy (#0F172A), icon + label nav, grouped sections
  * Top bar: white, global search, date range, user menu
  */
-import { useState, useMemo, type ReactNode } from "react";
-import { LogOut, Moon, Sun } from "lucide-react";
+import { useState, useMemo, useEffect, type ReactNode } from "react";
+import { LogOut, Moon, Sun, Globe, Filter } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard,
@@ -26,9 +26,18 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { toast } from "sonner";
-import { isAdmin } from "@/lib/api";
+import { isAdmin, getNiches } from "@/lib/api";
 import { useTheme } from "@/contexts/ThemeContext";
+import { useFilters } from "@/contexts/FilterContext";
+import { useApi } from "@/hooks/useApi";
 
 interface NavItem {
   href: string;
@@ -114,6 +123,8 @@ function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
 export default function DashboardLayout({ children }: { children: ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const { theme, toggleTheme } = useTheme();
+  const { selectedNiche, setSelectedNiche, geo, setGeo } = useFilters();
+  const { data: niches } = useApi(getNiches);
 
   const authEmail = useMemo(() => localStorage.getItem("auth_email") || "user@company.com", []);
   const authInitials = useMemo(() => {
@@ -192,7 +203,37 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
             >
               <Menu className="w-5 h-5" />
             </button>
-            {/* Global search removed (no implementation) */}
+            
+            {/* Global Filters */}
+            <div className="hidden md:flex items-center gap-3">
+              <Select value={selectedNiche} onValueChange={setSelectedNiche}>
+                <SelectTrigger className="h-8 w-[160px] bg-transparent border-muted-foreground/20 hover:border-muted-foreground/40 transition-colors">
+                  <Filter className="w-3 h-3 mr-2 text-muted-foreground" />
+                  <SelectValue placeholder="All Niches" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="All">All Niches</SelectItem>
+                  {niches?.map((n) => (
+                    <SelectItem key={n} value={n}>
+                      {n}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              <Select value={geo} onValueChange={setGeo}>
+                <SelectTrigger className="h-8 w-[100px] bg-transparent border-muted-foreground/20 hover:border-muted-foreground/40 transition-colors">
+                  <Globe className="w-3 h-3 mr-2 text-muted-foreground" />
+                  <SelectValue placeholder="Geo" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="US">USA</SelectItem>
+                  <SelectItem value="Global">Global</SelectItem>
+                  <SelectItem value="UK">UK</SelectItem>
+                  <SelectItem value="EU">EU</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
 
           <div className="flex items-center gap-2">

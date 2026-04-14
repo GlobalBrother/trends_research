@@ -469,6 +469,22 @@ class IngestionService:
                     )
                 )
 
+    def _categorize_error(self, exc: Exception) -> str:
+        """Categorize an exception into a standard error type."""
+        name = type(exc).__name__
+        msg = str(exc).lower()
+        
+        if "rate limit" in msg or "429" in msg:
+            return "RateLimitError"
+        if "timeout" in msg or "timed out" in msg:
+            return "TimeoutError"
+        if "connection" in msg or "unreachable" in msg:
+            return "NetworkError"
+        if "auth" in msg or "401" in msg or "403" in msg or "forbidden" in msg:
+            return "AuthError"
+        
+        return name
+
     def with_retry(
         self,
         source: str,
@@ -497,19 +513,24 @@ class IngestionService:
             except Exception as exc:
                 last_exc = exc
                 _breaker.fail(source)
+                error_type = self._categorize_error(exc)
                 if run:
-                    run.record_error(type(exc).__name__)
+                    run.record_error(error_type)
+                
                 if attempt >= retry_limit:
+                    logger.error(f"Ingestion failed for {source} after {attempt} retries: {exc}")
                     self.archive_dead_letter(
                         source=source,
-                        error_type=type(exc).__name__,
+                        error_type=error_type,
                         error_message=str(exc),
                         payload=payload_hint,
                         run=run,
                         retry_count=attempt,
                     )
                     raise IngestionRetryError(f"{source} failed after {retry_limit + 1} attempts") from exc
+                
                 delay = min(max_delay, base_delay * (2 ** attempt)) + random.uniform(0.0, 0.5)
+                logger.warning(f"Retry {attempt + 1}/{retry_limit} for {source} after {delay:.2f}s due to {error_type}")
                 time.sleep(delay)
         raise IngestionRetryError(str(last_exc))
 

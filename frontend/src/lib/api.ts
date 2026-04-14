@@ -330,8 +330,8 @@ export const getTrendingNow = (params?: { geo?: string; trend_type?: string }) =
   client.get<{ data: TrendRow[] }>("/trending_now", { params });
 
 /** Get all trends (all platforms) */
-export const getAllTrends = () =>
-  client.get<{ data: TrendRow[] }>("/all_trends");
+export const getAllTrends = (geo?: string) =>
+  client.get<{ data: TrendRow[] }>("/all_trends", { params: { geo } });
 
 /** Platform-specific trends */
 export const getYoutubeTrends = (params?: { niche_name?: string; geo?: string }) =>
@@ -488,6 +488,7 @@ export interface MyBrandAdsParams {
   limit?: number;
   offset?: number;
   brand_name?: string;
+  geo?: string;
   date_from?: string;
   date_to?: string;
   platform_filter?: string;

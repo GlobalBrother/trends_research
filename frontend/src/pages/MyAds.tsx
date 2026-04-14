@@ -38,6 +38,7 @@ import {
   Legend,
 } from "recharts";
 import { useApi } from "@/hooks/useApi";
+import { useFilters } from "@/contexts/FilterContext";
 import {
   Select,
   SelectContent,
@@ -80,6 +81,7 @@ function parsePlatforms(raw: string | undefined): string[] {
 /* ── component ──────────────────────────────────────────────────────────── */
 
 export default function MyAds() {
+  const { geo } = useFilters();
   /* ── Brand search state ─────────────────────────────────────────────── */
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<
@@ -105,6 +107,7 @@ export default function MyAds() {
       offset,
       sort_by: sortBy,
       sort_dir: sortDir,
+      geo,
     };
     if (brandFilter) p.brand_name = brandFilter;
     if (dateFrom) p.date_from = dateFrom;

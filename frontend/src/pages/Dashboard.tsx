@@ -25,6 +25,7 @@ import {
   X,
 } from "lucide-react";
 import { useApi } from "@/hooks/useApi";
+import { useFilters } from "@/contexts/FilterContext";
 import {
   Select,
   SelectContent,
@@ -221,6 +222,7 @@ function PanelFallback({ height = "h-52" }: { height?: string }) {
 /* ── component ───────────────────────────────────────────────────────────── */
 
 export default function Dashboard() {
+  const { selectedNiche, geo } = useFilters();
   /* ── Ads filter state ──────────────────────────────────────────────── */
   const [adsPageSize, setAdsPageSize] = useState("500");
   const [adsOffset, setAdsOffset] = useState(0);
@@ -256,8 +258,9 @@ export default function Dashboard() {
     loading: trendsLoading,
     error: trendsError,
     refetch: refetchTrends,
-  } = useApi(() => getTrends(), []);
-  const { data: allTrendsData, loading: allLoading } = useApi(() => getAllTrends(), []);
+  } = useApi(() => getTrends(selectedNiche === "All" ? undefined : selectedNiche, geo), [selectedNiche, geo]);
+
+  const { data: allTrendsData, loading: allLoading } = useApi(() => getAllTrends(geo), [geo]);
   const { data: azureData } = useApi(() => getAzureStatus(), []);
   const { data: nichesData } = useApi(() => getNiches(), []);
   const {
@@ -265,8 +268,8 @@ export default function Dashboard() {
     loading: adsLoading,
     refetch: refetchAds,
   } = useApi(
-    () => getAdsInsight(adsParams),
-    [adsParams]
+    () => getAdsInsight({ ...adsParams, niche_name: selectedNiche === "All" ? undefined : selectedNiche, geo }),
+    [adsParams, selectedNiche, geo]
   );
   const { data: adsFiltersData } = useApi(() => getAdsInsightFilters(), []);
 

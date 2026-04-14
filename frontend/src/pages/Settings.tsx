@@ -29,7 +29,7 @@ import {
   Clock,
   Info,
 } from "lucide-react";
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -845,6 +845,18 @@ function ScrapeMonitorTab() {
   const { data, loading, refetch } = useApi(() => getScrapeRuns(params), [params]);
 
   const runs = data?.items || [];
+  const hasActiveRuns = runs.some((r: any) => r.status === "running");
+
+  useEffect(() => {
+    if (!hasActiveRuns) return;
+    
+    // Poll every 3 seconds if there are active runs
+    const timer = setInterval(() => {
+      refetch();
+    }, 3000);
+    
+    return () => clearInterval(timer);
+  }, [hasActiveRuns, refetch]);
 
   return (
     <div className="space-y-4">
