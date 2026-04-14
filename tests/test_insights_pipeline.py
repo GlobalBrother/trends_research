@@ -1,5 +1,7 @@
 """Tests for deterministic insight scoring and lifecycle rules."""
 
+from datetime import datetime
+
 from src.insights.pipeline import InsightPipeline
 
 
@@ -44,3 +46,46 @@ def test_cluster_confidence_improves_with_better_inputs():
     high = pipeline._cluster_confidence(source_confidence=85, freshness_score=80, quality_score=90, diversity=4)
     low = pipeline._cluster_confidence(source_confidence=40, freshness_score=20, quality_score=35, diversity=1)
     assert high > low
+
+
+def test_recent_ads_loader_filters_in_python_and_keeps_recent_rows():
+    pipeline = InsightPipeline()
+
+    class DummyQuery:
+        def __init__(self):
+            self.ordered = None
+            self.limit_value = None
+
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def options(self, *_args, **_kwargs):
+            return self
+
+        def order_by(self, *args):
+            self.ordered = args
+            return self
+
+        def limit(self, limit):
+            self.limit_value = limit
+            return self
+
+        def all(self):
+            return [
+                type("Ad", (), {"id": 3, "start_date": "2026-04-10"})(),
+                type("Ad", (), {"id": 2, "start_date": "2025-01-01"})(),
+                type("Ad", (), {"id": 1, "start_date": None})(),
+            ]
+
+    class DummySession:
+        def __init__(self):
+            self.query_obj = DummyQuery()
+
+        def query(self, _model):
+            return self.query_obj
+
+    session = DummySession()
+    rows = pipeline._load_recent_ads(session, datetime(2026, 4, 14))
+
+    assert session.query_obj.limit_value == 3000
+    assert [row.id for row in rows] == [3, 1]

@@ -301,6 +301,7 @@ def _pool_kwargs() -> dict:
         max_overflow=POOL_MAX_OVERFLOW,
         pool_timeout=POOL_TIMEOUT,
         pool_recycle=POOL_RECYCLE_SECONDS,
+        use_setinputsizes=False,
     )
 
 

@@ -375,6 +375,7 @@ class TrendCluster(Base):
         Index("idx_cluster_stage", "lifecycle_stage"),
         Index("idx_cluster_last_seen", "last_seen"),
         Index("idx_cluster_primary_platform", "primary_platform"),
+        {"implicit_returning": False},
     )
 
 
@@ -402,6 +403,7 @@ class TrendSignal(Base):
         Index("idx_signal_cluster", "cluster_id"),
         Index("idx_signal_platform", "platform"),
         Index("idx_signal_timestamp", "signal_timestamp"),
+        {"implicit_returning": False},
     )
 
 
@@ -430,6 +432,7 @@ class TrendInsight(Base):
     __table_args__ = (
         Index("idx_insight_score", "ad_opportunity_score"),
         Index("idx_insight_confidence", "confidence_score"),
+        {"implicit_returning": False},
     )
 
 
@@ -447,6 +450,7 @@ class TrendAdMatch(Base):
         Index("idx_match_cluster", "cluster_id"),
         Index("idx_match_ad", "ads_insight_id"),
         Index("idx_match_score", "match_score"),
+        {"implicit_returning": False},
     )
 
 
@@ -466,6 +470,7 @@ class InsightFeedback(Base):
     __table_args__ = (
         Index("idx_feedback_cluster", "cluster_id"),
         Index("idx_feedback_insight", "insight_id"),
+        {"implicit_returning": False},
     )
 
 
@@ -486,6 +491,7 @@ class BacktestRun(Base):
 
     __table_args__ = (
         Index("idx_backtest_created", "created_at"),
+        {"implicit_returning": False},
     )
 
 
@@ -503,6 +509,7 @@ class ReportBrief(Base):
     __table_args__ = (
         Index("idx_report_type", "report_type"),
         Index("idx_report_created", "created_at"),
+        {"implicit_returning": False},
     )
 
 

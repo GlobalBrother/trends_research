@@ -13,6 +13,7 @@ from typing import Any
 
 import pandas as pd
 from sqlalchemy import func
+from sqlalchemy.orm import Session, load_only
 
 from src.analytics.analytics_engine import AnalyticsEngine
 from src.db.models import (
@@ -283,39 +284,60 @@ class InsightPipeline:
     def sync(self, session, now: datetime | None = None) -> dict[str, Any]:
         """Materialize clusters, signals, matches, insights, reports, and a backtest run."""
         now = now or datetime.utcnow()
-        monitoring = self.build_monitoring_snapshot(session, now=now)
-        trends_df = self._load_recent_trends(session, now=now)
-        if trends_df.empty:
-            return {"clusters": 0, "signals": 0, "matches": 0, "reports": 0, "monitoring": monitoring}
+        bind = session.get_bind()
+        with Session(bind=bind) as read_session:
+            monitoring = self.build_monitoring_snapshot(read_session, now=now)
+            trends_df = self._load_recent_trends(read_session, now=now)
+            if trends_df.empty:
+                return {"clusters": 0, "signals": 0, "matches": 0, "reports": 0, "monitoring": monitoring}
 
-        grouped_raw = self.analytics.group_topics(trends_df.copy())
-        processed = self.analytics.process_trends(trends_df.copy())
-        processed_map = {
-            str(row["aggregated_topic"]): row.to_dict()
-            for _, row in processed.iterrows()
-        }
-        platform_health = {metric["platform"]: metric for metric in monitoring.get("platforms", [])}
-        ads = self._load_recent_ads(session, now=now)
+            grouped_raw = self.analytics.group_topics(trends_df.copy())
+            processed = self.analytics.process_trends(trends_df.copy())
+            processed_map = {
+                str(row["aggregated_topic"]): row.to_dict()
+                for _, row in processed.iterrows()
+            }
+            platform_health = {metric["platform"]: metric for metric in monitoring.get("platforms", [])}
+            ads = self._load_recent_ads(read_session, now=now)
+            cluster_groups = list(grouped_raw.groupby("aggregated_topic"))
 
         cluster_count = 0
         signal_count = 0
         match_count = 0
         cluster_ids: list[int] = []
 
-        for aggregated_topic, group in grouped_raw.groupby("aggregated_topic"):
-            aggregated_data = processed_map.get(str(aggregated_topic))
-            if not aggregated_data:
-                continue
-            cluster = self._upsert_cluster(session, aggregated_topic, group, aggregated_data, platform_health, now)
-            cluster_ids.append(cluster.id)
-            cluster_count += 1
-            signal_count += self._replace_signals(session, cluster, group, platform_health)
-            matches, evidence = self._replace_matches(session, cluster, ads, now)
-            match_count += len(matches)
-            self._upsert_insight(session, cluster, aggregated_data, group, matches, evidence, now)
+        with Session(bind=bind) as write_session:
+            cluster_keys = [_slugify(str(aggregated_topic)) for aggregated_topic, _ in cluster_groups]
+            existing_clusters = {
+                cluster.cluster_key: cluster
+                for cluster in write_session.query(TrendCluster).filter(TrendCluster.cluster_key.in_(cluster_keys)).all()
+            }
 
-        reports = self._generate_reports(session, cluster_ids, now)
-        self._run_backtest(session, cluster_ids, now)
+            for aggregated_topic, group in cluster_groups:
+                aggregated_data = processed_map.get(str(aggregated_topic))
+                if not aggregated_data:
+                    continue
+                cluster_key = _slugify(str(aggregated_topic))
+                cluster = self._upsert_cluster(
+                    write_session,
+                    aggregated_topic,
+                    group,
+                    aggregated_data,
+                    platform_health,
+                    now,
+                    existing_cluster=existing_clusters.get(cluster_key),
+                )
+                existing_clusters[cluster.cluster_key] = cluster
+                cluster_ids.append(cluster.id)
+                cluster_count += 1
+                signal_count += self._replace_signals(write_session, cluster, group, platform_health)
+                matches, evidence = self._replace_matches(write_session, cluster, ads, now)
+                match_count += len(matches)
+                self._upsert_insight(write_session, cluster, aggregated_data, group, matches, evidence, now)
+
+            reports = self._generate_reports(write_session, cluster_ids, now)
+            self._run_backtest(write_session, cluster_ids, now)
+            write_session.commit()
 
         return {
             "clusters": cluster_count,
@@ -348,15 +370,47 @@ class InsightPipeline:
         return df
 
     def _load_recent_ads(self, session, now: datetime) -> list[AdsInsight]:
-        return (
+        candidates = (
             session.query(AdsInsight)
-            .filter((AdsInsight.extracted_at.is_(None)) | (AdsInsight.extracted_at >= now - timedelta(days=90)))
-            .order_by(AdsInsight.extracted_at.desc().nullslast())
-            .limit(1500)
+            .options(load_only(
+                AdsInsight.id,
+                AdsInsight.search_keyword,
+                AdsInsight.platform,
+                AdsInsight.display_format,
+                AdsInsight.title,
+                AdsInsight.body,
+                AdsInsight.cta_type,
+                AdsInsight.start_date,
+                AdsInsight.brand_name,
+                AdsInsight.days_active,
+                AdsInsight.performance_score,
+                AdsInsight.performance_score_title,
+                AdsInsight.share_url,
+            ))
+            .order_by(AdsInsight.id.desc())
+            .limit(3000)
             .all()
         )
+        cutoff = now - timedelta(days=90)
+        recent_ads: list[AdsInsight] = []
+        for ad in candidates:
+            ad_date = _parse_date(ad.start_date)
+            if ad_date is None or ad_date >= cutoff:
+                recent_ads.append(ad)
+            if len(recent_ads) >= 1500:
+                break
+        return recent_ads
 
-    def _upsert_cluster(self, session, aggregated_topic: str, group: pd.DataFrame, aggregated: dict[str, Any], platform_health: dict[str, Any], now: datetime) -> TrendCluster:
+    def _upsert_cluster(
+        self,
+        session,
+        aggregated_topic: str,
+        group: pd.DataFrame,
+        aggregated: dict[str, Any],
+        platform_health: dict[str, Any],
+        now: datetime,
+        existing_cluster: TrendCluster | None = None,
+    ) -> TrendCluster:
         keywords = self._cluster_keywords(group, aggregated)
         platforms = sorted({str(value) for value in _safe_load_list(aggregated.get("platform")) if value})
         if not platforms:
@@ -381,7 +435,7 @@ class InsightPipeline:
         last_seen = pd.to_datetime(group["extracted_at"], errors="coerce").max()
         first_seen = pd.to_datetime(group["extracted_at"], errors="coerce").min()
         cluster_key = _slugify(str(aggregated_topic))
-        existing = session.query(TrendCluster).filter(TrendCluster.cluster_key == cluster_key).first()
+        existing = existing_cluster or session.query(TrendCluster).filter(TrendCluster.cluster_key == cluster_key).first()
         explanation = {
             "lifecycle_inputs": {
                 "trend_strength": trend_strength,
