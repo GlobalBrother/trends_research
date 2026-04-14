@@ -54,6 +54,7 @@ from sqlalchemy import func
 
 from src.db.connection import session_scope
 from src.db.models import Trend, Platform, ScrapeError
+from src.ingestion import IngestionService
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -198,6 +199,9 @@ class TrendCollector:
                 logger.debug("Failed to parse extra_data for topic: %s", row.topic)
         return item
 
+    def __init__(self):
+        self.ingestion = IngestionService()
+
     # ------------------------------------------------------------------
     # Scrapy spider runner
     # ------------------------------------------------------------------
@@ -206,6 +210,15 @@ class TrendCollector:
         """Run a Scrapy spider with the given arguments."""
         base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
         project_dir = os.path.join(base_dir, "src", "scrapers", "google_trends_scraper")
+
+        geo = kwargs.get("geo", "US")
+        category = str(kwargs.get("category", ""))
+        run = self.ingestion.start_run(
+            source=spider_name,
+            acquisition_mode="api" if spider_name != "hackernews" else "scraping",
+            country=geo,
+            category=category,
+        )
 
         cmd = [sys.executable, "-m", "scrapy", "crawl", spider_name]
         for key, value in kwargs.items():
@@ -219,13 +232,17 @@ class TrendCollector:
 
             if result.returncode != 0:
                 logger.error("Scraper %s failed with return code %d", spider_name, result.returncode)
+                run.record_error(f"return_code_{result.returncode}")
                 return False
 
             logger.info("Scraper %s completed successfully.", spider_name)
             return True
         except Exception as e:
             logger.error("Failed to run Scrapy scraper %s: %s", spider_name, e)
+            run.record_error(type(e).__name__)
             return False
+        finally:
+            self.ingestion.finish_run(run)
 
     # ------------------------------------------------------------------
     # Individual scraper dispatchers

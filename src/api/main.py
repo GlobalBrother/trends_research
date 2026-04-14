@@ -39,7 +39,7 @@ from src.db.models import (
     Base, User, OtpCode, AuthToken, Niche, TokenUsage, ScrapeError as ScrapeErrorModel,
     AdsInsight, Content, ContentMetric, Author, Platform, Trend, MyBrand,
     TrendCluster, TrendSignal, TrendInsight, TrendAdMatch, InsightFeedback,
-    BacktestRun, ReportBrief,
+    BacktestRun, ReportBrief, ScrapeRun,
 )
 
 # Try to import GetHookdAI ads scraper
@@ -969,6 +969,56 @@ def get_all_trends():
         return {"data": []}
     processed = analytics.process_trends(raw)
     return {"data": _sanitize(processed)}
+
+
+@app.get("/admin/scrape-runs")
+def get_scrape_runs(
+    source: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    limit: int = Query(50),
+    offset: int = Query(0),
+    authorization: str = Header(None)
+):
+    """Retrieve recent scrape run records for monitoring."""
+    _require_admin(authorization)
+    with session_scope() as session:
+        query = session.query(ScrapeRun)
+        if source:
+            query = query.filter(ScrapeRun.source == source)
+        if status:
+            query = query.filter(ScrapeRun.status == status)
+        
+        total = query.count()
+        runs = query.order_by(ScrapeRun.started_at.desc()).offset(offset).limit(limit).all()
+        
+        results = []
+        for r in runs:
+            results.append({
+                "id": r.id,
+                "source": r.source,
+                "acquisition_mode": r.acquisition_mode,
+                "country": r.country,
+                "category": r.category,
+                "status": r.status,
+                "fetched_count": r.fetched_count,
+                "parsed_count": r.parsed_count,
+                "inserted_count": r.inserted_count,
+                "failed_count": r.failed_count,
+                "quota_usage": r.quota_usage,
+                "latency_ms": r.latency_ms,
+                "alert_state": r.alert_state,
+                "started_at": r.started_at.isoformat() if r.started_at else None,
+                "finished_at": r.finished_at.isoformat() if r.finished_at else None,
+                "summary": json.loads(r.summary_json) if r.summary_json else None,
+                "errors": json.loads(r.top_error_types) if r.top_error_types else None
+            })
+        
+        return {
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "items": results
+        }
 
 
 @app.get("/scrape_errors")

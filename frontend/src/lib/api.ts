@@ -250,6 +250,26 @@ export interface TokenUsageSummary {
   provider?: string;
 }
 
+export interface ScrapeRun {
+  id: number;
+  source: string;
+  acquisition_mode: string;
+  country: string | null;
+  category: string | null;
+  status: string;
+  fetched_count: number;
+  parsed_count: number;
+  inserted_count: number;
+  failed_count: number;
+  quota_usage: number;
+  latency_ms: number;
+  alert_state: string;
+  started_at: string;
+  finished_at: string | null;
+  summary: any | null;
+  errors: Record<string, number> | null;
+}
+
 export interface AzureStatus {
   connected: boolean;
   tables?: Record<string, number | string>;
@@ -413,6 +433,13 @@ export const testScraper = (platform: string) =>
 /** Scrape errors */
 export const getScrapeErrors = (platform?: string) =>
   client.get<{ data: unknown[] }>("/scrape_errors", { params: platform ? { platform } : {} });
+
+export const getScrapeRuns = (params: {
+  source?: string;
+  status?: string;
+  limit?: number;
+  offset?: number;
+}) => client.get<{ total: number; limit: number; offset: number; items: ScrapeRun[] }>("/admin/scrape-runs", { params });
 
 export const clearScrapeErrors = () => client.delete("/scrape_errors");
 

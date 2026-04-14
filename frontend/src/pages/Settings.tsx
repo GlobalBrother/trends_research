@@ -25,6 +25,9 @@ import {
   FileJson,
   Shield,
   ShieldCheck,
+  Activity,
+  Clock,
+  Info,
 } from "lucide-react";
 import { useState, useCallback, useRef } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -53,7 +56,9 @@ import {
   updateUserRole,
   deleteUser,
   importTokens,
+  getScrapeRuns,
   type AuthUser,
+  type ScrapeRun,
 } from "@/lib/api";
 
 export default function Settings() {
@@ -250,6 +255,9 @@ export default function Settings() {
           </TabsTrigger>
           <TabsTrigger value="import" className="text-xs gap-1.5">
             <Upload className="w-3.5 h-3.5" /> Import
+          </TabsTrigger>
+          <TabsTrigger value="monitor" className="text-xs gap-1.5">
+            <Activity className="w-3.5 h-3.5" /> Scrape Monitor
           </TabsTrigger>
         </TabsList>
 
@@ -822,7 +830,111 @@ export default function Settings() {
             </p>
           </div>
         </TabsContent>
+
+        {/* ── Scrape Monitor ───────────────────────────────────────────── */}
+        <TabsContent value="monitor" className="space-y-4">
+          <ScrapeMonitorTab />
+        </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+function ScrapeMonitorTab() {
+  const [params, setParams] = useState({ limit: 50, offset: 0 });
+  const { data, loading, refetch } = useApi(() => getScrapeRuns(params), [params]);
+
+  const runs = data?.items || [];
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold">Individual Scrape Processes</h2>
+        <Button size="sm" variant="outline" className="h-8 text-xs gap-1.5" onClick={() => refetch()}>
+          <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} /> Refresh
+        </Button>
+      </div>
+
+      <div className="bg-card border border-border">
+        <div className="grid grid-cols-12 gap-2 px-4 py-2.5 border-b border-border text-[10px] font-medium text-muted-foreground uppercase tracking-wider">
+          <div className="col-span-2">Source / Mode</div>
+          <div className="col-span-2">Time</div>
+          <div className="col-span-1 text-center">Status</div>
+          <div className="col-span-1 text-right">Fetched</div>
+          <div className="col-span-1 text-right">Saved</div>
+          <div className="col-span-1 text-right">Failed</div>
+          <div className="col-span-1 text-right">Latency</div>
+          <div className="col-span-3 text-right">Alerts</div>
+        </div>
+
+        {loading && runs.length === 0 ? (
+          <div className="p-8 text-center text-muted-foreground text-sm">Loading monitoring data...</div>
+        ) : runs.length === 0 ? (
+          <div className="p-8 text-center text-muted-foreground text-sm">No scrape runs found.</div>
+        ) : (
+          <div className="divide-y divide-border/50">
+            {runs.map((run: ScrapeRun) => (
+              <div key={run.id} className="grid grid-cols-12 gap-2 px-4 py-3 items-center hover:bg-muted/30 transition-colors">
+                <div className="col-span-2">
+                  <div className="text-sm font-medium">{run.source}</div>
+                  <div className="text-[10px] text-muted-foreground uppercase tracking-tight">{run.acquisition_mode} {run.country ? `· ${run.country}` : ""}</div>
+                </div>
+                <div className="col-span-2">
+                  <div className="text-xs flex items-center gap-1">
+                    <Clock className="w-3 h-3 text-muted-foreground" />
+                    {new Date(run.started_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                  </div>
+                  {run.finished_at && (
+                    <div className="text-[10px] text-muted-foreground mt-0.5">
+                      Duration: {Math.round((new Date(run.finished_at).getTime() - new Date(run.started_at).getTime()) / 1000)}s
+                    </div>
+                  )}
+                </div>
+                <div className="col-span-1 text-center">
+                  <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-medium uppercase ${
+                    run.status === "completed" ? "bg-success/10 text-success" :
+                    run.status === "failed" ? "bg-danger/10 text-danger" :
+                    run.status === "running" ? "bg-blue-500/10 text-blue-500 animate-pulse" :
+                    "bg-muted text-muted-foreground"
+                  }`}>
+                    {run.status}
+                  </span>
+                </div>
+                <div className="col-span-1 text-right text-xs font-mono">{run.fetched_count}</div>
+                <div className="col-span-1 text-right text-xs font-mono font-medium text-success">{run.inserted_count}</div>
+                <div className="col-span-1 text-right text-xs font-mono text-danger">{run.failed_count > 0 ? run.failed_count : "—"}</div>
+                <div className="col-span-1 text-right text-xs font-mono text-muted-foreground">{run.latency_ms ? `${Math.round(run.latency_ms)}ms` : "—"}</div>
+                <div className="col-span-3 flex items-center justify-end gap-1.5">
+                  {run.alert_state !== "ok" && (
+                    <span className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded border ${
+                      run.alert_state === "alert" ? "border-danger/20 bg-danger/5 text-danger" : "border-warning/20 bg-warning/5 text-warning"
+                    }`}>
+                      <AlertTriangle className="w-3 h-3" />
+                      {run.alert_state.toUpperCase()}
+                    </span>
+                  )}
+                  {run.errors && Object.keys(run.errors).length > 0 && (
+                    <div className="group relative">
+                      <div className="flex items-center gap-1 text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded cursor-help">
+                        <Info className="w-3 h-3" /> Errors
+                      </div>
+                      <div className="absolute right-0 bottom-full mb-2 w-48 bg-popover border border-border p-2 rounded shadow-xl hidden group-hover:block z-50">
+                        <div className="text-[10px] font-bold uppercase mb-1 border-b pb-1">Error Types</div>
+                        {Object.entries(run.errors).map(([err, count]) => (
+                          <div key={err} className="flex justify-between text-[10px] py-0.5">
+                            <span className="truncate mr-2">{err}</span>
+                            <span className="font-mono font-bold">{count}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

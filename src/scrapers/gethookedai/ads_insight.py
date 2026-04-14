@@ -50,11 +50,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "ensembledata")
 from db_helper import save_trend, save_error
 from src.db.connection import session_scope
 from src.db.models import AdsInsight
+from src.ingestion import IngestionService
 from src.runtime.secrets import init_runtime_secrets
 
 init_runtime_secrets()
 
 PLATFORM = "GetHookdAI"
+ingestion = IngestionService()
 BASE_URL = "https://app.gethookd.ai/api/v1"
 
 # ---------------------------------------------------------------------------
@@ -177,24 +179,11 @@ def auth_check():
 
 def scrape_ads(keywords, max_pages=3, **filters):
     """Search the GetHookd ad library for each keyword and persist results.
-
-    Parameters
-    ----------
-    keywords : list[str]
-        Keywords to search for in the ad library.
-    max_pages : int
-        Maximum number of pages to fetch per keyword.
-    **filters : dict
-        Optional explore filters from md.json spec:
-        per_page (1-100, default 20), sort_column, sort_direction,
-        start_date, end_date, status, ad_format, run_time, language,
-        platform, niche, performance_scores, used_count, video_lengths,
-        eu_transparency, eu_total_reach, gender_audience, age_audience,
-        location, ad_spend_range, excluded_brands, creative_categories,
-        cta_types, active_ads_count, ads_per_brand_limit.
+    ...
     """
     _ensure_table()
     headers = _get_headers()
+    run = ingestion.start_run(PLATFORM, acquisition_mode="api")
 
     # Map Python-friendly filter names to API parameter names (hyphenated)
     _FILTER_MAP = {
@@ -230,76 +219,83 @@ def scrape_ads(keywords, max_pages=3, **filters):
         if py_key in filters and filters[py_key] is not None:
             extra_params[api_key] = filters[py_key]
 
-    for keyword in keywords:
-        logger.info("GetHookdAI: searching ads for keyword=%s", keyword)
-        page = 1
-        total_saved = 0
+    try:
+        for keyword in keywords:
+            logger.info("GetHookdAI: searching ads for keyword=%s", keyword)
+            page = 1
+            total_saved = 0
 
-        while page <= max_pages:
-            params = {"query": keyword, "page": page, **extra_params}
-            try:
-                resp = requests.get(
-                    f"{BASE_URL}/explore",
-                    headers=headers,
-                    params=params,
-                    timeout=30,
-                )
-
-                if _handle_rate_limit(resp):
-                    continue
-                if _handle_credits(resp, keyword):
-                    return
-
-                resp.raise_for_status()
-                data = resp.json()
-
-                ads = data.get("data", [])
-                if not ads:
-                    logger.info("GetHookdAI: no more ads for keyword=%s at page=%d", keyword, page)
-                    break
-
-                for ad in ads:
-                    _save_ad(ad, keyword)
-
-                    topic = ad.get("title") or (ad.get("body") or "")[:120]
-                    brand = ad.get("brand") or {}
-                    save_trend(
-                        platform=PLATFORM,
-                        topic=topic,
-                        growth=ad.get("performance_score", 0),
-                        keyword=keyword,
-                        geo="Global",
-                        url=ad.get("share_url") or ad.get("landing_page") or "",
-                        extra_data={
-                            "hookd_id": ad.get("id"),
-                            "display_format": ad.get("display_format"),
-                            "brand_name": brand.get("name"),
-                            "days_active": ad.get("days_active"),
-                            "performance_score_title": ad.get("performance_score_title"),
-                            "cta_type": ad.get("cta_type"),
-                        },
+            while page <= max_pages:
+                params = {"query": keyword, "page": page, **extra_params}
+                try:
+                    resp = requests.get(
+                        f"{BASE_URL}/explore",
+                        headers=headers,
+                        params=params,
+                        timeout=30,
                     )
-                    total_saved += 1
 
-                remaining = data.get("remaining_credits")
-                logger.info(
-                    "GetHookdAI: page %d done for keyword=%s (%d ads). Credits remaining: %s",
-                    page, keyword, len(ads), remaining,
-                )
+                    if _handle_rate_limit(resp):
+                        continue
+                    if _handle_credits(resp, keyword):
+                        break
 
-                # Explore pagination: meta object at root level
-                meta = data.get("meta", {})
-                last_page = meta.get("last_page", page)
-                if page >= last_page:
+                    resp.raise_for_status()
+                    data = resp.json()
+
+                    ads = data.get("data", [])
+                    if not ads:
+                        logger.info("GetHookdAI: no more ads for keyword=%s at page=%d", keyword, page)
+                        break
+
+                    run.fetched_count += len(ads)
+                    for ad in ads:
+                        _save_ad(ad, keyword)
+
+                        topic = ad.get("title") or (ad.get("body") or "")[:120]
+                        brand = ad.get("brand") or {}
+                        save_trend(
+                            platform=PLATFORM,
+                            topic=topic,
+                            growth=ad.get("performance_score", 0),
+                            keyword=keyword,
+                            geo="Global",
+                            url=ad.get("share_url") or ad.get("landing_page") or "",
+                            extra_data={
+                                "hookd_id": ad.get("id"),
+                                "display_format": ad.get("display_format"),
+                                "brand_name": brand.get("name"),
+                                "days_active": ad.get("days_active"),
+                                "performance_score_title": ad.get("performance_score_title"),
+                                "cta_type": ad.get("cta_type"),
+                            },
+                            run=run,
+                        )
+                        total_saved += 1
+                        run.inserted_count += 1
+
+                    remaining = data.get("remaining_credits")
+                    logger.info(
+                        "GetHookdAI: page %d done for keyword=%s (%d ads). Credits remaining: %s",
+                        page, keyword, len(ads), remaining,
+                    )
+
+                    # Explore pagination: meta object at root level
+                    meta = data.get("meta", {})
+                    last_page = meta.get("last_page", page)
+                    if page >= last_page:
+                        break
+
+                    page += 1
+                    time.sleep(0.25)
+
+                except requests.RequestException as exc:
+                    logger.error("GetHookdAI: request failed for keyword=%s page=%d: %s", keyword, page, exc)
+                    save_error(PLATFORM, keyword, f"{BASE_URL}/explore", getattr(exc.response, "status_code", 0) if exc.response else 0, str(exc), run=run)
+                    run.record_error(type(exc).__name__)
                     break
-
-                page += 1
-                time.sleep(0.25)
-
-            except requests.RequestException as exc:
-                logger.error("GetHookdAI: request failed for keyword=%s page=%d: %s", keyword, page, exc)
-                save_error(PLATFORM, keyword, f"{BASE_URL}/explore", getattr(exc.response, "status_code", 0) if exc.response else 0, str(exc))
-                break
+    finally:
+        ingestion.finish_run(run)
 
         logger.info("GetHookdAI: saved %d ads for keyword=%s", total_saved, keyword)
 
