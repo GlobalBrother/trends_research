@@ -87,6 +87,26 @@ The API is configured to serve the built frontend SPA automatically:
 gunicorn src.api.main:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
 ```
 
+### 6. Opportunity Snapshot Materialization
+
+The Ad Opportunities workspace reads from materialized cluster tables:
+
+- `trend_clusters`
+- `trend_signals`
+- `trend_insights`
+- `trend_ad_matches`
+
+These are built by the insight pipeline when cluster endpoints are requested,
+and can also be triggered explicitly:
+
+```bash
+curl -X POST http://localhost:8000/clusters/refresh
+```
+
+If trend rows exist but the opportunity panel is empty, verify that the
+snapshot tables are populated and that the backend can write successfully to
+Azure SQL.
+
 ---
 
 ## 🔐 Authentication & Security
@@ -450,6 +470,15 @@ Check your database connectivity and Azure configuration:
 python -m src.db.doctor
 ```
 
+Azure SQL / SQL Server notes:
+
+- The insight pipeline is hardened for SQL Server-specific behavior.
+- Recent ad evidence is filtered in Python instead of relying on SQL features
+  such as `NULLS LAST`.
+- SQLAlchemy uses `use_setinputsizes=False` for the `pyodbc` engine path.
+- Insight materialization tables disable implicit `RETURNING` to avoid Azure SQL
+  insert issues.
+
 Additional implementation docs:
 
 - `docs/canonical-schemas.md`
@@ -459,6 +488,24 @@ Additional implementation docs:
 ---
 
 ## 📋 Daily Meeting Notes
+
+### 2026-04-14 — Insight Pipeline Stability
+
+**Participants:** Development Team
+
+#### 1. Ad Opportunities Snapshot Fix
+- **Problem:** Trend data existed, but the Trend Explorer "Ad Opportunities" panel stayed empty because cluster-level materialization was failing before `trend_clusters` and `trend_insights` could be populated.
+- **Solution:** Fixed the insight pipeline so cluster and insight rows materialize correctly on Azure SQL, allowing the opportunity UI to read real snapshot data.
+- **Files changed:** `src/insights/pipeline.py`
+
+#### 2. Azure SQL Compatibility Hardening
+- **Problem:** The insight sync hit SQL Server-specific issues, including unsupported null-ordering behavior, `pyodbc` binding problems, and insert-path friction on Azure SQL.
+- **Solution:** Reworked recent ad loading to avoid SQL-only null ordering, disabled `setinputsizes` for the SQL Server engine path, and disabled implicit returning on insight materialization tables.
+- **Files changed:** `src/insights/pipeline.py`, `src/db/connection.py`, `src/db/models.py`
+
+#### 3. Regression Coverage
+- **Change:** Added a targeted test for the recent ad loader so the SQL Server-safe code path remains covered.
+- **Files changed:** `tests/test_insights_pipeline.py`
 
 ### 2026-04-08 — Sprint Session
 
