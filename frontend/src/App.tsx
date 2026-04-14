@@ -10,10 +10,7 @@ import { Redirect } from "wouter";
 
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const TrendExplorer = lazy(() => import("./pages/TrendExplorer"));
-const ResearchProjects = lazy(() => import("./pages/ResearchProjects"));
 const Reports = lazy(() => import("./pages/Reports"));
-const SavedViews = lazy(() => import("./pages/SavedViews"));
-const Alerts = lazy(() => import("./pages/Alerts"));
 const Settings = lazy(() => import("./pages/Settings"));
 const MyAds = lazy(() => import("./pages/MyAds"));
 const Login = lazy(() => import("./pages/Login"));
@@ -42,10 +39,7 @@ function AuthenticatedRouter() {
         <Switch>
           <Route path="/" component={Dashboard} />
           <Route path="/explorer" component={TrendExplorer} />
-          <Route path="/projects" component={ResearchProjects} />
           <Route path="/reports" component={Reports} />
-          <Route path="/saved" component={SavedViews} />
-          <Route path="/alerts" component={Alerts} />
           <Route path="/my-ads" component={MyAds} />
           <Route path="/settings">{() => <AdminRoute component={Settings} />}</Route>
           <Route path="/404" component={NotFound} />

@@ -58,21 +58,13 @@ const NAV_SECTIONS: NavSection[] = [
   {
     label: "WORKSPACE",
     items: [
-      { href: "/projects", icon: FolderKanban, label: "Research Projects" },
       { href: "/reports", icon: FileBarChart, label: "Reports" },
-      { href: "/saved", icon: Bookmark, label: "Saved Views" },
-    ],
-  },
-  {
-    label: "ADVERTISING",
-    items: [
       { href: "/my-ads", icon: Megaphone, label: "My Ads" },
     ],
   },
   {
     label: "SYSTEM",
     items: [
-      { href: "/alerts", icon: Bell, label: "Alerts" },
       { href: "/settings", icon: Settings, label: "Settings", adminOnly: true },
     ],
   },
@@ -205,14 +197,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
             >
               <Menu className="w-5 h-5" />
             </button>
-            {/* Global search */}
-            <div className="relative hidden sm:block">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-              <Input
-                placeholder="Search trends, topics, reports…"
-                className="pl-8 w-64 h-8 text-sm bg-muted/50 border-0 focus-visible:ring-1"
-              />
-            </div>
+            {/* Global search removed (no implementation) */}
           </div>
 
           <div className="flex items-center gap-2">
@@ -235,54 +220,11 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
               )}
             </Button>
 
-            {/* Date range */}
-            <Button
-              variant="outline"
-              size="sm"
-              className="hidden md:flex h-8 text-xs gap-1.5 bg-transparent"
-            >
-              Last 30 days
-              <ChevronDown className="w-3 h-3" />
-            </Button>
+            {/* Date range removed (no implementation) */}
 
-            {/* Workspace selector */}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="hidden md:flex h-8 text-xs gap-1.5 bg-transparent"
-                >
-                  Default Workspace
-                  <ChevronDown className="w-3 h-3" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem>Default Workspace</DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => toast("Feature coming soon")}
-                >
-                  Marketing Team
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onClick={() => toast("Feature coming soon")}
-                >
-                  Create Workspace
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            {/* Workspace selector removed (no implementation) */}
 
-            {/* Notifications */}
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 w-8 p-0 relative"
-              onClick={() => toast("Feature coming soon")}
-            >
-              <Bell className="w-4 h-4" />
-              <span className="absolute top-1 right-1 w-1.5 h-1.5 bg-danger rounded-full" />
-            </Button>
+            {/* Notifications removed (no implementation) */}
 
             {/* User menu */}
             <DropdownMenu>
@@ -303,13 +245,6 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
                     {authEmail}
                   </p>
                 </div>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => toast("Feature coming soon")}>
-                  Profile
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => toast("Feature coming soon")}>
-                  Preferences
-                </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={handleLogout}>
                   <LogOut className="w-3.5 h-3.5 mr-2" />
