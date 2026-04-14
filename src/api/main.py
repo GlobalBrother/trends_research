@@ -1011,7 +1011,7 @@ def test_scraper(platform: str, authorization: str = Header(None)):
                 return {"ok": False, "message": "ENSEMBLEDATA_TOKEN is not set. Load it from Azure Key Vault or the runtime environment."}
             from ensembledata.api import EDClient
             client = EDClient(token=token)
-            result = client.reddit.search_subreddits(query="test", limit=1)
+            result = client.reddit.subreddit_posts(name="python", sort="hot", period="day")
             _ = result.data
             return {"ok": True, "message": f"Reddit API is reachable. Units charged: {result.units_charged}"}
 
@@ -1033,7 +1033,7 @@ def test_scraper(platform: str, authorization: str = Header(None)):
                 return {"ok": False, "message": "ENSEMBLEDATA_TOKEN is not set. Load it from Azure Key Vault or the runtime environment."}
             from ensembledata.api import EDClient
             client = EDClient(token=token)
-            result = client.youtube.search(query="test", max_results=1)
+            result = client.youtube.keyword_search(keyword="test", depth=1)
             _ = result.data
             return {"ok": True, "message": f"YouTube API is reachable. Units charged: {result.units_charged}"}
 
@@ -1056,7 +1056,7 @@ def test_scraper(platform: str, authorization: str = Header(None)):
                 return {"ok": False, "message": "ENSEMBLEDATA_TOKEN is not set. Load it from Azure Key Vault or the runtime environment."}
             from ensembledata.api import EDClient
             client = EDClient(token=token)
-            result = client.tiktok.keyword.search(keyword="test", period=7, max_cursor=0)
+            result = client.tiktok.keyword_search(keyword="test", period="7")
             _ = result.data
             return {"ok": True, "message": f"TikTok API is reachable. Units charged: {result.units_charged}"}
 
@@ -1066,7 +1066,7 @@ def test_scraper(platform: str, authorization: str = Header(None)):
                 return {"ok": False, "message": "ENSEMBLEDATA_TOKEN is not set. Load it from Azure Key Vault or the runtime environment."}
             from ensembledata.api import EDClient
             client = EDClient(token=token)
-            result = client.instagram.search(query="test")
+            result = client.instagram.search(text="test")
             _ = result.data
             return {"ok": True, "message": f"Instagram API is reachable. Units charged: {result.units_charged}"}
 
@@ -1076,7 +1076,7 @@ def test_scraper(platform: str, authorization: str = Header(None)):
                 return {"ok": False, "message": "ENSEMBLEDATA_TOKEN is not set. Load it from Azure Key Vault or the runtime environment."}
             from ensembledata.api import EDClient
             client = EDClient(token=token)
-            result = client.threads.search(query="test")
+            result = client.threads.search_keyword(name="test")
             _ = result.data
             return {"ok": True, "message": f"Threads API is reachable. Units charged: {result.units_charged}"}
 
