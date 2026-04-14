@@ -210,6 +210,7 @@ export default function MyAds() {
 
   /* ── Collapsible ad groups ─────────────────────────────────────────── */
   const [expandedAdGroups, setExpandedAdGroups] = useState<Set<string>>(new Set());
+  const [previewAdId, setPreviewAdId] = useState<string | null>(null);
   const toggleAdGroup = useCallback((key: string) => {
     setExpandedAdGroups((prev) => {
       const next = new Set(prev);
@@ -787,106 +788,187 @@ export default function MyAds() {
                       const isExpanded = expandedAdGroups.has(group.key);
                       const totalInGroup = 1 + group.duplicates.length;
 
-                      const renderRow = (rowAd: AdsInsightRow, idx: number, isChild: boolean) => (
-                        <tr
-                          key={rowAd.hookd_id || `${group.key}-${idx}`}
-                          className={`hover:bg-muted/20 ${isChild ? "bg-muted/10" : ""}`}
-                        >
-                          <td className="px-3 py-2">
-                            <div className="flex items-center gap-1.5">
-                              {!isChild && hasDupes && (
-                                <button
-                                  onClick={() => toggleAdGroup(group.key)}
-                                  className="shrink-0 p-0.5 rounded hover:bg-muted transition-colors"
-                                >
-                                  <ChevronDown
-                                    className={`w-3.5 h-3.5 text-muted-foreground transition-transform ${
-                                      isExpanded ? "rotate-0" : "-rotate-90"
-                                    }`}
-                                  />
-                                </button>
-                              )}
-                              {isChild && <span className="w-5 shrink-0" />}
-                              {rowAd.brand_logo_url ? (
-                                <img
-                                  src={rowAd.brand_logo_url}
-                                  alt=""
-                                  className="w-5 h-5 rounded-full object-cover shrink-0"
-                                />
-                              ) : null}
-                              <span className="font-medium truncate max-w-[100px]">
-                                {rowAd.brand_name || "—"}
-                              </span>
-                              {!isChild && hasDupes && (
-                                <span className="shrink-0 text-[9px] font-mono px-1.5 py-0.5 rounded bg-primary/10 text-primary">
-                                  {totalInGroup}x
-                                </span>
-                              )}
-                            </div>
-                          </td>
-                          <td className="px-3 py-2 max-w-[200px]">
-                            <p className="truncate font-medium">
-                              {rowAd.title || "—"}
-                            </p>
-                            <p className="truncate text-muted-foreground">
-                              {rowAd.body?.slice(0, 60) || ""}
-                            </p>
-                          </td>
-                          <td className="px-3 py-2">
-                            <div className="flex flex-wrap gap-0.5">
-                              {parsePlatforms(rowAd.platform).map((p) => (
-                                <span
-                                  key={p}
-                                  className="px-1.5 py-0.5 bg-primary/10 text-primary rounded text-[10px]"
-                                >
-                                  {p}
-                                </span>
-                              ))}
-                            </div>
-                          </td>
-                          <td className="px-3 py-2 text-muted-foreground">
-                            {rowAd.display_format || "—"}
-                          </td>
-                          <td className="px-3 py-2 text-muted-foreground">
-                            {rowAd.cta_type || "—"}
-                          </td>
-                          <td className="px-3 py-2 text-right">
-                            <span
-                              className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                                String(rowAd.performance_score_title || "")
-                                  .toLowerCase() === "winning"
-                                  ? "bg-emerald-500/10 text-emerald-600"
-                                  : String(rowAd.performance_score_title || "")
-                                      .toLowerCase() === "scaling"
-                                  ? "bg-blue-500/10 text-blue-600"
-                                  : "bg-muted text-muted-foreground"
-                              }`}
+                      const renderRow = (rowAd: AdsInsightRow, idx: number, isChild: boolean) => {
+                        const isPreviewOpen = previewAdId === String(rowAd.id);
+                        let mediaUrl = rowAd.share_url;
+                        let thumbnail = rowAd.brand_logo_url;
+                        
+                        try {
+                          const mediaData = rowAd.media ? JSON.parse(rowAd.media) : [];
+                          if (Array.isArray(mediaData) && mediaData.length > 0) {
+                            mediaUrl = mediaData[0].url || mediaUrl;
+                            thumbnail = mediaData[0].thumbnail_url || thumbnail;
+                          }
+                        } catch (e) {
+                          // ignore
+                        }
+
+                        return (
+                          <React.Fragment key={rowAd.hookd_id || `${group.key}-${idx}`}>
+                            <tr
+                              className={`hover:bg-muted/20 ${isChild ? "bg-muted/10" : ""} ${isPreviewOpen ? "bg-primary/5" : ""}`}
                             >
-                              {rowAd.performance_score_title || "—"}
-                            </span>
-                          </td>
-                          <td className="px-3 py-2 text-right tabular-nums">
-                            {rowAd.days_active ?? "—"}
-                          </td>
-                          <td className="px-3 py-2 text-muted-foreground">
-                            {rowAd.start_date || "—"}
-                          </td>
-                          <td className="px-3 py-2 text-center">
-                            {rowAd.share_url ? (
-                              <a
-                                href={rowAd.share_url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-primary hover:text-primary/80"
-                              >
-                                <ExternalLink className="w-3.5 h-3.5 inline" />
-                              </a>
-                            ) : (
-                              "—"
+                              <td className="px-3 py-2">
+                                <div className="flex items-center gap-1.5">
+                                  {!isChild && hasDupes && (
+                                    <button
+                                      onClick={() => toggleAdGroup(group.key)}
+                                      className="shrink-0 p-0.5 rounded hover:bg-muted transition-colors"
+                                    >
+                                      <ChevronDown
+                                        className={`w-3.5 h-3.5 text-muted-foreground transition-transform ${
+                                          isExpanded ? "rotate-0" : "-rotate-90"
+                                        }`}
+                                      />
+                                    </button>
+                                  )}
+                                  {isChild && <span className="w-5 shrink-0" />}
+                                  {rowAd.brand_logo_url ? (
+                                    <img
+                                      src={rowAd.brand_logo_url}
+                                      alt=""
+                                      className="w-5 h-5 rounded-full object-cover shrink-0"
+                                    />
+                                  ) : null}
+                                  <span className="font-medium truncate max-w-[100px]">
+                                    {rowAd.brand_name || "—"}
+                                  </span>
+                                  {!isChild && hasDupes && (
+                                    <span className="shrink-0 text-[9px] font-mono px-1.5 py-0.5 rounded bg-primary/10 text-primary">
+                                      {totalInGroup}x
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="px-3 py-2 max-w-[200px]">
+                                <div className="flex items-start gap-2">
+                                  <button 
+                                    onClick={() => setPreviewAdId(isPreviewOpen ? null : String(rowAd.id))}
+                                    className={`mt-0.5 p-1 rounded-full transition-colors ${isPreviewOpen ? "bg-primary text-white" : "bg-muted text-muted-foreground hover:bg-primary/20 hover:text-primary"}`}
+                                  >
+                                    <Play className="w-2.5 h-2.5 fill-current" />
+                                  </button>
+                                  <div className="min-w-0">
+                                    <p className="truncate font-medium">
+                                      {rowAd.title || "—"}
+                                    </p>
+                                    <p className="truncate text-muted-foreground">
+                                      {rowAd.body?.slice(0, 60) || ""}
+                                    </p>
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="px-3 py-2">
+                                <div className="flex flex-wrap gap-0.5">
+                                  {parsePlatforms(rowAd.platform).map((p) => (
+                                    <span
+                                      key={p}
+                                      className="px-1.5 py-0.5 bg-primary/10 text-primary rounded text-[10px]"
+                                    >
+                                      {p}
+                                    </span>
+                                  ))}
+                                </div>
+                              </td>
+                              <td className="px-3 py-2 text-muted-foreground">
+                                {rowAd.display_format || "—"}
+                              </td>
+                              <td className="px-3 py-2 text-muted-foreground">
+                                {rowAd.cta_type || "—"}
+                              </td>
+                              <td className="px-3 py-2 text-right">
+                                <span
+                                  className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                                    String(rowAd.performance_score_title || "")
+                                      .toLowerCase() === "winning"
+                                      ? "bg-emerald-500/10 text-emerald-600"
+                                      : String(rowAd.performance_score_title || "")
+                                          .toLowerCase() === "scaling"
+                                      ? "bg-blue-500/10 text-blue-600"
+                                      : "bg-muted text-muted-foreground"
+                                  }`}
+                                >
+                                  {rowAd.performance_score_title || "—"}
+                                </span>
+                              </td>
+                              <td className="px-3 py-2 text-right tabular-nums">
+                                {rowAd.days_active ?? "—"}
+                              </td>
+                              <td className="px-3 py-2 text-muted-foreground">
+                                {rowAd.start_date || "—"}
+                              </td>
+                              <td className="px-3 py-2 text-center">
+                                {rowAd.share_url ? (
+                                  <a
+                                    href={rowAd.share_url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-primary hover:text-primary/80"
+                                  >
+                                    <ExternalLink className="w-3.5 h-3.5 inline" />
+                                  </a>
+                                ) : (
+                                  "—"
+                                )}
+                              </td>
+                            </tr>
+                            {isPreviewOpen && (
+                              <tr className="bg-muted/5 border-b border-border">
+                                <td colSpan={9} className="px-4 py-4">
+                                  <div className="flex flex-col md:flex-row gap-6 max-w-4xl">
+                                    <div className="w-full md:w-[300px] shrink-0">
+                                      <MediaPreview 
+                                        url={mediaUrl} 
+                                        thumbnail={thumbnail} 
+                                        platform={rowAd.platform}
+                                      />
+                                    </div>
+                                    <div className="flex-1 space-y-4">
+                                      <div>
+                                        <h4 className="text-sm font-semibold mb-1">{rowAd.title || "Ad Preview"}</h4>
+                                        <p className="text-xs text-muted-foreground leading-relaxed">
+                                          {rowAd.body || "No additional text content available for this ad."}
+                                        </p>
+                                      </div>
+                                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                                        <div className="space-y-1">
+                                          <span className="text-[10px] text-muted-foreground uppercase font-bold">CTA</span>
+                                          <p className="text-[11px] font-medium">{rowAd.cta_type || "—"}</p>
+                                          <p className="text-[10px] text-muted-foreground italic">{rowAd.cta_text}</p>
+                                        </div>
+                                        <div className="space-y-1">
+                                          <span className="text-[10px] text-muted-foreground uppercase font-bold">Audience</span>
+                                          <p className="text-[11px] font-medium">
+                                            {rowAd.age_audience_min}-{rowAd.age_audience_max} {rowAd.gender_audience}
+                                          </p>
+                                        </div>
+                                        <div className="space-y-1">
+                                          <span className="text-[10px] text-muted-foreground uppercase font-bold">Reach</span>
+                                          <p className="text-[11px] font-medium">{formatNumber(rowAd.eu_total_reach)}</p>
+                                        </div>
+                                        <div className="space-y-1">
+                                          <span className="text-[10px] text-muted-foreground uppercase font-bold">Spend Range</span>
+                                          <p className="text-[11px] font-medium">{rowAd.ad_spend_range_score_title || "—"}</p>
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center justify-end pt-2">
+                                         <a
+                                          href={rowAd.share_url}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="flex items-center gap-1.5 text-[10px] font-bold uppercase text-primary hover:underline px-3 py-1.5 bg-primary/5 rounded border border-primary/10"
+                                        >
+                                          <ExternalLink className="w-3 h-3" /> View In Ad Library
+                                        </a>
+                                      </div>
+                                    </div>
+                                  </div>
+                                </td>
+                              </tr>
                             )}
-                          </td>
-                        </tr>
-                      );
+                          </React.Fragment>
+                        );
+                      };
 
                       return (
                         <>

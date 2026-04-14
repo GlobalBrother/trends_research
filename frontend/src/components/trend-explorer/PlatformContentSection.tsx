@@ -9,10 +9,12 @@ import {
   Shield,
   Sparkles,
   TrendingUp,
+  ChevronDown,
 } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useApi } from "@/hooks/useApi";
+import { MediaPreview } from "@/components/shared/MediaPreview";
 import {
   getHackerNewsTrends,
   getInstagramPosts,
@@ -82,6 +84,7 @@ function normalizeContentItem(item: ContentRow, platform: string) {
 }
 
 function ContentCard({ item, platform }: { item: ContentRow; platform: string }) {
+  const [isExpanded, setIsExpanded] = useState(false);
   const normalized = normalizeContentItem(item, platform);
   const truncated = normalized.text.length > 200 ? `${normalized.text.slice(0, 200)}...` : normalized.text || "-";
   const engagementRate = normalized.views > 0 ? ((normalized.likes + normalized.comments) / normalized.views) * 100 : 0;
@@ -124,7 +127,16 @@ function ContentCard({ item, platform }: { item: ContentRow; platform: string })
         </span>
       )}
 
-      <p className="text-xs leading-relaxed">{truncated}</p>
+      <p className="text-xs leading-relaxed">{isExpanded ? normalized.text : truncated}</p>
+
+      {isExpanded && normalized.url && (
+        <div className="mt-2 py-2">
+          <MediaPreview 
+            url={normalized.url} 
+            platform={platform} 
+          />
+        </div>
+      )}
 
       <div className="flex items-center gap-3 text-[10px] text-muted-foreground flex-wrap">
         {normalized.views > 0 && (
@@ -173,14 +185,23 @@ function ContentCard({ item, platform }: { item: ContentRow; platform: string })
           )}
         </div>
         {normalized.url && (
-          <a
-            href={normalized.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1 text-[10px] text-primary hover:underline"
-          >
-            <ExternalLink className="w-3 h-3" /> View
-          </a>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setIsExpanded(!isExpanded)}
+              className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-primary transition-colors"
+            >
+              <ChevronDown className={`w-3 h-3 transition-transform ${isExpanded ? "rotate-180" : ""}`} />
+              {isExpanded ? "Collapse" : "Preview"}
+            </button>
+            <a
+              href={normalized.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1 text-[10px] text-primary hover:underline"
+            >
+              <ExternalLink className="w-3 h-3" /> View
+            </a>
+          </div>
         )}
       </div>
     </div>

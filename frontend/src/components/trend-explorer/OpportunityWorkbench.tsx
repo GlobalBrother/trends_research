@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { Loader2, RotateCcw, Search } from "lucide-react";
+import { Loader2, RotateCcw, Search, ChevronDown, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useApi, useLazyApi } from "@/hooks/useApi";
+import { MediaPreview } from "@/components/shared/MediaPreview";
 import {
   getCluster,
   getClusterAds,
@@ -23,6 +24,7 @@ export default function OpportunityWorkbench({
   selectedNiche,
 }: OpportunityWorkbenchProps) {
   const [selectedClusterId, setSelectedClusterId] = useState<number | null>(null);
+  const [expandedAdId, setExpandedAdId] = useState<string | null>(null);
   const { data: clustersData, loading: clustersLoading, refetch: refetchClusters } = useApi(
     () => getClusters({ limit: 8, niche_name: selectedNiche }),
     [selectedGeo, selectedNiche]
@@ -213,24 +215,81 @@ export default function OpportunityWorkbench({
                   </span>
                 </div>
                 <div className="grid grid-cols-1 gap-2">
-                  {ads.length > 0 ? ads.map(({ match_score, ad }) => (
-                    <div key={ad.id} className="flex items-center justify-between gap-3 text-xs p-2 rounded bg-muted/20 border border-border/50">
-                      <div className="min-w-0">
-                        <p className="font-medium truncate text-[11px]">{ad.title || ad.body || "Untitled Ad Signal"}</p>
-                        <div className="flex items-center gap-2 mt-0.5 text-[10px] text-muted-foreground">
-                          <span className="font-semibold text-primary/80">{ad.brand_name || "Unidentified Brand"}</span>
-                          <span>•</span>
-                          <span>{ad.display_format || "Social Content"}</span>
-                          <span>•</span>
-                          <span>{ad.cta_type || "No CTA"}</span>
-                        </div>
+                  {ads.length > 0 ? ads.map(({ match_score, ad }) => {
+                    const isExpanded = expandedAdId === String(ad.id);
+                    let mediaUrl = ad.share_url;
+                    let thumbnail = ad.brand_logo_url;
+                    
+                    try {
+                      const mediaData = ad.media ? JSON.parse(ad.media) : [];
+                      if (Array.isArray(mediaData) && mediaData.length > 0) {
+                        mediaUrl = mediaData[0].url || mediaUrl;
+                        thumbnail = mediaData[0].thumbnail_url || thumbnail;
+                      }
+                    } catch (e) {
+                      console.error("Failed to parse ad media", e);
+                    }
+
+                    return (
+                      <div key={ad.id} className="flex flex-col rounded-md bg-muted/20 border border-border/50 overflow-hidden">
+                        <button 
+                          onClick={() => setExpandedAdId(isExpanded ? null : String(ad.id))}
+                          className="flex items-center justify-between gap-3 text-xs p-2 hover:bg-muted/30 transition-colors w-full text-left"
+                        >
+                          <div className="min-w-0 flex items-center gap-2">
+                            <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground transition-transform ${isExpanded ? "rotate-0" : "-rotate-90"}`} />
+                            <div className="min-w-0">
+                              <p className="font-medium truncate text-[11px]">{ad.title || ad.body || "Untitled Ad Signal"}</p>
+                              <div className="flex items-center gap-2 mt-0.5 text-[10px] text-muted-foreground">
+                                <span className="font-semibold text-primary/80">{ad.brand_name || "Unidentified Brand"}</span>
+                                <span>•</span>
+                                <span>{ad.display_format || "Social Content"}</span>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="text-right shrink-0">
+                             <p className="text-[9px] text-muted-foreground uppercase font-bold">Match</p>
+                             <p className="font-mono text-primary font-bold text-[11px]">{match_score.toFixed(1)}</p>
+                          </div>
+                        </button>
+                        
+                        {isExpanded && (
+                          <div className="p-3 border-t border-border/50 bg-card space-y-3">
+                            <MediaPreview 
+                              url={mediaUrl} 
+                              thumbnail={thumbnail} 
+                              platform={ad.platform}
+                            />
+                            {ad.body && (
+                              <p className="text-[11px] text-muted-foreground leading-relaxed italic">
+                                "{ad.body}"
+                              </p>
+                            )}
+                            <div className="flex items-center justify-between pt-2 border-t border-border/30">
+                              <div className="flex gap-3">
+                                <div className="text-[10px]">
+                                  <span className="text-muted-foreground uppercase font-bold block mb-0.5">CTA</span>
+                                  <span className="font-medium">{ad.cta_type || "No CTA"}</span>
+                                </div>
+                                <div className="text-[10px]">
+                                  <span className="text-muted-foreground uppercase font-bold block mb-0.5">Active Days</span>
+                                  <span className="font-medium">{ad.days_active || 0}</span>
+                                </div>
+                              </div>
+                              <a 
+                                href={ad.share_url} 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="flex items-center gap-1 text-[10px] text-primary hover:underline font-bold uppercase"
+                              >
+                                <ExternalLink className="w-3 h-3" /> View Ad Library
+                              </a>
+                            </div>
+                          </div>
+                        )}
                       </div>
-                      <div className="text-right">
-                         <p className="text-[9px] text-muted-foreground uppercase font-bold">Match</p>
-                         <p className="font-mono text-primary font-bold text-[11px]">{match_score.toFixed(1)}</p>
-                      </div>
-                    </div>
-                  )) : (
+                    );
+                  }) : (
                     <p className="text-[11px] text-muted-foreground py-2 text-center border border-dashed border-border rounded">
                       No direct ad matches found. This may be an untapped opportunity.
                     </p>
