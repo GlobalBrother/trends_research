@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
 from src.db.connection import session_scope
-from src.db.models import Niche
+from src.db.models import Niche, User
 from src.db.sql_compat import insert_niche_if_not_exists
 from src.niche.niche_discovery import NicheDiscovery
 from src.api.deps import get_current_user
