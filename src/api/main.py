@@ -1137,6 +1137,7 @@ def refresh_clusters(background_tasks: BackgroundTasks):
 def get_clusters(
     stage: Optional[str] = Query(None),
     platform: Optional[str] = Query(None),
+    niche_name: Optional[str] = Query(None),
     date: Optional[str] = Query(None),
     limit: int = Query(100),
     force_refresh: bool = Query(False),
@@ -1152,15 +1153,18 @@ def get_clusters(
             parsed = pd.to_datetime(date, errors="coerce")
             if pd.notna(parsed):
                 q = q.filter(TrendCluster.last_seen >= parsed.to_pydatetime())
-        rows = q.order_by(TrendCluster.last_seen.desc()).limit(limit).all()
+        rows = q.order_by(TrendCluster.last_seen.desc()).limit(limit * 2 if niche_name else limit).all()
 
     data = []
     for cluster, insight in rows:
+        cluster_keywords = _decode_json_field(cluster.cluster_keywords, [])
         data.append({
             "id": cluster.id,
             "cluster_key": cluster.cluster_key,
             "title": cluster.title,
-            "keywords": _decode_json_field(cluster.cluster_keywords, []),
+            "topic": cluster.title,  # Alias for niche filtering
+            "keyword": ", ".join(cluster_keywords[:5]) if cluster_keywords else cluster.title, # Alias for niche filtering
+            "keywords": cluster_keywords,
             "platforms": _decode_json_field(cluster.platforms, []),
             "primary_platform": cluster.primary_platform,
             "first_seen": cluster.first_seen,
@@ -1177,7 +1181,18 @@ def get_clusters(
             "brand_safety_risk": insight.brand_safety_risk if insight else None,
             "saturation_risk": insight.saturation_risk if insight else None,
         })
-    return {"data": _sanitize(pd.DataFrame(data)) if data else [], "example_response": {"id": 1, "title": "AI agents", "lifecycle_stage": "emerging"}}
+
+    if not data:
+        return {"data": [], "example_response": {"id": 1, "title": "AI agents", "lifecycle_stage": "emerging"}}
+
+    df = pd.DataFrame(data)
+    if niche_name and niche_name != "All":
+        df = niche.filter_by_niche(df, niche_name)
+
+    # Re-apply limit after niche filtering
+    df = df.head(limit)
+
+    return {"data": _sanitize(df) if not df.empty else [], "example_response": {"id": 1, "title": "AI agents", "lifecycle_stage": "emerging"}}
 
 
 @app.get("/clusters/{cluster_id}")

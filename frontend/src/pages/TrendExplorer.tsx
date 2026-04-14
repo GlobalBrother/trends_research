@@ -425,7 +425,7 @@ export default function TrendExplorer() {
 
       <div className="border-t border-border pt-4">
         <Suspense fallback={<PanelFallback height="h-[22rem]" />}>
-          <OpportunityWorkbench selectedGeo={selectedGeo} />
+          <OpportunityWorkbench selectedGeo={selectedGeo} selectedNiche={selectedNiche} />
         </Suspense>
       </div>
 

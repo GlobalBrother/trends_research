@@ -607,6 +607,14 @@ class InsightPipeline:
                 "saturation": round(saturation_risk, 2),
                 "safety_risk": round(brand_safety_risk, 2),
             },
+            "descriptions": {
+                "trend_strength": f"Based on a virality score of {trend_strength:.1f}.",
+                "commercial_relevance": f"Verified by {len(matches)} active competitor ads matching this trend." if matches else "Estimated based on keyword commerciality; no direct ad matches found yet.",
+                "audience_signal": "High engagement and diverse platform resonance detected." if audience_signal > 70 else "Moderate audience interest across tracked platforms.",
+                "creative_reusability": "Existing ad formats and creative angles are easily adaptable." if creative_reusability > 60 else "May require bespoke creative development.",
+                "saturation": "Low competition; high room for new entrants." if saturation_risk < 30 else "Moderate saturation; focus on unique hooks.",
+                "safety_risk": "Content appears brand-safe and sentiment is stable." if brand_safety_risk < 20 else "Use caution; some volatile or sensitive topics detected.",
+            },
             "evidence": {
                 "linked_ads": len(matches),
                 "brands": evidence.get("brands", []),

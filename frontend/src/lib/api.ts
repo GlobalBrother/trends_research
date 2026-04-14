@@ -370,7 +370,7 @@ export const getPlatformHealth = (force_refresh = false) =>
 export const refreshClusters = () =>
   client.post<{ message: string }>("/clusters/refresh");
 
-export const getClusters = (params?: { stage?: string; platform?: string; date?: string; limit?: number; force_refresh?: boolean }) =>
+export const getClusters = (params?: { stage?: string; platform?: string; niche_name?: string; date?: string; limit?: number; force_refresh?: boolean }) =>
   client.get<{ data: ClusterRow[]; example_response?: Record<string, unknown> }>("/clusters", { params });
 
 export const getCluster = (clusterId: number, force_refresh = false) =>
