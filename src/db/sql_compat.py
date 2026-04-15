@@ -121,19 +121,26 @@ def insert_niche_if_not_exists(session: Session, niche_name, keyword):
 # OTP verification
 # ---------------------------------------------------------------------------
 
-def verify_otp(session: Session, user_id, code):
-    """Find a valid (unused, unexpired) OTP. Returns OtpCode or None.
+def verify_otp(session: Session, email, code):
+    """Find a valid (unused, unexpired) OTP for the given email.
+    If found, marks the OTP as used and returns the user_id. Otherwise returns None.
 
     Uses a UTC cutoff timestamp computed in Python, keeping the query in
     ORM style and avoiding backend-specific SQL functions.
     """
     cutoff = datetime.utcnow() - timedelta(minutes=10)
-    return session.query(OtpCode).filter(
-        OtpCode.user_id == user_id,
+    otp = session.query(OtpCode).join(User).filter(
+        User.email == email,
         OtpCode.code == code,
         OtpCode.used == 0,
         OtpCode.created_at > cutoff,
     ).order_by(OtpCode.created_at.desc()).first()
+    
+    if otp:
+        otp.used = 1
+        session.flush()
+        return otp.user_id
+    return None
 
 
 # ---------------------------------------------------------------------------
