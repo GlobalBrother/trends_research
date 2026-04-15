@@ -37,8 +37,8 @@ def health_check():
     diag = get_last_diagnostic()
     return {
         "status": "healthy",
-        "database": "connected" if diag and diag.get("success") else "disconnected",
-        "last_check": diag.get("timestamp") if diag else None
+        "database": "connected" if diag and diag.connected else "disconnected",
+        "last_check": diag.created_at.isoformat() if diag else None,
     }
 
 

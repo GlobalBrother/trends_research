@@ -135,9 +135,9 @@ def azure_status(admin_user: User = Depends(require_admin)):
     """Return database connection status and recent diagnostics."""
     last = get_last_diagnostic()
     return {
-        "connected": last is not None and last.get("success", False),
-        "last_check": last.get("timestamp") if last else None,
-        "details": last
+        "connected": last is not None and last.connected,
+        "last_check": last.created_at.isoformat() if last else None,
+        "details": last.summary_dict() if last else None,
     }
 
 
@@ -145,4 +145,4 @@ def azure_status(admin_user: User = Depends(require_admin)):
 def azure_diagnose(admin_user: User = Depends(require_admin)):
     """Run a fresh database connection diagnostic."""
     diag = run_connection_diagnose()
-    return diag
+    return diag.summary_dict()

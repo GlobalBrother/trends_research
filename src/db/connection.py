@@ -29,6 +29,7 @@ import struct
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Generator, Optional
 from urllib.parse import quote_plus
 
@@ -73,6 +74,7 @@ ENGINE_RETRIES = int(os.getenv("DB_ENGINE_RETRIES", "5"))
 @dataclass
 class ConnectionDiagnostic:
     """Collects step-by-step diagnostic information during connection setup."""
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     strategy: str = ""
     driver: str = ""
     server: str = ""
@@ -117,6 +119,7 @@ class ConnectionDiagnostic:
 
     def summary_dict(self) -> dict:
         return {
+            "timestamp": self.created_at.isoformat(),
             "strategy": self.strategy,
             "driver": self.driver,
             "server": self.server,
