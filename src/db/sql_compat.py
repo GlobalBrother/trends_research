@@ -110,15 +110,60 @@ def is_duplicate_trend(session: Session, platform_id, topic, keyword, geo) -> bo
 # Conditional INSERT (niches seeding)
 # ---------------------------------------------------------------------------
 
-def insert_niche_if_not_exists(session: Session, niche_name, keyword):
-    """Insert a niche keyword if it doesn't exist (uses EXISTS check)."""
+def insert_niche_if_not_exists(session: Session, niche_name, keyword, is_seed: bool = False):
+    """Insert a niche keyword if it doesn't exist (uses EXISTS check).
+
+    Existing rows are never modified — this preserves any user edits to
+    ``is_seed`` and other columns. Pass ``is_seed=True`` only when seeding
+    from ``NICHE_SEED_KEYWORDS``.
+    """
     already = session.query(
         exists().where(
             and_(Niche.niche_name == niche_name, Niche.keyword == keyword)
         )
     ).scalar()
     if not already:
-        session.add(Niche(niche_name=niche_name, keyword=keyword))
+        session.add(Niche(niche_name=niche_name, keyword=keyword, is_seed=bool(is_seed)))
+
+
+def seed_niches(session: Session) -> int:
+    """Idempotently seed the niches table from ``NICHE_SEED_KEYWORDS``.
+
+    Inserts each (niche_name, keyword) pair with ``is_seed=True`` if it
+    does not already exist. Never updates existing rows, so user edits and
+    user-created niches are preserved across restarts.
+
+    Returns the number of newly inserted rows.
+    """
+    # Local import to avoid a circular import at module load time.
+    from src.niche.niche_discovery import NICHE_SEED_KEYWORDS
+
+    inserted = 0
+    for niche_name, keywords in NICHE_SEED_KEYWORDS.items():
+        for kw in keywords:
+            already = session.query(
+                exists().where(
+                    and_(Niche.niche_name == niche_name, Niche.keyword == kw)
+                )
+            ).scalar()
+            if not already:
+                session.add(Niche(niche_name=niche_name, keyword=kw, is_seed=True))
+                inserted += 1
+    return inserted
+
+
+def reset_niches_to_defaults(session: Session) -> dict:
+    """Delete all seed-owned niche rows and re-seed from defaults.
+
+    User-created rows (``is_seed = False``) are left untouched.
+    Returns a dict with ``deleted`` and ``inserted`` counts.
+    """
+    deleted = session.query(Niche).filter(Niche.is_seed == True).delete(  # noqa: E712
+        synchronize_session=False
+    )
+    session.flush()
+    inserted = seed_niches(session)
+    return {"deleted": int(deleted or 0), "inserted": inserted}
 
 
 # ---------------------------------------------------------------------------

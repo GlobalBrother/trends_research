@@ -28,6 +28,7 @@ env/
 *.db
 *.db-shm
 *.db-wal
+*.sqlite*
 
 # Scraped data (JSON outputs from scrapers)
 src/collector/*.json

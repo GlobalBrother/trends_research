@@ -81,11 +81,9 @@ class TestTrends:
 # ── scrape_errors ─────────────────────────────────────────────────────────
 
 class TestScrapeErrors:
-    @patch("src.api.main.TrendCollector")
-    def test_get_scrape_errors(self, mock_tc_cls, client):
-        mock_tc = MagicMock()
-        mock_tc.get_scrape_errors.return_value = pd.DataFrame(columns=['platform', 'keyword', 'url', 'status', 'reason', 'extracted_at'])
-        mock_tc_cls.return_value = mock_tc
+    @patch("src.api.routes.scrape.collector")
+    def test_get_scrape_errors(self, mock_collector, client):
+        mock_collector.get_scrape_errors.return_value = pd.DataFrame(columns=['platform', 'keyword', 'url', 'status', 'reason', 'extracted_at'])
         resp = client.get("/scrape_errors")
         assert resp.status_code == 200
 
@@ -93,7 +91,7 @@ class TestScrapeErrors:
 # ── scrape niche ──────────────────────────────────────────────────────────
 
 class TestScrapeNiche:
-    @patch("src.api.main.collector")
+    @patch("src.api.routes.scrape.collector")
     def test_scrape_niche_endpoint(self, mock_collector, client):
         mock_collector.run_niche_comprehensive_scrape = MagicMock(return_value=True)
         mock_collector.run_google_trends_scraper = MagicMock(return_value=True)

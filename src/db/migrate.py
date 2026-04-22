@@ -111,6 +111,27 @@ _INDEXES = [
 
 
 # ---------------------------------------------------------------------------
+# Column additions — new columns to add to existing tables
+#
+# Format: (table_name, column_name, mssql_column_def, sqlite_column_def)
+#
+# Each entry is applied with an existence guard so the migration is safe
+# to re-run.  ``mssql_column_def`` is the T-SQL fragment that follows
+# ``ADD`` (column name + type + constraints + default).  ``sqlite_column_def``
+# is the equivalent for SQLite (used in tests).
+# ---------------------------------------------------------------------------
+
+_COLUMN_ADDITIONS = [
+    (
+        "niches",
+        "is_seed",
+        "is_seed BIT NOT NULL CONSTRAINT DF_niches_is_seed DEFAULT 0",
+        "is_seed BOOLEAN NOT NULL DEFAULT 0",
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
 # Migration logic
 # ---------------------------------------------------------------------------
 
@@ -121,6 +142,8 @@ class MigrationResult:
         self.tables_created: list[str] = []
         self.indexes_created: list[str] = []
         self.indexes_skipped: list[str] = []
+        self.columns_added: list[str] = []
+        self.columns_skipped: list[str] = []
         self.errors: list[str] = []
         self.started_at = datetime.utcnow()
         self.finished_at: datetime | None = None
@@ -135,6 +158,9 @@ class MigrationResult:
             "indexes_created": self.indexes_created,
             "indexes_created_count": len(self.indexes_created),
             "indexes_skipped_count": len(self.indexes_skipped),
+            "columns_added": self.columns_added,
+            "columns_added_count": len(self.columns_added),
+            "columns_skipped_count": len(self.columns_skipped),
             "errors": self.errors,
             "error_count": len(self.errors),
             "success": len(self.errors) == 0,
@@ -176,6 +202,35 @@ def _get_existing_tables(engine) -> set[str]:
         return set(insp.get_table_names())
     except Exception:
         return set()
+
+
+def _column_exists(engine, table_name: str, column_name: str) -> bool:
+    """Return True if ``table_name.column_name`` already exists in the DB.
+
+    Uses SQLAlchemy's inspector first (works for both MSSQL and SQLite),
+    falling back to a dialect-specific query for MSSQL when inspection
+    fails.
+    """
+    try:
+        insp = inspect(engine)
+        cols = {c["name"] for c in insp.get_columns(table_name)}
+        if cols:
+            return column_name in cols
+    except Exception:
+        pass
+
+    dialect = engine.dialect.name
+    if dialect in ("mssql", "mssql+pyodbc"):
+        try:
+            with engine.connect() as conn:
+                res = conn.execute(text(
+                    f"SELECT COL_LENGTH('{table_name}', '{column_name}')"
+                )).scalar()
+                return res is not None
+        except Exception as e:
+            logger.warning("Could not check column existence for %s.%s: %s",
+                           table_name, column_name, e)
+    return False
 
 
 def run_migration(dry_run: bool = False) -> MigrationResult:
@@ -254,14 +309,60 @@ def run_migration(dry_run: bool = False) -> MigrationResult:
             result.indexes_created.append(f"{idx_name} (dry-run)")
 
     # ------------------------------------------------------------------
+    # Step 3: Add missing columns to existing tables (idempotent)
+    # ------------------------------------------------------------------
+    logger.info("Step 3: Checking for missing columns...")
+    existing_tables_after = _get_existing_tables(engine)
+
+    for table_name, column_name, mssql_def, sqlite_def in _COLUMN_ADDITIONS:
+        if table_name not in existing_tables_after:
+            # Table doesn't exist yet (would have been created in step 1
+            # with the column already present via the ORM model).
+            result.columns_skipped.append(f"{table_name}.{column_name}")
+            logger.debug("  [SKIP] table %s does not exist", table_name)
+            continue
+
+        if _column_exists(engine, table_name, column_name):
+            result.columns_skipped.append(f"{table_name}.{column_name}")
+            logger.debug("  [SKIP] column %s.%s already exists", table_name, column_name)
+            continue
+
+        if dialect in ("mssql", "mssql+pyodbc"):
+            # T-SQL idempotent guard, mirroring the index pattern above.
+            sql = (
+                f"IF COL_LENGTH('{table_name}', '{column_name}') IS NULL "
+                f"ALTER TABLE [{table_name}] ADD {mssql_def}"
+            )
+        else:
+            sql = f"ALTER TABLE [{table_name}] ADD COLUMN {sqlite_def}"
+
+        logger.info("  [%s] ALTER TABLE %s ADD %s",
+                     "DRY-RUN" if dry_run else "ADD", table_name, column_name)
+
+        if not dry_run:
+            try:
+                with engine.connect() as conn:
+                    conn.execute(text(sql))
+                    conn.commit()
+                result.columns_added.append(f"{table_name}.{column_name}")
+            except Exception as e:
+                err_msg = f"Failed to add column {table_name}.{column_name}: {e}"
+                logger.error("  [ERROR] %s", err_msg)
+                result.errors.append(err_msg)
+        else:
+            result.columns_added.append(f"{table_name}.{column_name} (dry-run)")
+
+    # ------------------------------------------------------------------
     # Done
     # ------------------------------------------------------------------
     result.finished_at = datetime.utcnow()
     logger.info(
-        "Migration complete: %d tables created, %d indexes created, %d indexes skipped, %d errors.",
+        "Migration complete: %d tables created, %d indexes created, "
+        "%d indexes skipped, %d columns added, %d errors.",
         len(result.tables_created),
         len(result.indexes_created),
         len(result.indexes_skipped),
+        len(result.columns_added),
         len(result.errors),
     )
     return result
@@ -292,6 +393,7 @@ if __name__ == "__main__":
     print(f"  Tables created:   {summary['tables_created_count']}")
     print(f"  Indexes created:  {summary['indexes_created_count']}")
     print(f"  Indexes skipped:  {summary['indexes_skipped_count']}")
+    print(f"  Columns added:    {summary['columns_added_count']}")
     print(f"  Errors:           {summary['error_count']}")
     print(f"  Success:          {summary['success']}")
     print("=" * 60)

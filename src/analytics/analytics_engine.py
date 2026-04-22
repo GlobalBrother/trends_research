@@ -13,6 +13,8 @@ import numpy as np
 import pandas as pd
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
+from src.config import PLATFORM_WEIGHTS
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -40,17 +42,6 @@ STOP_WORDS = frozenset({
     "your", "our", "show", "hn", "app", "apps",
 })
 
-PLATFORM_WEIGHTS = {
-    "Google Trends": 1.0,
-    "Google Related Queries": 1.1,
-    "Google Related Topics": 1.1,
-    "Google Interest": 1.0,
-    "Google Regions": 1.2,
-    "YouTube": 1.3,
-    "Reddit": 1.4,
-    "HackerNews": 1.3,
-    "News": 1.1,
-}
 
 META_PLATFORMS = frozenset({"Google Interest", "Google Regions"})
 

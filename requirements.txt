@@ -1,15 +1,10 @@
 pandas
 requests
-beautifulsoup4
 scikit-learn
 nltk
-textblob
 vaderSentiment
-plotly
-streamlit
 openpyxl
 python-dotenv
-matplotlib
 scrapy
 ensembledata
 resend
@@ -19,3 +14,4 @@ gunicorn
 sqlalchemy
 pyodbc
 azure-identity
+python-multipart

@@ -19,10 +19,14 @@ venv
 .idea
 .vscode
 
+# Streamlit (legacy)
+.streamlit/
+
 # Database files
 *.db
 *.db-shm
 *.db-wal
+*.sqlite*
 
 # Docker (avoid recursive copy)
 Dockerfile*

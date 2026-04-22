@@ -20,7 +20,7 @@ if project_root not in sys.path:
 
 from sqlalchemy import (
     Column, Integer, Text, Float, DateTime, ForeignKey, UniqueConstraint, Index,
-    String, func,
+    String, Boolean, func, text,
 )
 from sqlalchemy.orm import declarative_base, relationship
 
@@ -274,6 +274,7 @@ class Niche(Base):
     niche_name = Column(Text, nullable=False)
     keyword = Column(Text, nullable=False)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
+    is_seed = Column(Boolean, nullable=False, default=False, server_default=text("0"))
 
     __table_args__ = (
         UniqueConstraint("niche_name", "keyword", name="uq_niches_name_keyword"),

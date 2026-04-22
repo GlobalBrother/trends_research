@@ -2,8 +2,16 @@
 
 import pandas as pd
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
-from src.niche.niche_discovery import NicheDiscovery
+from src.niche.niche_discovery import NicheDiscovery, NICHE_SEED_KEYWORDS
+from src.db.models import Base, Niche
+from src.db.sql_compat import (
+    insert_niche_if_not_exists,
+    seed_niches,
+    reset_niches_to_defaults,
+)
 
 
 @pytest.fixture
@@ -150,3 +158,119 @@ class TestDiscoverMicroNiches:
         original_cols = list(df.columns)
         nd.discover_micro_niches(df)
         assert list(df.columns) == original_cols
+
+
+# ── seeding & user-edit ownership (is_seed flag) ─────────────────────────
+
+@pytest.fixture
+def db_session():
+    """In-memory SQLite session with the niches table created from the ORM."""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    try:
+        yield session
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def _expected_seed_count():
+    return sum(len(v) for v in NICHE_SEED_KEYWORDS.values())
+
+
+class TestNicheSeeding:
+    def test_seeding_is_idempotent(self, db_session):
+        first = seed_niches(db_session)
+        db_session.commit()
+        assert first == _expected_seed_count()
+        assert db_session.query(Niche).count() == first
+
+        # A second seed pass must insert nothing and must not modify rows.
+        second = seed_niches(db_session)
+        db_session.commit()
+        assert second == 0
+        assert db_session.query(Niche).count() == first
+        # All seed-owned rows remain flagged correctly.
+        assert db_session.query(Niche).filter(Niche.is_seed == True).count() == first  # noqa: E712
+
+    def test_user_created_niche_survives_reseed(self, db_session):
+        seed_niches(db_session)
+        db_session.commit()
+
+        # Simulate a user creating a fresh niche via the POST endpoint.
+        insert_niche_if_not_exists(
+            db_session, "MyCustomNiche", "custom keyword", is_seed=False
+        )
+        db_session.commit()
+
+        user_row = db_session.query(Niche).filter(
+            Niche.niche_name == "MyCustomNiche",
+            Niche.keyword == "custom keyword",
+        ).one()
+        assert user_row.is_seed is False or user_row.is_seed == 0
+
+        # Re-running the seeder must not delete or update the user row.
+        seed_niches(db_session)
+        db_session.commit()
+
+        still_there = db_session.query(Niche).filter(
+            Niche.niche_name == "MyCustomNiche",
+            Niche.keyword == "custom keyword",
+        ).one()
+        assert still_there.id == user_row.id
+        assert still_there.is_seed is False or still_there.is_seed == 0
+
+    def test_reset_defaults_restores_seeds_without_touching_user_rows(self, db_session):
+        seed_niches(db_session)
+        # User-owned row that must survive
+        insert_niche_if_not_exists(
+            db_session, "MyCustomNiche", "custom keyword", is_seed=False
+        )
+        # User edit on a niche that ALSO has the same name as a seed niche:
+        # the user added their own keyword under "Survival".
+        insert_niche_if_not_exists(
+            db_session, "Survival", "user-added survival kw", is_seed=False
+        )
+        db_session.commit()
+
+        # Wipe a seed row to prove reset_defaults restores it.
+        deleted = db_session.query(Niche).filter(
+            Niche.niche_name == "Survival",
+            Niche.keyword == "Bushcraft",
+        ).delete()
+        db_session.commit()
+        assert deleted == 1
+
+        stats = reset_niches_to_defaults(db_session)
+        db_session.commit()
+
+        # The previously-deleted seed keyword is back.
+        restored = db_session.query(Niche).filter(
+            Niche.niche_name == "Survival",
+            Niche.keyword == "Bushcraft",
+        ).one()
+        assert restored.is_seed is True or restored.is_seed == 1
+
+        # User-created niche is still there and still user-owned.
+        user_row = db_session.query(Niche).filter(
+            Niche.niche_name == "MyCustomNiche",
+            Niche.keyword == "custom keyword",
+        ).one()
+        assert user_row.is_seed is False or user_row.is_seed == 0
+
+        # User-added keyword on a seed niche is still there and still user-owned.
+        user_kw = db_session.query(Niche).filter(
+            Niche.niche_name == "Survival",
+            Niche.keyword == "user-added survival kw",
+        ).one()
+        assert user_kw.is_seed is False or user_kw.is_seed == 0
+
+        # Seed/user totals reconcile.
+        seed_count = db_session.query(Niche).filter(Niche.is_seed == True).count()  # noqa: E712
+        user_count = db_session.query(Niche).filter(Niche.is_seed == False).count()  # noqa: E712
+        assert seed_count == _expected_seed_count()
+        assert user_count == 2
+        assert stats["inserted"] >= 1  # at minimum the wiped seed row
+
