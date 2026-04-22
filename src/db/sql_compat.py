@@ -14,7 +14,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from sqlalchemy import func, and_, exists, text
+from sqlalchemy import func, and_, text
 from sqlalchemy.orm import Session
 
 from src.db.models import (
@@ -88,22 +88,21 @@ def upsert_scrape_log(session: Session, platform, identifier, status, extracted_
 def is_duplicate_trend(session: Session, platform_id, topic, keyword, geo) -> bool:
     """Check if a trend already exists today.
 
-    Uses an EXISTS subquery instead of loading the full row, which is
-    significantly faster on large tables — the DB can stop scanning as
-    soon as it finds one matching row.
+    Uses ``LIMIT 1`` (``TOP 1`` on SQL Server) instead of loading the full
+    row. We avoid ``SELECT EXISTS(...)`` because Azure SQL / T-SQL does not
+    allow ``EXISTS`` as a top-level select expression — it only works inside
+    a ``WHERE``/``CASE``. ``.first() is not None`` works on every dialect.
     """
     today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    return session.query(
-        exists().where(
-            and_(
-                Trend.platform_id == platform_id,
-                Trend.topic == topic,
-                Trend.keyword == keyword,
-                Trend.geo == geo,
-                Trend.extracted_at > today,
-            )
+    return session.query(Trend.id).filter(
+        and_(
+            Trend.platform_id == platform_id,
+            Trend.topic == topic,
+            Trend.keyword == keyword,
+            Trend.geo == geo,
+            Trend.extracted_at > today,
         )
-    ).scalar()
+    ).first() is not None
 
 
 # ---------------------------------------------------------------------------
@@ -111,17 +110,18 @@ def is_duplicate_trend(session: Session, platform_id, topic, keyword, geo) -> bo
 # ---------------------------------------------------------------------------
 
 def insert_niche_if_not_exists(session: Session, niche_name, keyword, is_seed: bool = False):
-    """Insert a niche keyword if it doesn't exist (uses EXISTS check).
+    """Insert a niche keyword if it doesn't exist.
 
     Existing rows are never modified — this preserves any user edits to
     ``is_seed`` and other columns. Pass ``is_seed=True`` only when seeding
     from ``NICHE_SEED_KEYWORDS``.
+
+    Uses ``.first() is not None`` rather than ``SELECT EXISTS(...)`` because
+    T-SQL/Azure SQL doesn't accept ``EXISTS`` as a top-level select expression.
     """
-    already = session.query(
-        exists().where(
-            and_(Niche.niche_name == niche_name, Niche.keyword == keyword)
-        )
-    ).scalar()
+    already = session.query(Niche.id).filter(
+        and_(Niche.niche_name == niche_name, Niche.keyword == keyword)
+    ).first() is not None
     if not already:
         session.add(Niche(niche_name=niche_name, keyword=keyword, is_seed=bool(is_seed)))
 
@@ -133,22 +133,28 @@ def seed_niches(session: Session) -> int:
     does not already exist. Never updates existing rows, so user edits and
     user-created niches are preserved across restarts.
 
+    Uses one bulk SELECT to fetch existing pairs instead of N ``EXISTS``
+    queries — faster and avoids the T-SQL ``SELECT EXISTS(...)`` syntax
+    error on Azure SQL.
+
     Returns the number of newly inserted rows.
     """
     # Local import to avoid a circular import at module load time.
     from src.niche.niche_discovery import NICHE_SEED_KEYWORDS
 
+    existing = {
+        (row.niche_name, row.keyword)
+        for row in session.query(Niche.niche_name, Niche.keyword).all()
+    }
+
     inserted = 0
     for niche_name, keywords in NICHE_SEED_KEYWORDS.items():
         for kw in keywords:
-            already = session.query(
-                exists().where(
-                    and_(Niche.niche_name == niche_name, Niche.keyword == kw)
-                )
-            ).scalar()
-            if not already:
-                session.add(Niche(niche_name=niche_name, keyword=kw, is_seed=True))
-                inserted += 1
+            if (niche_name, kw) in existing:
+                continue
+            session.add(Niche(niche_name=niche_name, keyword=kw, is_seed=True))
+            existing.add((niche_name, kw))
+            inserted += 1
     return inserted
 
 

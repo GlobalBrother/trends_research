@@ -107,9 +107,7 @@ class _JSONEncoder(json.JSONEncoder):
             )
             return obj.tolist()
         if isinstance(obj, (datetime, pd.Timestamp)):
-            logger.warning(
-                "_JSONEncoder fallback: datetime/Timestamp slipped past response_model",
-            )
+            # Datetime values are expected here for DataFrame payloads; no warning.
             return obj.isoformat()
         if isinstance(obj, set):
             logger.warning("_JSONEncoder fallback: set slipped past response_model")
@@ -127,6 +125,11 @@ class _JSONEncoder(json.JSONEncoder):
 def _sanitize(df: pd.DataFrame) -> list[dict]:
     """Replace NaN/Inf and serialize a DataFrame to JSON-safe records."""
     df = df.copy()
+    # Convert any datetime-like columns to ISO 8601 strings so they don't
+    # round-trip through the _JSONEncoder fallback path.
+    for col in df.columns:
+        if pd.api.types.is_datetime64_any_dtype(df[col]):
+            df[col] = df[col].dt.strftime("%Y-%m-%dT%H:%M:%S")
     df = df.fillna("")
     df = df.replace([float("inf"), float("-inf")], None)
     records = df.to_dict(orient="records")
