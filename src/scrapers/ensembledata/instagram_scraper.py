@@ -10,24 +10,34 @@ import logging
 import os
 import re
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
-from dotenv import load_dotenv
 from ensembledata.api import EDClient
 from ensembledata.api.errors import EDError
 
 logger = logging.getLogger(__name__)
 
-sys.path.insert(0, os.path.dirname(__file__))
-from db_helper import save_trend, save_error, save_token_usage, save_content_normalized
-
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".env"))
+sys.path.insert(0, os.path.dirname(__file__))
+from db_helper import (
+    archive_source_response,
+    save_trend,
+    save_error,
+    save_token_usage,
+    save_content_normalized,
+)
+from src.ingestion import IngestionService
+from src.runtime.secrets import init_runtime_secrets
+
+init_runtime_secrets()
 
 PLATFORM = "Instagram"
+ingestion = IngestionService()
 
 
 def _save_instagram_post(item: dict, keyword: str, geo: str):
@@ -104,16 +114,29 @@ def scrape_instagram(keywords, geo="Global"):
         return
 
     client = EDClient(token=token)
+    stop_event = threading.Event()
+    run = ingestion.start_run(PLATFORM, acquisition_mode="api", country=geo, language="en")
 
-    for kw in keywords:
+    def _scrape_keyword(kw):
+        if stop_event.is_set():
+            return
         try:
-            result = client.instagram.search(text=kw)
+            result = ingestion.with_retry(
+                PLATFORM,
+                lambda: client.instagram.search(text=kw),
+                run=run,
+                payload_hint={"keyword": kw, "geo": geo},
+            )
             raw = result.data or {}
+            archive_source_response(
+                PLATFORM,
+                raw,
+                metadata={"keyword": kw, "geo": geo, "units_charged": result.units_charged},
+            )
 
             items = []
 
             if isinstance(raw, dict):
-                # --- hashtags ---
                 for entry in raw.get("hashtags", []):
                     ht = entry.get("hashtag", entry) if isinstance(entry, dict) else entry
                     if not isinstance(ht, dict):
@@ -127,7 +150,6 @@ def scrape_instagram(keywords, geo="Global"):
                         "_raw": entry,
                     })
 
-                # --- users ---
                 for entry in raw.get("users", []):
                     usr = entry.get("user", entry) if isinstance(entry, dict) else entry
                     if not isinstance(usr, dict):
@@ -142,7 +164,6 @@ def scrape_instagram(keywords, geo="Global"):
                         "_raw": entry,
                     })
 
-                # --- places ---
                 for entry in raw.get("places", []):
                     pl = entry.get("place", entry) if isinstance(entry, dict) else entry
                     if not isinstance(pl, dict):
@@ -163,16 +184,15 @@ def scrape_instagram(keywords, geo="Global"):
                     items = raw.get("items", []) or raw.get("results", []) or []
             elif isinstance(raw, list):
                 items = raw
+            run.fetched_count += len(items)
 
             count = 0
             for item in items[:50]:
-                # --- save to normalized content tables ---
                 try:
                     _save_instagram_post(item, keyword=kw, geo=geo)
                 except Exception:
                     logger.error("Failed saving instagram content for kw=%s", kw, exc_info=True)
 
-                # --- save to shared trends table for dashboard ---
                 user = item.get("user", {}) or {}
                 username = user.get("username", "")
                 caption = ""
@@ -201,22 +221,41 @@ def scrape_instagram(keywords, geo="Global"):
                         "username": username, "shortcode": shortcode,
                         "type": item.get("_type", "post"),
                     },
+                    entity_type="post",
+                    entity_id=str(item.get("pk") or shortcode or topic[:64]),
+                    sampled_content_refs=[{
+                        "id": str(item.get("pk") or ""),
+                        "url": url,
+                        "title": topic[:250],
+                        "snippet": caption[:280],
+                    }],
+                    fetch_metadata={"keyword": kw, "granularity": "day"},
+                    raw_payload=item,
+                    run=run,
                 )
                 count += 1
 
             logger.info("Saved %d items for '%s' (units charged: %s)", count, kw, result.units_charged)
             if result.units_charged:
                 save_token_usage(PLATFORM, kw, result.units_charged, geo)
+                run.quota_usage += float(result.units_charged)
 
         except EDError as e:
-            save_error(PLATFORM, kw, None, 0, str(e))
+            save_error(PLATFORM, kw, None, 0, str(e), payload={"keyword": kw, "geo": geo}, run=run)
             if e.status_code == 495:
                 logger.warning("Daily API limit reached. Stopping Instagram scraper.")
-                break
-            logger.error("Error for '%s': %s", kw, e, exc_info=True)
+                stop_event.set()
+            else:
+                logger.error("Error for '%s': %s", kw, e, exc_info=True)
         except Exception as e:
-            save_error(PLATFORM, kw, None, 0, str(e))
+            save_error(PLATFORM, kw, None, 0, str(e), payload={"keyword": kw, "geo": geo}, run=run)
             logger.error("Error for '%s': %s", kw, e, exc_info=True)
+
+    try:
+        with ThreadPoolExecutor(max_workers=min(len(keywords), 4)) as pool:
+            list(pool.map(_scrape_keyword, keywords))
+    finally:
+        ingestion.finish_run(run)
 
 
 if __name__ == "__main__":

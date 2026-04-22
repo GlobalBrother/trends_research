@@ -1,0 +1,17 @@
+{
+  "source": "HackerNews",
+  "acquisition_mode": "api",
+  "schedule": "hourly",
+  "backfill_window_hours": 72,
+  "granularity": "hour",
+  "geo_matrix": ["Global"],
+  "language_matrix": ["en"],
+  "pagination": {
+    "strategy": "topstories_plus_search",
+    "persist_cursor": false,
+    "cursor_scope": []
+  },
+  "rate_limit": {
+    "retry_times": 3
+  }
+}

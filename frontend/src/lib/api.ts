@@ -7,9 +7,18 @@
 import axios, { type AxiosInstance } from "axios";
 
 const client: AxiosInstance = axios.create({
-  baseURL: "/api",
-  timeout: 60_000,
+  baseURL: import.meta.env.VITE_API_BASE_URL ?? "",
+  timeout: 120_000,
   headers: { "Content-Type": "application/json" },
+});
+
+// Automatically attach auth token to every request
+client.interceptors.request.use((config) => {
+  const token = localStorage.getItem("auth_token");
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
 });
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -65,14 +74,164 @@ export interface AdsInsightRow {
   age_audience_max?: number;
   gender_audience?: string;
   eu_total_reach?: number;
+  ad_spend_range_score?: number;
+  ad_spend_range_score_title?: string;
   brand_name?: string;
   brand_logo_url?: string;
   brand_active_ads?: number;
   media?: string;
+  ad_cards?: string;
   share_url?: string;
   search_keyword?: string;
   extracted_at?: string;
   [key: string]: unknown;
+}
+
+export interface AdsInsightParams {
+  niche_name?: string;
+  geo?: string;
+  limit?: number;
+  offset?: number;
+  date_from?: string;
+  date_to?: string;
+  platform_filter?: string;
+  format_filter?: string;
+  keyword_filter?: string;
+  brand_filter?: string;
+  perf_filter?: string;
+  sort_by?: string;
+  sort_dir?: string;
+}
+
+export interface AdsInsightFilters {
+  platforms: string[];
+  formats: string[];
+  keywords: string[];
+  performance_tiers: string[];
+  brands: string[];
+  date_range: { min: string | null; max: string | null };
+}
+
+export interface ClusterRow {
+  id: number;
+  cluster_key: string;
+  title: string;
+  keywords: string[];
+  platforms: string[];
+  primary_platform?: string;
+  first_seen?: string;
+  last_seen?: string;
+  lifecycle_stage: string;
+  confidence_score: number;
+  freshness_score: number;
+  source_confidence: number;
+  trend_strength: number;
+  quality_score: number;
+  ad_opportunity_score?: number | null;
+  audience_intent?: string | null;
+  timing_window?: string | null;
+  brand_safety_risk?: number | null;
+  saturation_risk?: number | null;
+}
+
+export interface ClusterDetail extends ClusterRow {
+  explanation: Record<string, unknown>;
+  insight: null | {
+    ad_opportunity_score: number;
+    audience_intent: string;
+    creative_angle_candidates: string[];
+    platform_fit: Array<{ platform: string; supporting_signals: number; linked_ads: number; fit_score: number }>;
+    ad_timing_window: string;
+    saturation_risk: number;
+    brand_safety_risk: number;
+    monetization_potential: number;
+    explanation: Record<string, unknown>;
+  };
+  feedback_summary: {
+    count: number;
+    avg_rating: number | null;
+    useful_votes: number;
+  };
+}
+
+export interface ClusterSignal {
+  id: number;
+  platform: string;
+  topic: string;
+  keyword: string;
+  geo: string;
+  signal_timestamp: string;
+  volume: number;
+  growth: number;
+  engagement: number;
+  sentiment: number;
+  freshness: number;
+  source_confidence: number;
+  quality_flags: string[];
+}
+
+export interface ClusterAdMatch {
+  match_score: number;
+  match_reason: Record<string, number>;
+  ad: {
+    id: number;
+    brand_name?: string;
+    platform?: string;
+    display_format?: string;
+    title?: string;
+    body?: string;
+    cta_type?: string;
+    performance_score?: number;
+    performance_score_title?: string;
+    days_active?: number;
+    share_url?: string;
+  };
+}
+
+export interface GeneratedReport {
+  id: number;
+  report_type: string;
+  title: string;
+  cluster_id?: number | null;
+  content: Record<string, unknown>;
+  created_at?: string;
+}
+
+export interface BacktestRun {
+  id: number;
+  run_label: string;
+  window_start?: string;
+  window_end?: string;
+  total_clusters: number;
+  matched_clusters: number;
+  avg_opportunity_score: number;
+  precision_proxy: number;
+  recall_proxy: number;
+  summary: Record<string, unknown>;
+  created_at?: string;
+}
+
+export interface MonitoringSnapshot {
+  generated_at: string;
+  total_trends: number;
+  duplicate_count: number;
+  missing_geo_count: number;
+  missing_timestamp_count: number;
+  stale_platforms: string[];
+  platforms: Array<{
+    platform: string;
+    trend_count: number;
+    duplicate_rate: number;
+    missing_geo_rate: number;
+    missing_timestamp_rate: number;
+    last_seen?: string;
+    stale_hours?: number | null;
+    freshness_score: number;
+    source_confidence: number;
+    scrape_error_count_7d: number;
+    api_units_7d: number;
+    api_requests_7d: number;
+  }>;
 }
 
 export interface TokenUsageRow {
@@ -91,6 +250,26 @@ export interface TokenUsageSummary {
   provider?: string;
 }
 
+export interface ScrapeRun {
+  id: number;
+  source: string;
+  acquisition_mode: string;
+  country: string | null;
+  category: string | null;
+  status: string;
+  fetched_count: number;
+  parsed_count: number;
+  inserted_count: number;
+  failed_count: number;
+  quota_usage: number;
+  latency_ms: number;
+  alert_state: string;
+  started_at: string;
+  finished_at: string | null;
+  summary: any | null;
+  errors: Record<string, number> | null;
+}
+
 export interface AzureStatus {
   connected: boolean;
   tables?: Record<string, number | string>;
@@ -105,6 +284,14 @@ export interface ScrapeRequest {
   category?: number;
   scraper_type?: string;
 }
+
+// ─── Auth helpers ───────────────────────────────────────────────────────────
+
+/** Get the current user's role from localStorage */
+export const getUserRole = (): string => localStorage.getItem("auth_role") || "trends";
+
+/** Check if the current user is an admin */
+export const isAdmin = (): boolean => getUserRole() === "admin";
 
 // ─── API Functions ───────────────────────────────────────────────────────────
 
@@ -143,8 +330,8 @@ export const getTrendingNow = (params?: { geo?: string; trend_type?: string }) =
   client.get<{ data: TrendRow[] }>("/trending_now", { params });
 
 /** Get all trends (all platforms) */
-export const getAllTrends = () =>
-  client.get<{ data: TrendRow[] }>("/all_trends");
+export const getAllTrends = (geo?: string) =>
+  client.get<{ data: TrendRow[] }>("/all_trends", { params: { geo } });
 
 /** Platform-specific trends */
 export const getYoutubeTrends = (params?: { niche_name?: string; geo?: string }) =>
@@ -176,8 +363,12 @@ export const getThreadsPosts = (params?: { niche_name?: string; geo?: string; li
   client.get<{ data: ContentRow[] }>("/threads_posts", { params });
 
 /** Ads insight */
-export const getAdsInsight = (params?: { niche_name?: string; geo?: string; limit?: number }) =>
-  client.get<{ data: AdsInsightRow[] }>("/ads_insight", { params });
+export const getAdsInsight = (params?: AdsInsightParams) =>
+  client.get<{ data: AdsInsightRow[]; total: number }>("/ads_insight", { params });
+
+/** Ads insight filter options */
+export const getAdsInsightFilters = () =>
+  client.get<AdsInsightFilters>("/ads_insight/filters");
 
 /** Trigger scraping */
 export const triggerScrape = (body: ScrapeRequest) =>
@@ -187,9 +378,68 @@ export const triggerScrape = (body: ScrapeRequest) =>
 export const triggerAdsScrape = (keywords: string, max_pages?: number) =>
   client.post<{ message: string }>("/scrape_ads", null, { params: { keywords, max_pages } });
 
+/** Canonical schemas */
+export const getCanonicalSchemas = () =>
+  client.get<Record<string, unknown>>("/schemas/canonical");
+
+/** Monitoring snapshot */
+export const getPlatformHealth = (force_refresh = false) =>
+  client.get<MonitoringSnapshot>("/monitoring/platform_health", { params: { force_refresh } });
+
+/** Cluster insights */
+export const refreshClusters = () =>
+  client.post<{ message: string }>("/clusters/refresh");
+
+export const getClusters = (params?: { stage?: string; platform?: string; niche_name?: string; date?: string; limit?: number; force_refresh?: boolean }) =>
+  client.get<{ data: ClusterRow[]; example_response?: Record<string, unknown> }>("/clusters", { params });
+
+export const getCluster = (clusterId: number, force_refresh = false) =>
+  client.get<ClusterDetail>(`/clusters/${clusterId}`, { params: { force_refresh } });
+
+export const getClusterSignals = (clusterId: number) =>
+  client.get<{ data: ClusterSignal[] }>(`/clusters/${clusterId}/signals`);
+
+export const getClusterAds = (clusterId: number, limit = 10) =>
+  client.get<{ data: ClusterAdMatch[] }>(`/clusters/${clusterId}/ads`, { params: { limit } });
+
+export const getClusterEvidence = (clusterId: number) =>
+  client.get<{
+    cluster_id: number;
+    brands: [string, number][];
+    formats: [string, number][];
+    ctas: [string, number][];
+    insight_components: Record<string, number>;
+  }>(`/clusters/${clusterId}/evidence`);
+
+export const submitClusterFeedback = (
+  clusterId: number,
+  body: { useful: boolean; rating?: number | null; used_in_campaign?: boolean; outcome?: string; notes?: string }
+) => client.post<{ message: string }>(`/clusters/${clusterId}/feedback`, body);
+
+/** Reports + backtests */
+export const getGeneratedReports = (force_refresh = false) =>
+  client.get<{ data: GeneratedReport[] }>("/reports/generated", { params: { force_refresh } });
+
+export const generateReports = () =>
+  client.post<{ message: string }>("/reports/generate");
+
+export const getBacktests = (force_refresh = false) =>
+  client.get<{ data: BacktestRun[] }>("/backtests", { params: { force_refresh } });
+
+/** Test scraper connectivity */
+export const testScraper = (platform: string) =>
+  client.get<{ ok: boolean; message: string }>(`/test_scraper/${platform}`);
+
 /** Scrape errors */
 export const getScrapeErrors = (platform?: string) =>
   client.get<{ data: unknown[] }>("/scrape_errors", { params: platform ? { platform } : {} });
+
+export const getScrapeRuns = (params: {
+  source?: string;
+  status?: string;
+  limit?: number;
+  offset?: number;
+}) => client.get<{ total: number; limit: number; offset: number; items: ScrapeRun[] }>("/admin/scrape-runs", { params });
 
 export const clearScrapeErrors = () => client.delete("/scrape_errors");
 
@@ -222,5 +472,104 @@ export const triggerMigration = () =>
 
 export const triggerDiagnose = () =>
   client.get<{ checks: { name: string; passed: boolean; detail?: string }[] }>("/admin/azure/diagnose");
+
+// ─── My Brands ──────────────────────────────────────────────────────────────
+
+export interface MyBrandRow {
+  id: number;
+  brand_name: string;
+  brand_external_id?: string;
+  brand_logo_url?: string;
+  brand_active_ads?: number;
+  added_at?: string;
+}
+
+export interface MyBrandAdsParams {
+  limit?: number;
+  offset?: number;
+  brand_name?: string;
+  geo?: string;
+  date_from?: string;
+  date_to?: string;
+  platform_filter?: string;
+  sort_by?: string;
+  sort_dir?: string;
+}
+
+/** List tracked brands */
+export const getMyBrands = () =>
+  client.get<{ data: MyBrandRow[] }>("/my_brands");
+
+/** Add a brand to track */
+export const addMyBrand = (body: {
+  brand_name: string;
+  brand_external_id?: string;
+  brand_logo_url?: string;
+  brand_active_ads?: number;
+}) => client.post<{ message: string; id: number }>("/my_brands", body);
+
+/** Remove a tracked brand */
+export const removeMyBrand = (brandId: number) =>
+  client.delete("/my_brands/" + brandId);
+
+/** Get ads for tracked brands */
+export const getMyBrandAds = (params?: MyBrandAdsParams) =>
+  client.get<{ data: AdsInsightRow[]; total: number; tracked_brands: string[] }>("/my_brands/ads", { params });
+
+/** Refresh ads for all tracked brands */
+export const refreshMyBrandAds = () =>
+  client.post<{ message: string }>("/my_brands/refresh");
+
+/** Search brands via GetHooked */
+export const searchBrands = (query: string) =>
+  client.get<{ data: { external_id: string; name: string; logo_url?: string; active_ads?: number }[] }>("/search_brands", { params: { query } });
+
+// ─── Auth ──────────────────────────────────────────────────────────────────
+
+export interface AuthUser {
+  email: string;
+  role: string;
+  created_at?: string;
+}
+
+/** Request OTP for login */
+export const requestOtp = (email: string) =>
+  client.post<{ message: string; email: string }>("/auth/request_otp", null, { params: { email } });
+
+/** Verify OTP and get auth token */
+export const verifyOtp = (email: string, code: string) =>
+  client.post<{ message: string; email: string; role: string; token: string }>("/auth/verify_otp", null, { params: { email, code } });
+
+/** Validate an existing auth token */
+export const validateToken = (token: string) =>
+  client.get<{ email: string; role: string }>("/auth/validate_token", { params: { token } });
+
+/** List all whitelisted users */
+export const listUsers = () =>
+  client.get<AuthUser[]>("/auth/users");
+
+/** Add a whitelisted user */
+export const addUser = (email: string, role: string = "trends") =>
+  client.post<{ message: string; email: string; role: string }>("/auth/users", { email, role });
+
+/** Update a user's role */
+export const updateUserRole = (email: string, role: string) =>
+  client.put<{ message: string; email: string; role: string }>("/auth/users", null, { params: { email, role } });
+
+/** Delete a whitelisted user */
+export const deleteUser = (email: string) =>
+  client.delete<{ message: string; email: string }>("/auth/users", { params: { email } });
+
+// ─── Import Tokens ─────────────────────────────────────────────────────────
+
+/** Import Google Trends JSON tokens file */
+export const importTokens = (file: File, geo: string = "US") => {
+  const formData = new FormData();
+  formData.append("file", file);
+  return client.post<{ message: string }>("/import_tokens", formData, {
+    params: { geo },
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+};
 
 export default client;

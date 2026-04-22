@@ -167,6 +167,9 @@ class Trend(Base):
         # Composite index for the duplicate-check query:
         # WHERE platform_id=? AND topic=? AND keyword=? AND geo=? AND extracted_at>?
         Index("idx_trends_dedup", "platform_id", "keyword", "geo", "extracted_at"),
+        # Covering index for the main API query:
+        # WHERE platform_id IN (...) AND geo=? ORDER BY extracted_at DESC
+        Index("idx_trends_api_query", "platform_id", "geo", "extracted_at"),
     )
 
 
@@ -282,6 +285,23 @@ class Niche(Base):
     )
 
 
+class MyBrand(Base):
+    """Brands the user is tracking via GetHooked Brand Spy."""
+    __tablename__ = "my_brands"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    brand_name = Column(Text, nullable=False)
+    brand_external_id = Column(Text)
+    brand_logo_url = Column(Text)
+    brand_active_ads = Column(Integer, default=0)
+    added_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_mybrand_name", "brand_name"),
+        Index("idx_mybrand_external", "brand_external_id"),
+    )
+
+
 class AdsInsight(Base):
     __tablename__ = "ads_insight"
 
@@ -325,4 +345,300 @@ class AdsInsight(Base):
         Index("idx_ads_keyword", "search_keyword"),
         Index("idx_ads_extracted", "extracted_at"),
         Index("idx_ads_hookd_id", "hookd_id"),
+    )
+
+
+class TrendCluster(Base):
+    __tablename__ = "trend_clusters"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cluster_key = Column(String(255), nullable=False, unique=True)
+    title = Column(Text, nullable=False)
+    cluster_keywords = Column(Text)
+    platforms = Column(Text)
+    primary_platform = Column(String(100))
+    first_seen = Column(DateTime, nullable=False)
+    last_seen = Column(DateTime, nullable=False)
+    lifecycle_stage = Column(String(32), nullable=False, default="watchlist")
+    confidence_score = Column(Float, nullable=False, default=0.0)
+    freshness_score = Column(Float, nullable=False, default=0.0)
+    source_confidence = Column(Float, nullable=False, default=0.0)
+    trend_strength = Column(Float, nullable=False, default=0.0)
+    quality_score = Column(Float, nullable=False, default=0.0)
+    source_count = Column(Integer, nullable=False, default=0)
+    signal_count = Column(Integer, nullable=False, default=0)
+    geo_coverage = Column(Integer, nullable=False, default=0)
+    explanation_json = Column(Text)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_cluster_stage", "lifecycle_stage"),
+        Index("idx_cluster_last_seen", "last_seen"),
+        Index("idx_cluster_primary_platform", "primary_platform"),
+        {"implicit_returning": False},
+    )
+
+
+class TrendSignal(Base):
+    __tablename__ = "trend_signals"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cluster_id = Column(Integer, ForeignKey("trend_clusters.id"), nullable=False)
+    source_trend_id = Column(Integer, ForeignKey("trends.id"))
+    platform = Column(String(100), nullable=False)
+    topic = Column(Text)
+    keyword = Column(Text)
+    geo = Column(Text)
+    signal_timestamp = Column(DateTime, nullable=False)
+    volume = Column(Float, nullable=False, default=0.0)
+    growth = Column(Float, nullable=False, default=0.0)
+    engagement = Column(Float, nullable=False, default=0.0)
+    sentiment = Column(Float, nullable=False, default=0.0)
+    freshness = Column(Float, nullable=False, default=0.0)
+    source_confidence = Column(Float, nullable=False, default=0.0)
+    quality_flags = Column(Text)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_signal_cluster", "cluster_id"),
+        Index("idx_signal_platform", "platform"),
+        Index("idx_signal_timestamp", "signal_timestamp"),
+        {"implicit_returning": False},
+    )
+
+
+class TrendInsight(Base):
+    __tablename__ = "trend_insights"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cluster_id = Column(Integer, ForeignKey("trend_clusters.id"), nullable=False, unique=True)
+    ad_opportunity_score = Column(Float, nullable=False, default=0.0)
+    trend_strength = Column(Float, nullable=False, default=0.0)
+    confidence_score = Column(Float, nullable=False, default=0.0)
+    audience_intent = Column(Text)
+    creative_angle_candidates = Column(Text)
+    platform_fit = Column(Text)
+    ad_timing_window = Column(Text)
+    saturation_risk = Column(Float, nullable=False, default=0.0)
+    brand_safety_risk = Column(Float, nullable=False, default=0.0)
+    monetization_potential = Column(Float, nullable=False, default=0.0)
+    commercial_relevance = Column(Float, nullable=False, default=0.0)
+    audience_signal = Column(Float, nullable=False, default=0.0)
+    creative_reusability = Column(Float, nullable=False, default=0.0)
+    explanation_json = Column(Text)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_insight_score", "ad_opportunity_score"),
+        Index("idx_insight_confidence", "confidence_score"),
+        {"implicit_returning": False},
+    )
+
+
+class TrendAdMatch(Base):
+    __tablename__ = "trend_ad_matches"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cluster_id = Column(Integer, ForeignKey("trend_clusters.id"), nullable=False)
+    ads_insight_id = Column(Integer, ForeignKey("ads_insight.id"), nullable=False)
+    match_score = Column(Float, nullable=False, default=0.0)
+    match_reason = Column(Text)
+    matched_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_match_cluster", "cluster_id"),
+        Index("idx_match_ad", "ads_insight_id"),
+        Index("idx_match_score", "match_score"),
+        {"implicit_returning": False},
+    )
+
+
+class InsightFeedback(Base):
+    __tablename__ = "insight_feedback"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cluster_id = Column(Integer, ForeignKey("trend_clusters.id"), nullable=False)
+    insight_id = Column(Integer, ForeignKey("trend_insights.id"))
+    useful = Column(Integer, nullable=False, default=0)
+    rating = Column(Integer)
+    used_in_campaign = Column(Integer, nullable=False, default=0)
+    outcome = Column(Text)
+    notes = Column(Text)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_feedback_cluster", "cluster_id"),
+        Index("idx_feedback_insight", "insight_id"),
+        {"implicit_returning": False},
+    )
+
+
+class BacktestRun(Base):
+    __tablename__ = "backtest_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_label = Column(String(255), nullable=False)
+    window_start = Column(DateTime)
+    window_end = Column(DateTime)
+    total_clusters = Column(Integer, nullable=False, default=0)
+    matched_clusters = Column(Integer, nullable=False, default=0)
+    avg_opportunity_score = Column(Float, nullable=False, default=0.0)
+    precision_proxy = Column(Float, nullable=False, default=0.0)
+    recall_proxy = Column(Float, nullable=False, default=0.0)
+    summary_json = Column(Text)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_backtest_created", "created_at"),
+        {"implicit_returning": False},
+    )
+
+
+class ReportBrief(Base):
+    __tablename__ = "report_briefs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    report_type = Column(String(64), nullable=False)
+    title = Column(Text, nullable=False)
+    cluster_id = Column(Integer, ForeignKey("trend_clusters.id"))
+    content_json = Column(Text)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_report_type", "report_type"),
+        Index("idx_report_created", "created_at"),
+        {"implicit_returning": False},
+    )
+
+
+class CanonicalTrendSignal(Base):
+    __tablename__ = "canonical_trend_signals"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source = Column(String(100), nullable=False)
+    entity_type = Column(String(64), nullable=False)
+    entity_id = Column(String(255), nullable=False)
+    label = Column(Text, nullable=False)
+    normalized_label = Column(Text, nullable=False)
+    country = Column(String(32))
+    language = Column(String(32))
+    time_bucket_start = Column(DateTime, nullable=False)
+    granularity = Column(String(32), nullable=False, default="hour")
+    volume = Column(Float)
+    growth_rate = Column(Float)
+    rank = Column(Integer)
+    engagement = Column(Float)
+    velocity = Column(Float)
+    sampled_content_refs = Column(Text)
+    retrieved_at = Column(DateTime, nullable=False)
+    fetch_metadata = Column(Text)
+    idempotency_key = Column(String(128), nullable=False, unique=True)
+    source_confidence = Column(Float, nullable=False, default=0.0)
+    freshness_score = Column(Float, nullable=False, default=0.0)
+    evidence_count = Column(Integer, nullable=False, default=0)
+    legacy_trend_id = Column(Integer, ForeignKey("trends.id"))
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_canonical_source_bucket", "source", "time_bucket_start"),
+        Index("idx_canonical_entity", "source", "entity_id"),
+        Index("idx_canonical_country", "country"),
+        Index("idx_canonical_idempotency", "idempotency_key"),
+    )
+
+
+class TrendEvidence(Base):
+    __tablename__ = "trend_evidence"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    signal_id = Column(Integer, ForeignKey("canonical_trend_signals.id"), nullable=False)
+    content_id = Column(Integer, ForeignKey("content.id"))
+    evidence_type = Column(String(64), nullable=False, default="content_ref")
+    external_ref = Column(Text)
+    url = Column(Text)
+    title = Column(Text)
+    snippet = Column(Text)
+    metadata_json = Column(Text)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("idx_evidence_signal", "signal_id"),
+        Index("idx_evidence_content", "content_id"),
+    )
+
+
+class SourceCursor(Base):
+    __tablename__ = "source_cursors"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source = Column(String(100), nullable=False)
+    country = Column(String(32))
+    language = Column(String(32))
+    category = Column(String(100))
+    cursor_value = Column(Text)
+    response_hash = Column(String(128))
+    last_seen_entity_id = Column(String(255))
+    last_success_at = Column(DateTime)
+    updated_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("source", "country", "language", "category", name="uq_source_cursor_scope"),
+        Index("idx_cursor_source", "source"),
+    )
+
+
+class ScrapeRun(Base):
+    __tablename__ = "scrape_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source = Column(String(100), nullable=False)
+    acquisition_mode = Column(String(32), nullable=False)
+    country = Column(String(32))
+    language = Column(String(32))
+    category = Column(String(100))
+    status = Column(String(32), nullable=False, default="running")
+    fetched_count = Column(Integer, nullable=False, default=0)
+    parsed_count = Column(Integer, nullable=False, default=0)
+    inserted_count = Column(Integer, nullable=False, default=0)
+    deduped_count = Column(Integer, nullable=False, default=0)
+    skipped_count = Column(Integer, nullable=False, default=0)
+    failed_count = Column(Integer, nullable=False, default=0)
+    duplicate_ratio = Column(Float, nullable=False, default=0.0)
+    quota_usage = Column(Float, nullable=False, default=0.0)
+    latency_ms = Column(Float, nullable=False, default=0.0)
+    top_error_types = Column(Text)
+    stale_window_hours = Column(Float, nullable=False, default=0.0)
+    alert_state = Column(String(32), nullable=False, default="ok")
+    summary_json = Column(Text)
+    started_at = Column(DateTime, nullable=False, server_default=func.now())
+    finished_at = Column(DateTime)
+
+    __table_args__ = (
+        Index("idx_scrape_run_source_started", "source", "started_at"),
+        Index("idx_scrape_run_status", "status"),
+    )
+
+
+class ScrapeDeadLetter(Base):
+    __tablename__ = "scrape_dead_letters"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source = Column(String(100), nullable=False)
+    scrape_run_id = Column(Integer, ForeignKey("scrape_runs.id"))
+    cursor_key = Column(Text)
+    payload_ref = Column(Text)
+    error_type = Column(String(128), nullable=False)
+    error_message = Column(Text)
+    retry_count = Column(Integer, nullable=False, default=0)
+    status = Column(String(32), nullable=False, default="pending")
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    resolved_at = Column(DateTime)
+
+    __table_args__ = (
+        Index("idx_dead_letter_source", "source"),
+        Index("idx_dead_letter_status", "status"),
+        Index("idx_dead_letter_run", "scrape_run_id"),
     )

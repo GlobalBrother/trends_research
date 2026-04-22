@@ -1,0 +1,19 @@
+{
+  "source": "GetHookdAI",
+  "acquisition_mode": "api",
+  "provider": "GetHookdAI",
+  "schedule": "daily",
+  "backfill_window_hours": 168,
+  "granularity": "day",
+  "geo_matrix": ["Global"],
+  "language_matrix": ["en"],
+  "pagination": {
+    "strategy": "page",
+    "persist_cursor": true,
+    "cursor_scope": ["keyword"]
+  },
+  "rate_limit": {
+    "retry_http_codes": [429],
+    "credit_exhausted_status": 402
+  }
+}

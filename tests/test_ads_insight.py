@@ -2,7 +2,6 @@
 
 import json
 import os
-import sqlite3
 
 import pytest
 from unittest.mock import patch, MagicMock
@@ -81,15 +80,15 @@ class TestSaveAd:
         """Create a temp SQLite DB with ads_insight table via ORM and return session factory."""
         from sqlalchemy import create_engine
         from sqlalchemy.orm import sessionmaker
-        from src.db.models import Base
+        from src.db.models import AdsInsight, Base
         db_file = str(tmp_path / "test.db")
         engine = create_engine(f"sqlite:///{db_file}")
         Base.metadata.create_all(engine)
         session_factory = sessionmaker(bind=engine)
-        return db_file, session_factory
+        return AdsInsight, session_factory
 
     def test_save_and_read(self, tmp_path):
-        db_file, session_factory = self._setup_test_db(tmp_path)
+        AdsInsight, session_factory = self._setup_test_db(tmp_path)
 
         ad = {
             "id": 1, "external_id": "ext1", "platform": "facebook",
@@ -111,27 +110,26 @@ class TestSaveAd:
         with patch("src.scrapers.gethookedai.ads_insight.get_session", side_effect=session_factory):
             ads_insight._save_ad(ad, "test_keyword")
 
-        conn = sqlite3.connect(db_file)
-        conn.row_factory = sqlite3.Row
-        row = conn.execute("SELECT * FROM ads_insight WHERE hookd_id = 1").fetchone()
-        conn.close()
+        session = session_factory()
+        row = session.query(AdsInsight).filter(AdsInsight.hookd_id == 1).first()
+        session.close()
 
         assert row is not None
-        assert row["title"] == "Test Ad"
-        assert row["brand_name"] == "TestBrand"
-        assert row["search_keyword"] == "test_keyword"
-        assert json.loads(row["media"]) == [{"url": "http://media"}]
+        assert row.title == "Test Ad"
+        assert row.brand_name == "TestBrand"
+        assert row.search_keyword == "test_keyword"
+        assert json.loads(row.media) == [{"url": "http://media"}]
 
     def test_save_minimal_ad(self, tmp_path):
-        db_file, session_factory = self._setup_test_db(tmp_path)
+        AdsInsight, session_factory = self._setup_test_db(tmp_path)
 
         ad = {"id": 99}
         with patch("src.scrapers.gethookedai.ads_insight.get_session", side_effect=session_factory):
             ads_insight._save_ad(ad, "kw")
 
-        conn = sqlite3.connect(db_file)
-        row = conn.execute("SELECT * FROM ads_insight WHERE hookd_id = 99").fetchone()
-        conn.close()
+        session = session_factory()
+        row = session.query(AdsInsight).filter(AdsInsight.hookd_id == 99).first()
+        session.close()
         assert row is not None
 
 

@@ -1,0 +1,20 @@
+{
+  "source": "Google Trending Now",
+  "acquisition_mode": "rss",
+  "schedule": "hourly",
+  "backfill_window_hours": 48,
+  "granularity": "hour",
+  "geo_matrix": ["US", "Global", "GB", "CA", "AU"],
+  "language_matrix": ["en"],
+  "pagination": {
+    "strategy": "feed_poll",
+    "persist_cursor": false,
+    "cursor_scope": []
+  },
+  "rate_limit": {
+    "concurrency": 1,
+    "download_delay_seconds": 12,
+    "retry_times": 5,
+    "retry_http_codes": [429, 500, 502, 503, 504]
+  }
+}

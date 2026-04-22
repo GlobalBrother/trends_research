@@ -6,11 +6,10 @@ so that every other module imports from a single source of truth.
 """
 
 import os
-from dotenv import load_dotenv
+from src.runtime.secrets import init_runtime_secrets
 
-# Load .env from project root (two levels up from src/)
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-load_dotenv(os.path.join(_PROJECT_ROOT, ".env"))
+init_runtime_secrets()
 
 # ---------------------------------------------------------------------------
 # Paths

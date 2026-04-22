@@ -9,24 +9,34 @@ import json
 import logging
 import os
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
-from dotenv import load_dotenv
 from ensembledata.api import EDClient
 from ensembledata.api.errors import EDError
 
 logger = logging.getLogger(__name__)
 
-sys.path.insert(0, os.path.dirname(__file__))
-from db_helper import save_trend, save_error, save_token_usage, save_content_normalized
-
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".env"))
+sys.path.insert(0, os.path.dirname(__file__))
+from db_helper import (
+    archive_source_response,
+    save_trend,
+    save_error,
+    save_token_usage,
+    save_content_normalized,
+)
+from src.ingestion import IngestionService
+from src.runtime.secrets import init_runtime_secrets
+
+init_runtime_secrets()
 
 PLATFORM = "TikTok"
+ingestion = IngestionService()
 
 
 def _save_tiktok_video(v: dict, keyword: str, geo: str):
@@ -102,11 +112,25 @@ def scrape_tiktok(keywords, geo="Global", period="30"):
         return
 
     client = EDClient(token=token)
+    stop_event = threading.Event()
+    run = ingestion.start_run(PLATFORM, acquisition_mode="api", country=geo, language="en")
 
-    for kw in keywords:
+    def _scrape_keyword(kw):
+        if stop_event.is_set():
+            return
         try:
-            result = client.tiktok.keyword_search(keyword=kw, period=period)
+            result = ingestion.with_retry(
+                PLATFORM,
+                lambda: client.tiktok.keyword_search(keyword=kw, period=period),
+                run=run,
+                payload_hint={"keyword": kw, "geo": geo, "period": period},
+            )
             raw = result.data or []
+            archive_source_response(
+                PLATFORM,
+                raw,
+                metadata={"keyword": kw, "geo": geo, "period": period, "units_charged": result.units_charged},
+            )
             if isinstance(raw, dict):
                 inner = raw.get("data", raw.get("videos", []))
                 if isinstance(inner, list):
@@ -115,6 +139,7 @@ def scrape_tiktok(keywords, geo="Global", period="30"):
                     raw = []
             if not isinstance(raw, list):
                 raw = []
+            run.fetched_count += len(raw)
 
             count = 0
             for item in raw[:50]:
@@ -122,13 +147,11 @@ def scrape_tiktok(keywords, geo="Global", period="30"):
                 if not isinstance(v, dict):
                     continue
 
-                # --- save to normalized content tables ---
                 try:
                     _save_tiktok_video(v, keyword=kw, geo=geo)
                 except Exception:
                     logger.error("Failed saving tiktok content for kw=%s", kw, exc_info=True)
 
-                # --- save to shared trends table for dashboard ---
                 stats = v.get("statistics", {})
                 likes = stats.get("digg_count") or v.get("like_count") or v.get("diggCount") or 0
                 comments = stats.get("comment_count") or v.get("comment_count") or v.get("commentCount") or 0
@@ -164,22 +187,41 @@ def scrape_tiktok(keywords, geo="Global", period="30"):
                         "shares": shares, "username": username, "hashtags": hashtags,
                         "video_id": video_id,
                     },
+                    entity_type="video",
+                    entity_id=video_id,
+                    sampled_content_refs=[{
+                        "id": video_id,
+                        "url": url,
+                        "title": topic[:250],
+                        "snippet": desc[:280],
+                    }],
+                    fetch_metadata={"keyword": kw, "period": period, "granularity": "day"},
+                    raw_payload=v,
+                    run=run,
                 )
                 count += 1
 
             logger.info("Saved %d videos for '%s' (units charged: %s)", count, kw, result.units_charged)
             if result.units_charged:
                 save_token_usage(PLATFORM, kw, result.units_charged, geo)
+                run.quota_usage += float(result.units_charged)
 
         except EDError as e:
-            save_error(PLATFORM, kw, None, 0, str(e))
+            save_error(PLATFORM, kw, None, 0, str(e), payload={"keyword": kw, "geo": geo}, run=run)
             if e.status_code == 495:
                 logger.warning("Daily API limit reached. Stopping TikTok scraper.")
-                break
-            logger.error("Error for '%s': %s", kw, e, exc_info=True)
+                stop_event.set()
+            else:
+                logger.error("Error for '%s': %s", kw, e, exc_info=True)
         except Exception as e:
-            save_error(PLATFORM, kw, None, 0, str(e))
+            save_error(PLATFORM, kw, None, 0, str(e), payload={"keyword": kw, "geo": geo}, run=run)
             logger.error("Error for '%s': %s", kw, e, exc_info=True)
+
+    try:
+        with ThreadPoolExecutor(max_workers=min(len(keywords), 4)) as pool:
+            list(pool.map(_scrape_keyword, keywords))
+    finally:
+        ingestion.finish_run(run)
 
 
 if __name__ == "__main__":

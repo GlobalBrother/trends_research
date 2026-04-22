@@ -1,0 +1,19 @@
+{
+  "source": "News",
+  "acquisition_mode": "api",
+  "provider": "NewsAPI",
+  "schedule": "daily",
+  "backfill_window_hours": 72,
+  "granularity": "day",
+  "geo_matrix": ["Global", "US", "GB", "CA", "AU"],
+  "language_matrix": ["en"],
+  "pagination": {
+    "strategy": "search_query",
+    "persist_cursor": true,
+    "cursor_scope": ["country", "keyword"]
+  },
+  "rate_limit": {
+    "documented_daily_requests": 100,
+    "retry_times": 3
+  }
+}

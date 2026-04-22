@@ -1,0 +1,20 @@
+{
+  "source": "Instagram",
+  "acquisition_mode": "api",
+  "provider": "EnsembleData",
+  "schedule": "daily",
+  "backfill_window_hours": 168,
+  "granularity": "day",
+  "geo_matrix": ["Global", "US"],
+  "language_matrix": ["en"],
+  "pagination": {
+    "strategy": "search_results",
+    "persist_cursor": true,
+    "cursor_scope": ["country", "keyword"]
+  },
+  "rate_limit": {
+    "daily_unit_cap_status_code": 495,
+    "max_workers": 4,
+    "retry_times": 3
+  }
+}

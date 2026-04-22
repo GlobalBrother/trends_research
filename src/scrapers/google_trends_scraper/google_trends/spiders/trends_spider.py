@@ -349,3 +349,7 @@ class GoogleTrendsSpider(scrapy.Spider):
 if __name__ == "__main__":
     from run_spider import run
     run(GoogleTrendsSpider)
+
+
+# Backward-compatible alias used by older health-check code paths.
+TrendsSpider = GoogleTrendsSpider

@@ -9,24 +9,34 @@ import json
 import logging
 import os
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
-from dotenv import load_dotenv
 from ensembledata.api import EDClient
 from ensembledata.api.errors import EDError
 
 logger = logging.getLogger(__name__)
 
-sys.path.insert(0, os.path.dirname(__file__))
-from db_helper import save_trend, save_error, save_token_usage, save_content_normalized
-
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".env"))
+sys.path.insert(0, os.path.dirname(__file__))
+from db_helper import (
+    archive_source_response,
+    save_trend,
+    save_error,
+    save_token_usage,
+    save_content_normalized,
+)
+from src.ingestion import IngestionService
+from src.runtime.secrets import init_runtime_secrets
+
+init_runtime_secrets()
 
 PLATFORM = "Threads"
+ingestion = IngestionService()
 
 
 def _save_threads_post(inner: dict, keyword: str, geo: str):
@@ -106,13 +116,28 @@ def scrape_threads(keywords, geo="Global"):
         return
 
     client = EDClient(token=token)
+    stop_event = threading.Event()
+    run = ingestion.start_run(PLATFORM, acquisition_mode="api", country=geo, language="en")
 
-    for kw in keywords:
+    def _scrape_keyword(kw):
+        if stop_event.is_set():
+            return
         try:
-            result = client.threads.search_keyword(name=kw)
+            result = ingestion.with_retry(
+                PLATFORM,
+                lambda: client.threads.search_keyword(name=kw),
+                run=run,
+                payload_hint={"keyword": kw, "geo": geo},
+            )
             items = result.data or []
+            archive_source_response(
+                PLATFORM,
+                items,
+                metadata={"keyword": kw, "geo": geo, "units_charged": result.units_charged},
+            )
             if isinstance(items, dict):
                 items = items.get("items", []) or items.get("posts", []) or []
+            run.fetched_count += len(items)
 
             count = 0
             for item in items[:50]:
@@ -125,13 +150,11 @@ def scrape_threads(keywords, geo="Global"):
                     post = thread if isinstance(thread, dict) else item
                 inner = post.get("post", post) if isinstance(post, dict) else post
 
-                # --- save to normalized content tables ---
                 try:
                     _save_threads_post(inner, keyword=kw, geo=geo)
                 except Exception:
                     logger.error("Failed saving threads content for kw=%s", kw, exc_info=True)
 
-                # --- save to shared trends table for dashboard ---
                 caption = ""
                 if isinstance(inner.get("caption"), dict):
                     caption = inner["caption"].get("text", "")
@@ -174,22 +197,41 @@ def scrape_threads(keywords, geo="Global"):
                         "likes": likes, "replies": replies,
                         "reposts": repost_c, "username": username,
                     },
+                    entity_type="post",
+                    entity_id=str(inner.get("code") or topic[:64]),
+                    sampled_content_refs=[{
+                        "id": str(inner.get("code") or ""),
+                        "url": url,
+                        "title": topic[:250],
+                        "snippet": caption[:280],
+                    }],
+                    fetch_metadata={"keyword": kw, "granularity": "day"},
+                    raw_payload=inner,
+                    run=run,
                 )
                 count += 1
 
             logger.info("Saved %d posts for '%s' (units charged: %s)", count, kw, result.units_charged)
             if result.units_charged:
                 save_token_usage(PLATFORM, kw, result.units_charged, geo)
+                run.quota_usage += float(result.units_charged)
 
         except EDError as e:
-            save_error(PLATFORM, kw, None, 0, str(e))
+            save_error(PLATFORM, kw, None, 0, str(e), payload={"keyword": kw, "geo": geo}, run=run)
             if e.status_code == 495:
                 logger.warning("Daily API limit reached. Stopping Threads scraper.")
-                break
-            logger.error("Error for '%s': %s", kw, e, exc_info=True)
+                stop_event.set()
+            else:
+                logger.error("Error for '%s': %s", kw, e, exc_info=True)
         except Exception as e:
-            save_error(PLATFORM, kw, None, 0, str(e))
+            save_error(PLATFORM, kw, None, 0, str(e), payload={"keyword": kw, "geo": geo}, run=run)
             logger.error("Error for '%s': %s", kw, e, exc_info=True)
+
+    try:
+        with ThreadPoolExecutor(max_workers=min(len(keywords), 4)) as pool:
+            list(pool.map(_scrape_keyword, keywords))
+    finally:
+        ingestion.finish_run(run)
 
 
 if __name__ == "__main__":
