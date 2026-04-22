@@ -141,9 +141,25 @@ app.include_router(admin_routes.router)
 # ---------------------------------------------------------------------------
 # Root + SPA catch-all
 # ---------------------------------------------------------------------------
-@app.get("/", response_model=RootResponse)
-def root():
+@app.get("/api", response_model=RootResponse)
+def api_status():
+    """Programmatic API status endpoint (used to live at ``/``)."""
     return {"message": "Trends Research API v2.0 is running"}
+
+
+@app.get("/", include_in_schema=False)
+def root():
+    """Serve the React SPA at the site root if the build exists.
+
+    Falls back to the JSON status message when the frontend hasn't been
+    built (e.g. local dev runs without ``pnpm build``).
+    """
+    _index = os.path.join(_frontend_dist, "index.html")
+    if os.path.isdir(_frontend_dist) and os.path.isfile(_index):
+        return FileResponse(_index)
+    return {"message": "Trends Research API v2.0 is running (frontend not built)"}
+
+
 @app.get("/{full_path:path}", include_in_schema=False)
 async def serve_spa(full_path: str):
     """Serve the React SPA for any non-API route."""

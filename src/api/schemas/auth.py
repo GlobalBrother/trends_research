@@ -29,7 +29,8 @@ class UserRow(BaseModel):
 
     model_config = ConfigDict(extra="allow")
     email: str
-    role: str
+    # Tolerate legacy rows that may have NULL role; default to "trends".
+    role: str = "trends"
     created_at: Optional[datetime] = None
 
 

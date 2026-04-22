@@ -258,7 +258,14 @@ export default function Dashboard() {
     loading: trendsLoading,
     error: trendsError,
     refetch: refetchTrends,
-  } = useApi(() => getTrends(selectedNiche === "All" ? undefined : selectedNiche, geo), [selectedNiche, geo]);
+  } = useApi(
+    () =>
+      getTrends({
+        niche_name: selectedNiche !== "All" ? selectedNiche : undefined,
+        geo,
+      }),
+    [selectedNiche, geo]
+  );
 
   const { data: allTrendsData, loading: allLoading } = useApi(() => getAllTrends(geo), [geo]);
   const { data: azureData } = useApi(() => getAzureStatus(), []);

@@ -119,10 +119,23 @@ def validate_token(token: str = Query(...)):
 
 @router.get("/auth/users", response_model=list[UserRow])
 def list_users():
-    """List all whitelisted users."""
+    """List all whitelisted users.
+
+    Defensive normalisation: any legacy rows with NULL ``role`` or ``email``
+    are coerced to safe defaults so a single bad row can't blow up the
+    entire response with a Pydantic validation error.
+    """
     with session_scope() as session:
         rows = session.query(User.email, User.role, User.created_at).order_by(User.created_at).all()
-    return [{"email": r.email, "role": r.role, "created_at": r.created_at} for r in rows]
+    return [
+        {
+            "email": r.email or "",
+            "role": r.role or "trends",
+            "created_at": r.created_at,
+        }
+        for r in rows
+        if r.email  # skip rows with no email at all
+    ]
 
 
 @router.post("/auth/users", response_model=UserMutationResponse)

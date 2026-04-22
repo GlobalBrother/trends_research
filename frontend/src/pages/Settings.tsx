@@ -140,6 +140,7 @@ export default function Settings() {
   const {
     data: usersData,
     loading: usersLoading,
+    error: usersError,
     refetch: refetchUsers,
   } = useApi(() => listUsers(), []);
 
@@ -670,6 +671,10 @@ export default function Settings() {
               <div className="flex items-center gap-2 py-6 justify-center text-muted-foreground">
                 <Loader2 className="w-4 h-4 animate-spin" />
                 <span className="text-sm">Loading users...</span>
+              </div>
+            ) : usersError ? (
+              <div className="py-4 px-3 text-sm text-destructive border border-destructive/40 bg-destructive/5 rounded-md">
+                Failed to load users: {usersError}
               </div>
             ) : users.length === 0 ? (
               <div className="py-6 text-center text-sm text-muted-foreground">
