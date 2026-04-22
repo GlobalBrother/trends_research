@@ -33,3 +33,69 @@ output "pyodbc_connection_string" {
   value       = "Driver={ODBC Driver 18 for SQL Server};Server=tcp:${azurerm_mssql_server.main.fully_qualified_domain_name},1433;Database=${azurerm_mssql_database.trends.name};Uid=${var.sql_admin_user};Pwd=<your-password>;Encrypt=yes;TrustServerCertificate=no;"
   sensitive   = true
 }
+
+# --- Hosting outputs ---
+
+output "app_service_url" {
+  description = "The default URL of the App Service"
+  value       = "https://${azurerm_linux_web_app.main.default_hostname}"
+}
+
+output "app_service_name" {
+  description = "Name of the App Service"
+  value       = azurerm_linux_web_app.main.name
+}
+
+output "acr_login_server" {
+  description = "Login server URL for the Container Registry"
+  value       = azurerm_container_registry.acr.login_server
+}
+
+output "key_vault_name" {
+  description = "Name of the Key Vault"
+  value       = azurerm_key_vault.main.name
+}
+
+output "key_vault_uri" {
+  description = "URI of the Key Vault"
+  value       = azurerm_key_vault.main.vault_uri
+}
+
+output "managed_identity_client_id" {
+  description = "Client ID of the Managed Identity"
+  value       = azurerm_user_assigned_identity.app.client_id
+}
+
+output "required_key_vault_secret_names" {
+  description = "Key Vault secret names expected by the app and provisioned from Terraform variables"
+  sensitive   = true
+  value = sort(distinct(concat(
+    keys(local.required_app_secrets),
+    [
+      "ACS-CONNECTION-STRING",
+      "ACS-SENDER-ADDRESS",
+    ],
+  )))
+}
+
+output "all_key_vault_secret_names" {
+  description = "All Key Vault secret names provisioned by Terraform, including optional extras from app_secrets"
+  sensitive   = true
+  value = sort(distinct(concat(
+    keys(local.effective_app_secrets),
+    [
+      "ACS-CONNECTION-STRING",
+      "ACS-SENDER-ADDRESS",
+    ],
+  )))
+}
+
+output "acs_sender_domain" {
+  description = "Azure Communication Services sender domain"
+  value       = azurerm_email_communication_service_domain.managed.from_sender_domain
+}
+
+output "acs_sender_address" {
+  description = "Full sender email address for ACS"
+  value       = "DoNotReply@${azurerm_email_communication_service_domain.managed.from_sender_domain}"
+}

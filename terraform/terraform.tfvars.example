@@ -1,12 +1,19 @@
 # Copy this file to terraform.tfvars and fill in the values.
 # Do NOT commit terraform.tfvars to version control.
 
+# ---------------------------------------------------------------------------
+# General
+# ---------------------------------------------------------------------------
 location            = "West Europe"
 resource_group_name = "trends-research-rg"
-sql_server_name     = "gb-ads-sql-server"
-sql_database_name   = "Trends_DB"
-sql_admin_user      = "CloudSAe0108f5f"
-sql_admin_password  = "CHANGE_ME"
+
+# ---------------------------------------------------------------------------
+# SQL Server & Database
+# ---------------------------------------------------------------------------
+sql_server_name      = "gb-ads-sql-server"
+sql_database_name    = "Trends_DB"
+sql_admin_user       = "CloudSAe0108f5f"
+# sql_admin_password = ""  # Optional — ignored for existing servers (lifecycle ignore)
 
 # Azure AD admin (optional – leave empty to skip)
 aad_admin_login     = ""
@@ -20,3 +27,56 @@ sql_min_capacity     = 0.5
 
 # Developer firewall rule (optional – set your public IP)
 dev_ip_address = ""
+
+# ---------------------------------------------------------------------------
+# Container Registry
+# ---------------------------------------------------------------------------
+acr_name          = "trendsresearchacr"    # Alphanumeric only, globally unique
+docker_image_name = "trends-research-app"
+
+# ---------------------------------------------------------------------------
+# Managed Identity
+# ---------------------------------------------------------------------------
+managed_identity_name = "trendsApp"
+
+# ---------------------------------------------------------------------------
+# Key Vault
+# ---------------------------------------------------------------------------
+key_vault_name = "kv-trends-app-prod"
+
+# Explicit app secrets stored in Key Vault.
+# The runtime secret loader maps Key Vault names like ENSEMBLEDATA-TOKEN
+# to environment variables like ENSEMBLEDATA_TOKEN.
+#
+# Recommended DB mode: Entra ID / Managed Identity
+azure_sql_server   = "gb-ads-sql-server.database.windows.net"
+azure_sql_database = "Trends_DB"
+
+# Optional DB mode instead of the two settings above:
+# azure_sql_connectionstring = "Server=tcp:...;Database=...;..."
+#
+# Optional SQL auth mode instead of Managed Identity:
+# azure_sql_user = "sql-admin-user"
+# azure_sql_pass = "CHANGE_ME"
+
+ensembledata_token = "CHANGE_ME"
+news_api_key       = "CHANGE_ME"
+gethookedai_token  = "CHANGE_ME"
+
+# Optional email fallback if ACS is unavailable
+resend_api_key    = "CHANGE_ME"
+resend_from_email = "noreply@yourdomain.com"
+
+# Optional seeded auth/testing values
+test_account_email = ""
+test_account_otp   = "000000"
+
+# Extra secrets not modeled explicitly above can still be added here.
+app_secrets = {}
+
+# ---------------------------------------------------------------------------
+# App Service
+# ---------------------------------------------------------------------------
+app_service_plan_name = "asp-trends-app"
+app_service_name      = "trends-research-app"   # Must be globally unique
+app_service_sku       = "B1"                     # B1 ~$13/mo, S1 ~$70/mo

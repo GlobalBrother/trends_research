@@ -20,16 +20,16 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from dotenv import load_dotenv
+from src.runtime.secrets import init_runtime_secrets
 
-load_dotenv(os.path.join(project_root, ".env"))
+init_runtime_secrets()
 
 from src.db.models import Base
 from src.db.connection import get_engine
 from src.db.migrate import run_migration
 
 
-def run_schema() -> None:
+def setup_azure_schema() -> None:
     """Create all tables from ORM metadata on Azure SQL, then add indexes."""
     engine = get_engine()
 
@@ -57,4 +57,4 @@ def run_schema() -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    run_schema()
+    setup_azure_schema()

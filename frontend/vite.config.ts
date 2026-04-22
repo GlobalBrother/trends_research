@@ -14,6 +14,42 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, "dist"),
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) {
+            return undefined;
+          }
+
+          if (id.includes("recharts")) {
+            return "charts";
+          }
+
+          if (id.includes("framer-motion")) {
+            return "motion";
+          }
+
+          if (
+            id.includes("@radix-ui") ||
+            id.includes("cmdk") ||
+            id.includes("vaul") ||
+            id.includes("sonner")
+          ) {
+            return "ui-vendor";
+          }
+
+          if (
+            id.includes("react") ||
+            id.includes("react-dom") ||
+            id.includes("wouter")
+          ) {
+            return "react-vendor";
+          }
+
+          return "vendor";
+        },
+      },
+    },
   },
   server: {
     port: 3000,

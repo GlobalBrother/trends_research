@@ -4,23 +4,20 @@
  * Sidebar: deep navy (#0F172A), icon + label nav, grouped sections
  * Top bar: white, global search, date range, user menu
  */
-import { useState, type ReactNode } from "react";
+import { useState, useMemo, useEffect, type ReactNode } from "react";
+import { LogOut, Moon, Sun, Globe, Filter } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import {
   LayoutDashboard,
   Compass,
-  FolderKanban,
   FileBarChart,
-  Bookmark,
-  Bell,
   Settings,
-  Search,
   ChevronDown,
   Menu,
   X,
   TrendingUp,
+  Megaphone,
 } from "lucide-react";
-import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -29,9 +26,32 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { toast } from "sonner";
+import { isAdmin, getNiches } from "@/lib/api";
+import { useTheme } from "@/contexts/ThemeContext";
+import { useFilters } from "@/contexts/FilterContext";
+import { useApi } from "@/hooks/useApi";
 
-const NAV_SECTIONS = [
+interface NavItem {
+  href: string;
+  icon: typeof LayoutDashboard;
+  label: string;
+  adminOnly?: boolean;
+}
+
+interface NavSection {
+  label: string;
+  items: NavItem[];
+}
+
+const NAV_SECTIONS: NavSection[] = [
   {
     label: "OVERVIEW",
     items: [
@@ -42,58 +62,88 @@ const NAV_SECTIONS = [
   {
     label: "WORKSPACE",
     items: [
-      { href: "/projects", icon: FolderKanban, label: "Research Projects" },
       { href: "/reports", icon: FileBarChart, label: "Reports" },
-      { href: "/saved", icon: Bookmark, label: "Saved Views" },
+      { href: "/my-ads", icon: Megaphone, label: "My Ads" },
     ],
   },
   {
     label: "SYSTEM",
     items: [
-      { href: "/alerts", icon: Bell, label: "Alerts" },
-      { href: "/settings", icon: Settings, label: "Settings" },
+      { href: "/settings", icon: Settings, label: "Settings", adminOnly: true },
     ],
   },
 ];
 
 function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
   const [location] = useLocation();
+  const userIsAdmin = useMemo(() => isAdmin(), []);
 
   return (
     <nav className="flex flex-col gap-6 px-3 py-4 sidebar-scroll overflow-y-auto flex-1">
-      {NAV_SECTIONS.map((section) => (
-        <div key={section.label}>
-          <p className="px-3 mb-2 text-[10px] font-semibold uppercase tracking-[0.15em] text-sidebar-foreground/40">
-            {section.label}
-          </p>
-          <div className="flex flex-col gap-0.5">
-            {section.items.map((item) => {
-              const isActive = location === item.href;
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  onClick={onNavigate}
-                  className={`flex items-center gap-3 px-3 py-2 text-sm font-medium transition-colors duration-150 ${
-                    isActive
-                      ? "bg-sidebar-accent text-sidebar-accent-foreground border-l-2 border-sidebar-primary"
-                      : "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50 border-l-2 border-transparent"
-                  }`}
-                >
-                  <item.icon className="w-4 h-4 shrink-0" />
-                  <span>{item.label}</span>
-                </Link>
-              );
-            })}
+      {NAV_SECTIONS.map((section) => {
+        // Filter out admin-only items for non-admin users
+        const visibleItems = section.items.filter(
+          (item) => !item.adminOnly || userIsAdmin
+        );
+        // Don't render the section if no visible items
+        if (visibleItems.length === 0) return null;
+
+        return (
+          <div key={section.label}>
+            <p className="px-3 mb-2 text-[10px] font-semibold uppercase tracking-[0.15em] text-sidebar-foreground/40">
+              {section.label}
+            </p>
+            <div className="flex flex-col gap-0.5">
+              {visibleItems.map((item) => {
+                const isActive = location === item.href;
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    onClick={onNavigate}
+                    className={`flex items-center gap-3 px-3 py-2 text-sm font-medium transition-colors duration-150 ${
+                      isActive
+                        ? "bg-sidebar-accent text-sidebar-accent-foreground border-l-2 border-sidebar-primary"
+                        : "text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent/50 border-l-2 border-transparent"
+                    }`}
+                  >
+                    <item.icon className="w-4 h-4 shrink-0" />
+                    <span>{item.label}</span>
+                  </Link>
+                );
+              })}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </nav>
   );
 }
 
 export default function DashboardLayout({ children }: { children: ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const { theme, toggleTheme } = useTheme();
+  const { selectedNiche, setSelectedNiche, geo, setGeo } = useFilters();
+  const { data: niches } = useApi(getNiches);
+
+  const authEmail = useMemo(() => localStorage.getItem("auth_email") || "user@company.com", []);
+  const authInitials = useMemo(() => {
+    const parts = authEmail.split("@")[0].split(/[._-]/);
+    return parts.length >= 2
+      ? (parts[0][0] + parts[1][0]).toUpperCase()
+      : authEmail.slice(0, 2).toUpperCase();
+  }, [authEmail]);
+  const authName = useMemo(() => {
+    const parts = authEmail.split("@")[0].split(/[._-]/);
+    return parts.map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(" ");
+  }, [authEmail]);
+
+  const handleLogout = () => {
+    localStorage.removeItem("auth_token");
+    localStorage.removeItem("auth_email");
+    localStorage.removeItem("auth_role");
+    window.location.href = "/login";
+  };
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -153,65 +203,64 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
             >
               <Menu className="w-5 h-5" />
             </button>
-            {/* Global search */}
-            <div className="relative hidden sm:block">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-              <Input
-                placeholder="Search trends, topics, reports…"
-                className="pl-8 w-64 h-8 text-sm bg-muted/50 border-0 focus-visible:ring-1"
-              />
+            
+            {/* Global Filters */}
+            <div className="hidden md:flex items-center gap-3">
+              <Select value={selectedNiche} onValueChange={setSelectedNiche}>
+                <SelectTrigger className="h-8 w-[160px] bg-transparent border-muted-foreground/20 hover:border-muted-foreground/40 transition-colors">
+                  <Filter className="w-3 h-3 mr-2 text-muted-foreground" />
+                  <SelectValue placeholder="All Niches" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="All">All Niches</SelectItem>
+                  {niches?.map((n) => (
+                    <SelectItem key={n} value={n}>
+                      {n}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              <Select value={geo} onValueChange={setGeo}>
+                <SelectTrigger className="h-8 w-[100px] bg-transparent border-muted-foreground/20 hover:border-muted-foreground/40 transition-colors">
+                  <Globe className="w-3 h-3 mr-2 text-muted-foreground" />
+                  <SelectValue placeholder="Geo" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="US">USA</SelectItem>
+                  <SelectItem value="Global">Global</SelectItem>
+                  <SelectItem value="UK">UK</SelectItem>
+                  <SelectItem value="EU">EU</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
-            {/* Date range */}
             <Button
               variant="outline"
               size="sm"
-              className="hidden md:flex h-8 text-xs gap-1.5 bg-transparent"
+              className="h-8 gap-1.5 bg-transparent"
+              onClick={toggleTheme}
             >
-              Last 30 days
-              <ChevronDown className="w-3 h-3" />
+              {theme === "dark" ? (
+                <>
+                  <Sun className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline text-xs">Light</span>
+                </>
+              ) : (
+                <>
+                  <Moon className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline text-xs">Dark</span>
+                </>
+              )}
             </Button>
 
-            {/* Workspace selector */}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="hidden md:flex h-8 text-xs gap-1.5 bg-transparent"
-                >
-                  Default Workspace
-                  <ChevronDown className="w-3 h-3" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem>Default Workspace</DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => toast("Feature coming soon")}
-                >
-                  Marketing Team
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onClick={() => toast("Feature coming soon")}
-                >
-                  Create Workspace
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            {/* Date range removed (no implementation) */}
 
-            {/* Notifications */}
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 w-8 p-0 relative"
-              onClick={() => toast("Feature coming soon")}
-            >
-              <Bell className="w-4 h-4" />
-              <span className="absolute top-1 right-1 w-1.5 h-1.5 bg-danger rounded-full" />
-            </Button>
+            {/* Workspace selector removed (no implementation) */}
+
+            {/* Notifications removed (no implementation) */}
 
             {/* User menu */}
             <DropdownMenu>
@@ -219,7 +268,7 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
                 <button className="flex items-center gap-2 h-8 px-2 rounded hover:bg-muted transition-colors">
                   <div className="w-6 h-6 rounded-full bg-primary flex items-center justify-center">
                     <span className="text-[10px] font-semibold text-primary-foreground">
-                      MC
+                      {authInitials}
                     </span>
                   </div>
                   <ChevronDown className="w-3 h-3 text-muted-foreground" />
@@ -227,20 +276,14 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-48">
                 <div className="px-2 py-1.5">
-                  <p className="text-sm font-medium">Marian Craciun</p>
+                  <p className="text-sm font-medium">{authName}</p>
                   <p className="text-xs text-muted-foreground">
-                    marian@globalbrother.com
+                    {authEmail}
                   </p>
                 </div>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => toast("Feature coming soon")}>
-                  Profile
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => toast("Feature coming soon")}>
-                  Preferences
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={() => toast("Feature coming soon")}>
+                <DropdownMenuItem onClick={handleLogout}>
+                  <LogOut className="w-3.5 h-3.5 mr-2" />
                   Sign out
                 </DropdownMenuItem>
               </DropdownMenuContent>

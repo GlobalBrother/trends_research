@@ -10,24 +10,34 @@ import logging
 import os
 import re
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
-from dotenv import load_dotenv
 from ensembledata.api import EDClient
 from ensembledata.api.errors import EDError
 
 logger = logging.getLogger(__name__)
 
-sys.path.insert(0, os.path.dirname(__file__))
-from db_helper import save_trend, save_error, save_token_usage, save_content_normalized
-
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".env"))
+sys.path.insert(0, os.path.dirname(__file__))
+from db_helper import (
+    archive_source_response,
+    save_trend,
+    save_error,
+    save_token_usage,
+    save_content_normalized,
+)
+from src.ingestion import IngestionService
+from src.runtime.secrets import init_runtime_secrets
+
+init_runtime_secrets()
 
 PLATFORM = "YouTube"
+ingestion = IngestionService()
 
 
 def _parse_int(val):
@@ -155,13 +165,27 @@ def scrape_youtube(keywords, geo="Global", depth=1, period="month", sorting="vie
         return
 
     client = EDClient(token=token)
+    stop_event = threading.Event()
+    run = ingestion.start_run(PLATFORM, acquisition_mode="api", country=geo, language="en")
 
-    for kw in keywords:
+    def _scrape_keyword(kw):
+        if stop_event.is_set():
+            return
         try:
-            result = client.youtube.keyword_search(
-                keyword=kw, depth=depth, period=period, sorting=sorting,
+            result = ingestion.with_retry(
+                PLATFORM,
+                lambda: client.youtube.keyword_search(
+                    keyword=kw, depth=depth, period=period, sorting=sorting,
+                ),
+                run=run,
+                payload_hint={"keyword": kw, "geo": geo, "depth": depth, "period": period, "sorting": sorting},
             )
             raw_data = result.data or []
+            archive_source_response(
+                PLATFORM,
+                raw_data,
+                metadata={"keyword": kw, "geo": geo, "depth": depth, "period": period, "sorting": sorting, "units_charged": result.units_charged},
+            )
 
             if isinstance(raw_data, dict):
                 items = (
@@ -176,17 +200,17 @@ def scrape_youtube(keywords, geo="Global", depth=1, period="month", sorting="vie
                 items = []
 
             items = [_normalize_video(item) for item in items]
+            run.fetched_count += len(items)
 
             count = 0
             for v in items[:50]:
-                # --- save to normalized content tables ---
                 try:
                     _save_youtube_video(v, keyword=kw, geo=geo)
                 except Exception:
                     logger.error("Failed saving youtube content for kw=%s", kw, exc_info=True)
 
-                # --- save to shared trends table for dashboard ---
                 title = v.get("title", "") if isinstance(v.get("title"), str) else ""
+                description = v.get("description") or v.get("descriptionSnippet") or ""
                 views = _parse_int(v.get("viewCount") or v.get("view_count") or v.get("views") or 0)
                 topic = title[:120] if title else f"Video {v.get('videoId', '')}"
 
@@ -207,23 +231,44 @@ def scrape_youtube(keywords, geo="Global", depth=1, period="month", sorting="vie
                     extra_data={
                         "video_id": video_id, "channel": channel,
                         "published": published, "views": views,
+                        "description": description,
+                        "units_charged": result.units_charged,
                     },
+                    entity_type="video",
+                    entity_id=video_id,
+                    sampled_content_refs=[{
+                        "id": video_id,
+                        "url": url,
+                        "title": title or topic,
+                        "snippet": description[:280],
+                    }],
+                    fetch_metadata={"keyword": kw, "depth": depth, "period": period, "sorting": sorting, "granularity": "day"},
+                    raw_payload=v,
+                    run=run,
                 )
                 count += 1
 
             logger.info("Saved %d videos for '%s' (units charged: %s)", count, kw, result.units_charged)
             if result.units_charged:
                 save_token_usage(PLATFORM, kw, result.units_charged, geo)
+                run.quota_usage += float(result.units_charged)
 
         except EDError as e:
-            save_error(PLATFORM, kw, None, 0, str(e))
+            save_error(PLATFORM, kw, None, 0, str(e), payload={"keyword": kw, "geo": geo}, run=run)
             if e.status_code == 495:
                 logger.warning("Daily API limit reached. Stopping YouTube scraper.")
-                break
-            logger.error("Error for '%s': %s", kw, e, exc_info=True)
+                stop_event.set()
+            else:
+                logger.error("Error for '%s': %s", kw, e, exc_info=True)
         except Exception as e:
-            save_error(PLATFORM, kw, None, 0, str(e))
+            save_error(PLATFORM, kw, None, 0, str(e), payload={"keyword": kw, "geo": geo}, run=run)
             logger.error("Error for '%s': %s", kw, e, exc_info=True)
+
+    try:
+        with ThreadPoolExecutor(max_workers=min(len(keywords), 4)) as pool:
+            list(pool.map(_scrape_keyword, keywords))
+    finally:
+        ingestion.finish_run(run)
 
 
 if __name__ == "__main__":

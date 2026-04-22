@@ -14,8 +14,12 @@ scrapy
 ensembledata
 resend
 fastapi
+python-multipart
 uvicorn
 gunicorn
 sqlalchemy
 pyodbc
 azure-identity
+azure-keyvault-secrets
+azure-communication-email
+pytest

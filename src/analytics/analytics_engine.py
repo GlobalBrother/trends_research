@@ -7,6 +7,7 @@ and performs sentiment analysis on collected trends.
 
 import logging
 import re
+from datetime import datetime
 from typing import Optional
 
 import numpy as np
@@ -34,6 +35,12 @@ SPREAD_BONUS_SCALE = 0.5
 MIN_KEYWORD_LENGTH = 3
 MIN_KEYWORDS_FOR_STRONG_MATCH = 2
 
+# New Constants for Improved Virality Calculation
+FRESHNESS_HALFLIFE_HOURS = 24.0
+SYNERGY_EXPONENT = 1.2
+MOMENTUM_WEIGHT = 1.5
+SURPRISE_WEIGHT = 1.2
+
 STOP_WORDS = frozenset({
     "the", "a", "an", "and", "or", "but", "in", "on", "at", "with", "for",
     "is", "are", "was", "were", "why", "how", "what", "to", "of", "my",
@@ -47,9 +54,27 @@ PLATFORM_WEIGHTS = {
     "Google Interest": 1.0,
     "Google Regions": 1.2,
     "YouTube": 1.3,
+    "TikTok": 1.4,
+    "Instagram": 1.4,
+    "Threads": 1.3,
     "Reddit": 1.4,
     "HackerNews": 1.3,
     "News": 1.1,
+}
+
+PLATFORM_CATEGORIES = {
+    "Google Trends": "Search",
+    "Google Related Queries": "Search",
+    "Google Related Topics": "Search",
+    "Google Interest": "Search",
+    "Google Regions": "Search",
+    "YouTube": "Social",
+    "TikTok": "Social",
+    "Instagram": "Social",
+    "Threads": "Social",
+    "Reddit": "Social",
+    "HackerNews": "News",
+    "News": "News",
 }
 
 META_PLATFORMS = frozenset({"Google Interest", "Google Regions"})
@@ -96,7 +121,13 @@ class AnalyticsEngine:
     @staticmethod
     def _sigmoid(x: float) -> float:
         """Sigmoid function used to scale the virality score to [0, 1]."""
-        return 1.0 / (1.0 + np.exp(-SIGMOID_STEEPNESS * (x - SIGMOID_MIDPOINT)))
+        z = SIGMOID_STEEPNESS * (x - SIGMOID_MIDPOINT)
+        if z >= 0:
+            exp_neg_z = np.exp(-z)
+            return 1.0 / (1.0 + exp_neg_z)
+
+        exp_z = np.exp(z)
+        return exp_z / (1.0 + exp_z)
 
     def calculate_virality_score(
         self,
@@ -107,10 +138,19 @@ class AnalyticsEngine:
         spread: int = 0,
         source_diversity: int = 1,
         volume: int = 1,
+        freshness_factor: float = 1.0,
+        synergy_weight: float = 0.0,
+        momentum: float = 0.0,
+        surprise: float = 0.0,
     ) -> float:
         """Calculate a custom virality score scaled to 1–100.
 
-        Formula: log(mentions) + 2 * growth_rate + engagement_weight + source_diversity
+        Formula:
+          base_score = log(mentions) + 2*norm_growth + engagement_weight +
+                       (diversity_weight + synergy) + platform_bonus +
+                       sentiment_bonus + spread_bonus + (momentum * MW) + (surprise * SW)
+
+          virality = (1 + (sigmoid(base_score) * 99)) * freshness_factor
         """
         if pd.isna(growth_rate) or growth_rate <= -1:
             growth_rate = 0.0
@@ -124,8 +164,10 @@ class AnalyticsEngine:
             log_mentions
             + (2 * norm_growth)
             + engagement_weight
-            + diversity_weight
+            + (diversity_weight + synergy_weight)
             + (platform_weight * PLATFORM_WEIGHT_MULTIPLIER)
+            + (momentum * MOMENTUM_WEIGHT)
+            + (surprise * SURPRISE_WEIGHT)
         )
 
         # Sentiment bonus (absolute value — strong sentiment in either direction)
@@ -135,8 +177,13 @@ class AnalyticsEngine:
         if spread > 0:
             base_score += np.log1p(spread) * SPREAD_BONUS_SCALE
 
-        scaled_score = VIRALITY_SCORE_MIN + (self._sigmoid(base_score) * (VIRALITY_SCORE_MAX - VIRALITY_SCORE_MIN))
-        return round(scaled_score, 2)
+        sigmoid_val = self._sigmoid(base_score)
+        scaled_score = VIRALITY_SCORE_MIN + (sigmoid_val * (VIRALITY_SCORE_MAX - VIRALITY_SCORE_MIN))
+
+        # Apply time decay
+        final_score = scaled_score * freshness_factor
+
+        return round(max(VIRALITY_SCORE_MIN, final_score), 2)
 
     # ------------------------------------------------------------------
     # Topic grouping (Union-Find)
@@ -288,6 +335,10 @@ class AnalyticsEngine:
         if df.empty:
             return df
 
+        df = df.copy()
+        if "extracted_at" in df.columns:
+            df.loc[:, "extracted_at"] = pd.to_datetime(df["extracted_at"], errors="coerce")
+
         # 1. Topic aggregation (clustering)
         df = self.group_topics(df)
 
@@ -305,11 +356,60 @@ class AnalyticsEngine:
         volume_map = df.groupby("aggregated_topic")["topic"].count().to_dict()
         df.loc[:, "volume"] = df["aggregated_topic"].map(volume_map)
 
-        # 5. Ensure 'spread' column exists
+        # 5. New Factors: Freshness, Synergy, Momentum, Surprise
+        now = datetime.utcnow()
+        
+        # Freshness (Exponential Decay)
+        def calc_freshness(group):
+            last_seen = group["extracted_at"].max()
+            if pd.isna(last_seen):
+                return 1.0
+            hours_ago = (now - last_seen).total_seconds() / 3600.0
+            return 0.5 ** (hours_ago / FRESHNESS_HALFLIFE_HOURS)
+
+        freshness_map = df.groupby("aggregated_topic").apply(calc_freshness).to_dict()
+        df.loc[:, "freshness_factor"] = df["aggregated_topic"].map(freshness_map)
+
+        # Synergy (Cross-platform resonance)
+        def calc_synergy(group):
+            platforms = set(group["platform"].unique())
+            categories = {PLATFORM_CATEGORIES.get(p, "Other") for p in platforms}
+            source_count = len(platforms)
+            return (source_count ** SYNERGY_EXPONENT) * len(categories)
+
+        synergy_map = df.groupby("aggregated_topic").apply(calc_synergy).to_dict()
+        df.loc[:, "synergy_weight"] = df["aggregated_topic"].map(synergy_map)
+
+        # Momentum (Change in growth)
+        def calc_momentum(group):
+            if len(group) < 2:
+                return 0.0
+            sorted_group = group.sort_values("extracted_at")
+            growth_diff = sorted_group["growth"].diff().iloc[-1]
+            if pd.isna(growth_diff):
+                return 0.0
+            # Normalize by time if possible
+            time_diff = (sorted_group["extracted_at"].diff().iloc[-1]).total_seconds() / 3600.0
+            if time_diff > 0:
+                return growth_diff / time_diff
+            return growth_diff
+
+        momentum_map = df.groupby("aggregated_topic").apply(calc_momentum).to_dict()
+        df.loc[:, "momentum"] = df["aggregated_topic"].map(momentum_map).fillna(0.0)
+
+        # Surprise (Outlier detection relative to current batch as proxy)
+        mean_vol = df["volume"].mean()
+        std_vol = df["volume"].std()
+        if pd.isna(std_vol) or std_vol == 0:
+            df.loc[:, "surprise"] = 0.0
+        else:
+            df.loc[:, "surprise"] = (df["volume"] - mean_vol) / std_vol
+
+        # 6. Ensure 'spread' column exists
         if "spread" not in df.columns:
             df.loc[:, "spread"] = 0
 
-        # 6. Calculate virality score
+        # 7. Calculate virality score
         df.loc[:, "virality_score"] = df.apply(
             lambda row: self.calculate_virality_score(
                 growth_rate=row.get("growth", 0),
@@ -319,11 +419,15 @@ class AnalyticsEngine:
                 spread=row.get("spread", 0),
                 source_diversity=row.get("source_diversity", 1),
                 volume=row.get("volume", 1),
+                freshness_factor=row.get("freshness_factor", 1.0),
+                synergy_weight=row.get("synergy_weight", 0.0),
+                momentum=row.get("momentum", 0.0),
+                surprise=row.get("surprise", 0.0),
             ),
             axis=1,
         )
 
-        # 7. Aggregate results by aggregated_topic
+        # 8. Aggregate results by aggregated_topic
         aggregated_results = self._aggregate_results(df)
         return aggregated_results.sort_values(by="virality_score", ascending=False)
 
@@ -342,6 +446,10 @@ class AnalyticsEngine:
             "geo": lambda x: list({str(v) for v in x if v}),
             "keyword": "first",
             "extracted_at": "max",
+            "freshness_factor": "max",
+            "synergy_weight": "max",
+            "momentum": "max",
+            "surprise": "max",
         }
 
         for col in OPTIONAL_AGG_COLUMNS:

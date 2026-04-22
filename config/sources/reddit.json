@@ -1,0 +1,20 @@
+{
+  "source": "Reddit",
+  "acquisition_mode": "api",
+  "provider": "EnsembleData",
+  "schedule": "hourly",
+  "backfill_window_hours": 72,
+  "granularity": "hour",
+  "geo_matrix": ["Global", "US"],
+  "language_matrix": ["en"],
+  "pagination": {
+    "strategy": "subreddit_sort",
+    "persist_cursor": true,
+    "cursor_scope": ["country", "category"],
+    "default_category": "all"
+  },
+  "rate_limit": {
+    "daily_unit_cap_status_code": 495,
+    "retry_times": 3
+  }
+}

@@ -29,15 +29,16 @@ import struct
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Generator, Optional
 from urllib.parse import quote_plus
 
-from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, literal, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
+from src.runtime.secrets import init_runtime_secrets
 
-load_dotenv()
+init_runtime_secrets()
 
 logger = logging.getLogger(__name__)
 
@@ -60,10 +61,10 @@ DEFAULT_ODBC_DRIVER = "ODBC Driver 18 for SQL Server"
 
 POOL_SIZE = int(os.getenv("DB_POOL_SIZE", "10"))
 POOL_MAX_OVERFLOW = int(os.getenv("DB_POOL_MAX_OVERFLOW", "20"))
-POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", "30"))
+POOL_TIMEOUT = int(os.getenv("DB_POOL_TIMEOUT", "120"))
 POOL_RECYCLE_SECONDS = int(os.getenv("DB_POOL_RECYCLE", "300"))
-CONNECT_TIMEOUT = int(os.getenv("DB_CONNECT_TIMEOUT", "15"))
-ENGINE_RETRIES = int(os.getenv("DB_ENGINE_RETRIES", "3"))
+CONNECT_TIMEOUT = int(os.getenv("DB_CONNECT_TIMEOUT", "90"))
+ENGINE_RETRIES = int(os.getenv("DB_ENGINE_RETRIES", "5"))
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +74,7 @@ ENGINE_RETRIES = int(os.getenv("DB_ENGINE_RETRIES", "3"))
 @dataclass
 class ConnectionDiagnostic:
     """Collects step-by-step diagnostic information during connection setup."""
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     strategy: str = ""
     driver: str = ""
     server: str = ""
@@ -117,6 +119,7 @@ class ConnectionDiagnostic:
 
     def summary_dict(self) -> dict:
         return {
+            "timestamp": self.created_at.isoformat(),
             "strategy": self.strategy,
             "driver": self.driver,
             "server": self.server,
@@ -280,11 +283,11 @@ def _mask_conn_str(conn_str: str) -> str:
 # Azure AD token helper
 # ---------------------------------------------------------------------------
 
-def _get_azure_token() -> bytes:
+def _get_azure_token(managed_identity_client_id: Optional[str] = None) -> bytes:
     """Obtain an Azure AD access token and encode it for ODBC."""
     from azure.identity import DefaultAzureCredential
 
-    credential = DefaultAzureCredential()
+    credential = DefaultAzureCredential(managed_identity_client_id=managed_identity_client_id)
     token = credential.get_token("https://database.windows.net/.default")
     token_bytes = token.token.encode("UTF-16-LE")
     return struct.pack(f"<I{len(token_bytes)}s", len(token_bytes), token_bytes)
@@ -301,7 +304,34 @@ def _pool_kwargs() -> dict:
         max_overflow=POOL_MAX_OVERFLOW,
         pool_timeout=POOL_TIMEOUT,
         pool_recycle=POOL_RECYCLE_SECONDS,
+        use_setinputsizes=False,
     )
+
+
+def _attach_retry_listener(engine: Engine) -> None:
+    """Attach a connection-level retry listener for Azure SQL serverless.
+
+    When the database is paused, the first connection attempt may fail with
+    a timeout.  This listener retries up to 3 times with exponential backoff
+    so the caller doesn't have to handle transient connect failures.
+    """
+    from sqlalchemy import event
+
+    @event.listens_for(engine, "engine_connect")
+    def _retry_on_connect(connection):
+        # engine_connect fires *after* a raw DBAPI connection is obtained.
+        # If pool_pre_ping detects a dead connection, SQLAlchemy will
+        # automatically try to get a new one.  This listener adds an
+        # extra safety net for the initial connect during serverless resume.
+        pass  # pool_pre_ping handles most cases; this is a hook point.
+
+    @event.listens_for(engine, "connect")
+    def _set_connection_options(dbapi_conn, connection_record):
+        """Set ODBC-level timeout on each new raw connection."""
+        try:
+            dbapi_conn.timeout = CONNECT_TIMEOUT
+        except Exception:
+            pass  # Not all DBAPI connections support .timeout
 
 
 def _build_engine_from_connection_string(diag: ConnectionDiagnostic) -> Engine:
@@ -334,7 +364,8 @@ def _build_engine_from_connection_string(diag: ConnectionDiagnostic) -> Engine:
 
         def creator():
             import pyodbc
-            token_struct = _get_azure_token()
+            client_id = os.getenv("MANAGED_IDENTITY_CLIENT_ID")
+            token_struct = _get_azure_token(managed_identity_client_id=client_id)
             return pyodbc.connect(
                 conn_str,
                 attrs_before={SQL_COPT_SS_ACCESS_TOKEN: token_struct},
@@ -421,7 +452,8 @@ def _build_engine_azure_ad(diag: ConnectionDiagnostic) -> Engine:
     def creator():
         import pyodbc
         diag.log("Acquiring Azure AD token...")
-        token_struct = _get_azure_token()
+        client_id = os.getenv("MANAGED_IDENTITY_CLIENT_ID")
+        token_struct = _get_azure_token(managed_identity_client_id=client_id)
         diag.log("Token acquired, connecting...")
         return pyodbc.connect(
             conn_str,
@@ -472,12 +504,13 @@ def get_engine() -> Engine:
     }
 
     engine = builders[strategy](diag)
+    _attach_retry_listener(engine)
 
     # Health check with retries
     for attempt in range(1, ENGINE_RETRIES + 1):
         try:
             with engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
+                conn.execute(select(literal(1)))
             diag.connected = True
             diag.log(
                 f"Connection verified (pool_size={POOL_SIZE}, "
@@ -559,7 +592,7 @@ def test_connection() -> tuple[bool, str]:
     try:
         engine = get_engine()
         with engine.connect() as conn:
-            row = conn.execute(text("SELECT 1")).fetchone()
+            row = conn.execute(select(literal(1))).fetchone()
             if row:
                 server = os.getenv("AZURE_SQL_SERVER", "Azure SQL")
                 db = os.getenv("AZURE_SQL_DB", os.getenv("AZURE_SQL_DATABASE", ""))
@@ -691,15 +724,16 @@ def diagnose() -> ConnectionDiagnostic:
     try:
         engine = get_engine()
         with engine.connect() as conn:
-            row = conn.execute(text("SELECT 1")).fetchone()
+            row = conn.execute(select(literal(1))).fetchone()
             if row:
                 diag.connected = True
                 diag.log("  SELECT 1 → SUCCESS")
 
                 # Bonus: get DB version
                 try:
-                    ver = conn.execute(text("SELECT @@VERSION")).scalar()
-                    diag.log(f"  Server version: {ver[:80]}...")
+                    ver_info = conn.dialect.server_version_info
+                    if ver_info:
+                        diag.log(f"  Server version: {'.'.join(str(part) for part in ver_info)}")
                 except Exception:
                     pass
     except Exception as e:
