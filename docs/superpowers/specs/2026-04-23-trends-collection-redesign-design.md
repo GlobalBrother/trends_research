@@ -447,6 +447,78 @@ These rules apply to **every** commit on this initiative. The agent must self-ch
 
 ---
 
+## ✅ Definition of Done (per task)
+
+Every task in this plan is considered **complete** only when **all** of the following are simultaneously true. The agent must self-verify each item before committing; the reviewer must re-verify before merging.
+
+### Universal DoD (applies to every task, 1–25)
+
+- [ ] **U1 — Code compiles / imports cleanly.** `python -c "import <new_module>"` succeeds with no `ImportError`, `SyntaxError`, or `ModuleNotFoundError`.
+- [ ] **U2 — All new tests pass.** Tests written in this task pass locally with `& "C:\Users\MarianCraciun\anaconda3\python.exe" -m pytest <new_test_paths> -v`.
+- [ ] **U3 — Baseline preserved.** Full suite (`pytest tests/ -q`) shows failure/error count **≤ baseline** (2F + 23E in the three documented files). No new failures, no new errors.
+- [ ] **U4 — No regression in existing test files.** `git diff main..HEAD -- tests/` shows only **new** test files; no edits to pre-existing tests except where the task body explicitly authorizes one (e.g. Task 18 modifies `tests/test_trend_collector.py`'s freshness expectations).
+- [ ] **U5 — No edits to forbidden surfaces.** `git diff main..HEAD` does not touch `src/scrapers/` (until Task 17), `src/ingestion/service.py` public API (ever), or any non-additive `src/db/models.py` columns (ever).
+- [ ] **U6 — Type-check clean.** `mypy --ignore-missing-imports src/collection/` (and any other touched paths) reports no new errors.
+- [ ] **U7 — Lint clean.** `ruff check src/collection/ tests/collection/` (or the project's configured linter) is clean.
+- [ ] **U8 — Public functions are typed and docstring'd.** Every new public function/class has a type annotation on every parameter + return, and a one-line docstring describing intent.
+- [ ] **U9 — Logging follows the structured format.** Any new `logger.info/warn/error` call uses key=value pairs (e.g. `provider=serpapi keyword=… ms=… status=ok`) so log aggregation can group on them.
+- [ ] **U10 — Secrets never logged.** No `print()`, no `logger.*` call writes the value of `*_KEY`, `*_TOKEN`, `*_PASSWORD`, or any field with `cassette` containing redacted credentials.
+- [ ] **U11 — Cassettes (if any) contain no live credentials.** `git diff` of any new `.json` cassette is grep'd for the value of every `_KEY` / `_TOKEN` / `_PASSWORD` env var; matches block the commit.
+- [ ] **U12 — `.env.example` updated** if the task introduces a new env var, with a comment explaining its purpose and default.
+- [ ] **U13 — One commit, conventional message.** Single commit per task, message matches the format from the task body (`feat(trends): …`, `chore(trends): …`, etc.).
+- [ ] **U14 — Status update posted.** Agent reports: `Step N/23 complete: <title>. Tests: baseline=X/Y, current=X/Y. Commit: <hash>.`
+
+### Per-task acceptance criteria
+
+Each row lists the **task-specific** criteria that must pass *in addition to* the universal DoD above. "Coverage" targets are measured with `pytest --cov=<path>`.
+
+| Task | Title | Specific Acceptance Criteria |
+|---|---|---|
+| **1** | Dependencies & env scaffolding | `requirements.txt` contains `arq`, `httpx`, `pybreaker`, `redis`, `fakeredis` at pinned versions. `.env.example` contains the full §9 block verbatim. `pip install -r requirements.txt` succeeds in a fresh venv. `import arq, httpx, pybreaker, redis, fakeredis` all succeed. |
+| **2** | Redis client + arq worker settings | `from src.collection.queue.redis_client import get_redis` returns an `aioredis.Redis` instance pointing at `REDIS_URL`. `WorkerSettings` class is importable. Test using `fakeredis` confirms PING returns OK. `docker-compose up redis` works locally. |
+| **3** | Canonical types + provider Protocol | `DataType` enum has exactly 4 members. `CanonicalTrendResult` is a frozen dataclass with all fields from §5.1. `TrendsProvider` is a `runtime_checkable` Protocol; `isinstance(stub, TrendsProvider)` works. Coverage of `types.py` ≥ 95%. |
+| **4** | Typed config object | Pydantic `Settings` loads every env var from §9 with correct defaults. Loading with no env vars set still produces a valid object (with empty provider chain — providers without creds are silently dropped). Validation rejects per-provider caps that sum > `TRENDS_MONTHLY_BUDGET_USD`. |
+| **5** | DB migrations — new columns | Migration is **idempotent** (running twice → no error, no duplicate column). `ScrapeRun` model has all four new columns; `CanonicalTrendSignal` has `provider`. Existing rows have `NULL` `provider` after migrate (no backfill). All existing DB tests still pass. |
+| **6** | ~~DataForSEO cassette + normalizer~~ | **SKIPPED** — execute Task 14 here instead. DoD = Task 14's DoD. |
+| **7** | ~~DataForSEOProvider~~ | **SKIPPED** — execute Task 15 here instead. DoD = Task 15's DoD. |
+| **8** | `ProviderSpend` (Redis-backed MTD tracker) | `add(provider, usd)` and `month_to_date(provider)` work against `fakeredis`. Spend is keyed by `YYYY-MM` so it auto-resets on month rollover (test by patching `datetime`). `over_cap(provider)` returns True when MTD ≥ configured cap. Coverage ≥ 95%. |
+| **9** | Pub/sub event publisher | `publish(job_id, event)` writes to channel `job:{job_id}:events`. Subscriber receives every published message in order. Channel name constant exported. Coverage ≥ 95%. |
+| **10** | `TrendsCollectionJob` (arq) | Job accepts `(keywords, geo, timeframe, category, trigger_source)`. Per-keyword work goes through `ProviderRouter.fetch`. Calls `save_trend()` for each `CanonicalTrendResult`. Publishes `started` / `completed` / `failed` events. Final `done` event includes `summary` dict. Updates `ScrapeRun` with `provider` and `cost_usd`. Bounded by `Semaphore(ARQ_CONCURRENT_KEYWORDS_PER_JOB)`. Integration test enqueues a 3-keyword job against a stub provider and asserts 3 events + 1 `done`. |
+| **11** | `/scrape/v2` enqueue + `/scrape/status/{job_id}` | `POST /scrape/v2` validates payload (Pydantic model), enqueues an arq job, returns `{job_id}` in < 100 ms. `GET /scrape/status/{job_id}` returns `{state, progress, summary?}`. Both routes registered in `src/api/main.py`. OpenAPI schema includes both. Auth respects whatever middleware already protects `/scrape`. |
+| **12** | Circuit breaker wrapper | Breaker opens after N consecutive failures (configurable, default 5). Cooldown defaults to 60 s. Half-open probe lets exactly one call through. Test all three states (closed → open → half-open → closed) with a fake clock. Coverage ≥ 95%. |
+| **13** | `ProviderRouter` (chain + budget + breaker) | `fetch()` walks the chain in order: skip if breaker open, skip if `ProviderSpend.over_cap`, try otherwise. On success, increments spend by `provider.cost_per_keyword_usd`. On all-providers-failure, writes `scrape_dead_letters` row with `error_type="all_providers_exhausted"` and raises `AllProvidersFailed`. `build_default_chain()` and `build_warmup_chain()` are independently exposed. Tests cover: happy path, fallback, budget skip, breaker skip, all-fail dead-letter. Coverage ≥ 90%. |
+| **14** | SerpAPI normalizer + cassettes | 4 cassettes checked in (one per `data_type`) at `tests/collection/providers/cassettes/serpapi_python_us_*.json`. Cassettes contain no `api_key` value. `normalize_serpapi(payload, data_type)` returns a `CanonicalTrendResult` whose `results` shape matches what `save_trend()` expects (verify by feeding the output through the existing pipeline in a unit test). Coverage of `normalizers/serpapi.py` ≥ 90%. |
+| **15** | `SerpAPIProvider` | Implements `TrendsProvider` Protocol. `name="serpapi"`. `cost_per_keyword_usd = 0.01` (4 calls × ~$0.0025). `fetch()` issues 4 parallel GETs via `asyncio.gather`. Tests cover: happy path against cassettes, 4xx → `ProviderError`, 429 → retry-with-backoff (capped). `httpx.MockTransport` is used; **no live calls in CI**. Coverage ≥ 90%. |
+| **16** | Admin provider endpoints | `GET /admin/providers/spend` returns `{provider: {month_to_date_usd, monthly_cap_usd, over_cap}}` for every configured provider. `GET /admin/providers/status` returns `{provider: {circuit_state, last_failure_at, recent_error_count}}`. Both inherit existing `/admin/*` auth (do not add new auth). Both have unit tests using `fakeredis`-backed `ProviderSpend` and a stub circuit-breaker registry. |
+| **17** | `LegacyScrapyProvider` | Wraps existing Scrapy spider via `subprocess` + temp JSONL output. **`trends_spider.py` is not modified** (verify with `git diff`). `name="legacy_scrapy"`, `cost_per_keyword_usd=0.0`. `fetch()` returns the same 4 canonical rows the paid providers do, by parsing the JSONL and feeding it through `normalizers/legacy_scrapy.py`. On subprocess timeout (default 120 s), raises `ProviderError("legacy_scrapy_timeout")`. Tests use a fake subprocess (monkey-patched `asyncio.create_subprocess_exec`). |
+| **18** | Unified freshness check | `_needs_scrape(keyword, geo)` in `src/api/routes/trends.py` is rewritten to query `canonical_trend_signals.time_bucket_start >= now() - freshness_hours`. `SkipRecentlyScrapedMiddleware` is **not yet deleted** (that is Task 21) but is **bypassed** when `TRENDS_V2_ENABLED=true`. New unit tests cover both freshness paths. Existing `test_trend_collector.py` freshness tests are updated to match (this is the only authorized edit to existing tests). |
+| **19** | Feature-flag `/scrape` through V2 + frontend SSE | When `TRENDS_V2_ENABLED=false` (default), `POST /scrape` behaves byte-identically to `main` branch. When `true`, it enqueues an arq job and returns `{job_id}`. Frontend's `scrape.ts` opens an `EventSource` against `/scrape/stream/{job_id}` and dispatches per-event UI updates. Cypress/Vitest test (or equivalent) covers both flag states. **Flag default stays `false` until staging cutover.** |
+| **20** | `WarmupJob` cron | arq cron entry `cron(hour=2, minute=0)`. Picks top-N keywords per geo from `WARMUP_GEOS`. Skips keywords with fresh data (`< WARMUP_FRESHNESS_HOURS`). Enqueues a `TrendsCollectionJob` with `trigger_source="warmup"` and `priority=low`. Disabled by default (`TRENDS_WARMUP_ENABLED=false`). Test: stub the time, stub the trends-table query, assert correct enqueue payload. |
+| **21** | Cleanup deprecated paths | `SkipRecentlyScrapedMiddleware` class removed from `middlewares.py`. `/import_tokens` route removed from `src/api/routes/scrape.py`. `token_import_spider.py` deleted. `.env.example` trimmed of any obsolete vars. `git grep -i "import_tokens\|SkipRecentlyScrapedMiddleware\|token_import_spider"` returns zero matches. Full suite still green. **Gate:** only proceed if Tasks 1–20 are merged to `main` and prod has been on V2 for ≥ 7 days with clean error rates. |
+| **22** | `SearchAPIProvider` (Tier-1 failover) | 4 cassettes checked in. `name="searchapi"`, `cost_per_keyword_usd = 0.016`. Normalizer reuses 80%+ of `serpapi.py` via shared mapper. **Router fallback test:** force SerpAPI → `ProviderError`, assert SearchAPI is invoked next and returns canonical results. Provider listed in `build_default_chain()` after SerpAPI when `SEARCHAPI_KEY` is set. |
+| **23** | `BrightDataProvider` **OR** `OxylabsProvider` (Tier-2) | **One vendor only**, chosen by user before starting. Cassette captured from a real run, credentials stripped. Normalizer maps single consolidated payload → 4 canonical rows. For Bright Data: trigger-then-poll loop with configurable timeout (test uses 1 s). **Router test:** simulate both Tier-1 providers failing → assert Tier-2 invoked. Provider listed in `build_default_chain()` after Tier-1 when credentials are set. |
+| **24** | `ApifyTrendsProvider` (bulk/warmup) | `warmup_only = True` class attribute. **Router unit tests cover both branches:** (a) `trigger_source="on_demand"` → Apify is **skipped** (never invoked); (b) `trigger_source="warmup"` → Apify **is** invoked. `build_warmup_chain()` exposed and includes Apify ahead of fallback providers. `build_default_chain()` does **not** include Apify. Cassette-based happy-path test passes. |
+| **25** | BigQuery seed (optional) | Gated by `BIGQUERY_TRENDS_ENABLED=true`; default off. `fetch_top_terms(geo, limit)` returns `list[str]`. **Graceful degradation:** missing creds, BigQuery API errors, or empty result set → returns `[]` and logs a warning, never raises. Unit test stubs the BigQuery client. `WarmupJob` integration test asserts BigQuery seeds are prepended to virality-based seeds and deduped. |
+
+### Phase-level DoD (gates between phases)
+
+In addition to per-task DoD, advancing to the next **phase** requires:
+
+| Phase | Gate |
+|---|---|
+| 1 → 2 | All of Tasks 1–5 merged. `python -c "from src.collection.trends.types import CanonicalTrendResult, DataType; from src.collection.trends.providers.base import TrendsProvider"` works. Migration is idempotent on a fresh DB and on the prod DB. |
+| 2 → 3 | Task 8 (ProviderSpend) merged. SerpAPI provider (Task 15, executed in Phase 2) returns canonical rows for at least one cassette. **Gate test:** `pytest tests/collection/providers/test_serpapi.py tests/collection/test_budget.py -v` is green. |
+| 3 → 4 | Tasks 9–11 merged. End-to-end smoke: enqueue a 1-keyword job against `SerpAPIProvider` (cassette transport), assert SSE stream receives 1 `completed` + 1 `done`, assert `scrape_runs` row written with `provider="serpapi"` and `cost_usd > 0`. |
+| 4 → 5 | Tasks 12–13 merged. **Gate test:** `pytest tests/collection/test_router.py -v` is green; circuit breaker, budget guard, and dead-letter paths all covered. |
+| 5 → 5b | Tasks 14–16 merged. `/admin/providers/spend` and `/admin/providers/status` return live data in dev. |
+| 5b → 6 | Task 22 + (Task 23 OR Task 23-alt) + Task 24 merged. **Gate test:** simulate cascading failures across all paid providers and assert eventual fallthrough to a stub legacy provider. |
+| 6 → 7 | Task 17 merged. `LegacyScrapyProvider` returns canonical rows in a manual smoke test against the existing spider. **`src/scrapers/` diff vs main is empty.** |
+| 7 → 8 | Tasks 18–19 merged. Staging has `TRENDS_V2_ENABLED=true` for ≥ 48 h with no new errors. |
+| 8 → 9 | Task 20 (and optionally Task 25) merged. Prod has `TRENDS_V2_ENABLED=true` for ≥ 7 days with clean error rates and warmup runs visible in `scrape_runs` with `trigger_source="warmup"`. |
+| 9 → done | Task 21 merged. `git grep` for deprecated symbols returns empty. README + CHANGELOG updated. Completion Prompt's verification protocol passes 100%. |
+
+---
+
 ## File Structure (locked-in)
 
 **New files (create):**
