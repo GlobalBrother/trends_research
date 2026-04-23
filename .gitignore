@@ -57,3 +57,5 @@ Thumbs.db
 .streamlit/
 /frontend/package-lock.json
 /frontend/pnpm-lock.yaml
+
+.claude/
