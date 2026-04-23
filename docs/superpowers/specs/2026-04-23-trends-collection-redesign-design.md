@@ -6,11 +6,21 @@
 
 ## 1. Summary
 
-Replace the current Scrapy-only Google Trends collection path with a **multi-provider resilient pipeline**:
+Replace the current Scrapy-only Google Trends collection path with a **multi-provider resilient pipeline**. Rather than anointing a single vendor, we treat providers as **interchangeable adapters** behind one Protocol and configure an **ordered chain** at runtime. The recommended default chain mixes provider categories so we are never single-vendor-dependent:
 
-- **Primary** — DataForSEO Google Trends Live endpoint (paid, pay-per-use, batched)
-- **Fallback** — SerpAPI Google Trends (paid, fixed-plan, used on primary outage or circuit-breaker open)
-- **Last-resort** — the existing Scrapy spider, relegated to disaster-recovery only
+- **Tier 1 — Paid SERP-style APIs (primary, full 4-widget Explore parity):**
+  - **SerpAPI** (`engine=google_trends`) — mature, predictable JSON shape, fixed-plan pricing.
+  - **SearchAPI.io** (`engine=google_trends`) — near-identical shape to SerpAPI, ~30–50% cheaper, used as paid-tier failover so we are not locked to one vendor.
+- **Tier 2 — Paid scraping-infrastructure APIs (fallback, also full Explore):**
+  - **Bright Data SERP API** *or* **Oxylabs SERP Scraper API** — pay-per-success Google Trends endpoints. Pick whichever you already have a contract with; they are interchangeable in the chain.
+- **Tier 3 — Managed actor (bulk / warmup, latency-tolerant):**
+  - **Apify `google-trends-scraper` actor** — pay per compute unit; ideal for scheduled warmup where the user is not waiting.
+- **Tier 4 — Last-resort, free/in-house:**
+  - The existing **Scrapy spider** (kept as `LegacyScrapyProvider`), optionally augmented by **pytrends** in the same provider for a second free path.
+- **Side-channel (free, scheduled-only seed data, not Explore):**
+  - **Google Trends BigQuery public dataset** — used by `WarmupJob` to discover *which* keywords are surging in each geo before we spend Tier-1 budget on Explore widgets.
+
+Any subset of the above can be enabled per environment via `TRENDS_PROVIDER_CHAIN`; the router doesn't care how many providers there are, only that each implements the `TrendsProvider` Protocol. We deliberately ship with **at least two paid providers in the chain at all times** so a single-vendor outage or pricing change never blacks out collection.
 
 Jobs run on an **arq + Redis** queue so they survive restarts, scale beyond the single gunicorn worker, and can stream partial results to the frontend via **Server-Sent Events (SSE)**. A nightly scheduled **warmup job** refreshes the top N keywords per geo so the dashboard is never empty on first paint.
 
@@ -70,9 +80,12 @@ Primary weaknesses being addressed (from the current-state audit):
 │    TrendsCollectionJob(keywords, geo, timeframe, category)         │
 │      ├─ for keyword in keywords:  (bounded asyncio.gather)         │
 │      │    ├─ ProviderRouter.fetch(keyword, …)                      │
-│      │    │    ├─ 1) DataForSEOProvider    ─┐                      │
-│      │    │    ├─ 2) SerpAPIProvider       ─┤ fallback chain       │
-│      │    │    └─ 3) LegacyScrapyProvider  ─┘                      │
+│      │    │    ├─ 1) SerpAPIProvider        ─┐                     │
+│      │    │    ├─ 2) SearchAPIProvider      ─┤                     │
+│      │    │    ├─ 3) BrightDataProvider     ─┤ ordered             │
+│      │    │    │    (or OxylabsProvider)     │ fallback chain      │
+│      │    │    ├─ 4) ApifyTrendsProvider    ─┤ (configurable)      │
+│      │    │    └─ 5) LegacyScrapyProvider   ─┘                     │
 │      │    ├─ normalize → list[CanonicalTrendResult]                │
 │      │    ├─ save_trend(...) × N   (existing helper)               │
 │      │    └─ publish {keyword, status, counts} → pub/sub           │
@@ -81,7 +94,7 @@ Primary weaknesses being addressed (from the current-state audit):
 ```
 
 Cron (arq scheduled task, nightly 02:00 UTC):
-`WarmupJob` picks the top 50 keywords per configured geo (by recent virality score) and enqueues a low-priority `TrendsCollectionJob` against the same queue.
+`WarmupJob` picks the top 50 keywords per configured geo (by recent virality score, optionally seeded by the **BigQuery `bigquery-public-data.google_trends.top_terms` dataset**) and enqueues a low-priority `TrendsCollectionJob` against the same queue.
 
 ## 5. Components & Interfaces
 
@@ -90,7 +103,7 @@ Cron (arq scheduled task, nightly 02:00 UTC):
 ```
 # src/collection/trends/providers/base.py
 class TrendsProvider(Protocol):
-    name: str                          # "dataforseo", "serpapi", "legacy_scrapy"
+    name: str                          # "serpapi", "searchapi", "brightdata", "oxylabs", "apify", "legacy_scrapy"
     supports: frozenset[DataType]      # which widgets this provider returns
     cost_per_keyword_usd: float        # for budget tracking (0 for legacy)
 
@@ -105,11 +118,21 @@ class TrendsProvider(Protocol):
 
 `CanonicalTrendResult` is a dataclass with `data_type` (one of `interest_over_time | interest_by_region | related_queries | related_topics`), `keyword`, `geo`, `time_range`, `category`, `results: list[dict]`, and `raw_payload: dict`. Shape of `results[i]` matches what the existing pipeline already writes for each `data_type` — so downstream code is untouched.
 
-### 5.2 Concrete providers
+### 5.2 Concrete providers (the catalog)
 
-- **`DataForSEOProvider`** — posts to `https://api.dataforseo.com/v3/keywords_data/google_trends/explore/live`. One HTTP call returns all four widgets for one keyword; we emit 4 `CanonicalTrendResult` rows. Auth via Basic `DATAFORSEO_LOGIN:DATAFORSEO_PASSWORD`.
-- **`SerpAPIProvider`** — GET `https://serpapi.com/search.json?engine=google_trends&data_type=<one of four>`. One HTTP call per widget, so 4 calls per keyword. Auth via `SERPAPI_KEY`.
-- **`LegacyScrapyProvider`** — wraps the existing Scrapy spider via `subprocess` + temp JSONL output file (or `CrawlerRunner` if we're willing to bring Scrapy into the same process; default to subprocess to match current behavior). Only invoked when both paid providers are unavailable.
+All providers below implement the same `TrendsProvider` Protocol and emit `CanonicalTrendResult` rows. The chain is configured per-environment via `TRENDS_PROVIDER_CHAIN`; ship at least two paid providers in front of the legacy spider.
+
+- **`SerpAPIProvider`** — GET `https://serpapi.com/search.json?engine=google_trends&data_type=<one of four>`. One HTTP call per widget (4 per keyword). Auth: `SERPAPI_KEY`. Fixed-plan pricing (~$50/mo Developer = 5k searches; ~$130/mo Production = 30k). Strength: most mature shape, well-documented, includes `google_trends_trending_now` engine for warmup. Weakness: 4 calls per keyword inflates request count.
+- **`SearchAPIProvider`** — GET `https://www.searchapi.io/api/v1/search?engine=google_trends&data_type=<one of four>`. Response shape is intentionally SerpAPI-compatible, so the normalizer is a thin variant. Auth: `SEARCHAPI_KEY`. Pricing: ~$40/mo for 10k searches, ~$80/mo for 30k. Used as **paid-tier failover** for SerpAPI so a SerpAPI outage or quota-exhaustion does not collapse the chain to the legacy spider.
+- **`BrightDataProvider`** — Bright Data SERP API, Google Trends collector. Pay-per-success (~$1.50–$3 per 1k requests on the Pay-As-You-Go plan). Auth: `BRIGHTDATA_API_TOKEN` + zone name. Strength: highest success rate against Google's anti-bot, no fixed monthly minimum if you have a contract. Weakness: heavier integration (zones, snapshots), and account onboarding is slow.
+- **`OxylabsProvider`** — Oxylabs SERP Scraper API with `source=google_trends_explore`. Pay-per-success (~$2 per 1k results on starter, lower on volume). Auth: `OXYLABS_USERNAME` + `OXYLABS_PASSWORD`. Functionally interchangeable with `BrightDataProvider` — pick whichever vendor the company already has procurement for. We document both so the chain can be reordered without code changes.
+- **`ApifyTrendsProvider`** — calls the **Apify `emastra/google-trends-scraper`** (or equivalent) actor via the Apify API, polls until the run finishes, then reads dataset items. Auth: `APIFY_TOKEN` + actor id. Pricing: ~$0.25 per 1k results on the free tier's overage, cheap in bulk. Strength: ideal for the **warmup job** where we are issuing 100s of keywords overnight and don't care about per-keyword latency. Weakness: actor cold-start adds 10–30s per run, so it is unsuitable for the user-triggered hot path — keep it late in the chain, or restrict it to the `trigger_source="warmup"` code path.
+- **`LegacyScrapyProvider`** — wraps the existing Scrapy spider via `subprocess` + temp JSONL output (or `CrawlerRunner` if we are willing to bring Scrapy into the same process; default to subprocess to match current behavior). Optionally, the same provider can fall through to **`pytrends`** as a second free attempt before giving up. Only invoked when all paid providers are unavailable or budget-exhausted.
+- **`BigQueryTrendsProvider`** *(seed-only, not in the main chain)* — queries `bigquery-public-data.google_trends.top_terms` to get Google's published top-25 daily/weekly trending terms per US DMA. Returns *only* a degenerate `interest_over_time` shape and is **not** a substitute for Explore. Used by `WarmupJob` to discover candidate keywords cheaply before spending Tier-1 budget on full widgets. Free (BigQuery sandbox quota is sufficient at our volume). Auth: GCP service-account JSON.
+
+#### Why this set, and not DataForSEO
+
+DataForSEO was considered and dropped: their per-call pricing is competitive but they impose tight per-second caps that complicate the burst path, and adopting them as the single primary would re-introduce the single-vendor-dependency we are explicitly trying to eliminate. The two SERP-style providers (SerpAPI + SearchAPI.io) give us a like-for-like swap on the hot path; the two scraping-infra providers (Bright Data / Oxylabs) give us a fundamentally *different* underlying technique as deeper fallback; Apify covers the bulk/warmup case; the legacy spider remains the floor.
 
 ### 5.3 `ProviderRouter`
 
@@ -120,7 +143,7 @@ class TrendsProvider(Protocol):
 
 ### 5.4 Queue & streaming
 
-- **arq** with Redis (Azure Cache for Redis Basic C0, $16/mo). One `TrendsCollectionJob` per burst. Concurrency inside the job: `asyncio.gather` with `Semaphore(MAX_CONCURRENT_KEYWORDS=8)` — tuned so DataForSEO's per-second cap is respected.
+- **arq** with Redis (Azure Cache for Redis Basic C0, $16/mo). One `TrendsCollectionJob` per burst. Concurrency inside the job: `asyncio.gather` with `Semaphore(MAX_CONCURRENT_KEYWORDS=8)` — tuned to the strictest per-second cap among the configured providers (SerpAPI: 5/s on Developer; SearchAPI: similar; Bright Data / Oxylabs: effectively unbounded for our volume). The semaphore value is configurable per environment.
 - **Redis pub/sub** channel per job: `job:{job_id}:events`. Workers publish `{keyword, status: "started|completed|failed", counts, error}` as they go.
 - **SSE endpoint** `/scrape/stream/{job_id}` subscribes to the channel and proxies events to the client until a terminal `{event: "done"}` message arrives or the connection times out.
 
@@ -148,7 +171,7 @@ One authoritative freshness check: `canonical_trend_signals.time_bucket_start >=
 
 **Additive only.** Four new columns on `ScrapeRun`:
 
-- `provider VARCHAR(32)` — `dataforseo | serpapi | legacy_scrapy | mixed`
+- `provider VARCHAR(32)` — `serpapi | searchapi | brightdata | oxylabs | apify | legacy_scrapy | mixed`
 - `cost_usd FLOAT DEFAULT 0` — sum of provider costs for the run
 - `job_id VARCHAR(64) NULL` — arq job id for correlation
 - `trigger_source VARCHAR(32) DEFAULT 'on_demand'` — `on_demand | warmup | api`
@@ -166,7 +189,7 @@ Migrations go through the existing idempotent `src/db/migrate.py` pattern. No ta
 - **Budget tracking** — a new lightweight `ProviderSpend` (in-process, Redis-persisted) tracks month-to-date USD per provider. `GET /admin/providers/spend` returns it.
 - **Run-level health** — the existing `ScrapeRun` already captures `fetched_count`, `parsed_count`, `inserted_count`, `duplicate_ratio`, `failed_count`, `top_error_types`. We add `provider`, `cost_usd`.
 - **Circuit breaker state** is exposed via `GET /admin/providers/status` for the on-call screen.
-- **Logging** — structured `logger.info("provider=dataforseo keyword=… ms=… status=ok")` so log aggregation can group by provider.
+- **Logging** — structured `logger.info("provider=serpapi keyword=… ms=… status=ok")` so log aggregation can group by provider.
 
 ## 9. Configuration & Secrets
 
@@ -174,21 +197,44 @@ New env vars (added to `.env.example`):
 
 ```
 # Provider selection
-TRENDS_PROVIDER_CHAIN=dataforseo,serpapi,legacy_scrapy
+# Comma-separated, ordered. Any provider listed here must have its credentials
+# below; missing credentials cause the provider to be silently skipped (with a
+# warning at startup). Keep at least two paid providers ahead of legacy_scrapy.
+TRENDS_PROVIDER_CHAIN=serpapi,searchapi,brightdata,apify,legacy_scrapy
 TRENDS_MONTHLY_BUDGET_USD=150
 TRENDS_WARMUP_ENABLED=true
 TRENDS_WARMUP_GEOS=US,UK,DE
 TRENDS_WARMUP_FRESHNESS_HOURS=18
 TRENDS_WARMUP_TOP_N=50
-
-# DataForSEO
-DATAFORSEO_LOGIN=
-DATAFORSEO_PASSWORD=
-DATAFORSEO_MONTHLY_CAP_USD=100
+# Override the chain for the warmup job (latency-tolerant, prefer cheap bulk).
+TRENDS_WARMUP_PROVIDER_CHAIN=apify,searchapi,legacy_scrapy
 
 # SerpAPI
 SERPAPI_KEY=
-SERPAPI_MONTHLY_CAP_USD=50
+SERPAPI_MONTHLY_CAP_USD=60
+
+# SearchAPI.io
+SEARCHAPI_KEY=
+SEARCHAPI_MONTHLY_CAP_USD=40
+
+# Bright Data SERP API (optional — leave blank to disable)
+BRIGHTDATA_API_TOKEN=
+BRIGHTDATA_ZONE=serp_api1
+BRIGHTDATA_MONTHLY_CAP_USD=30
+
+# Oxylabs SERP Scraper API (optional — interchangeable with Bright Data)
+OXYLABS_USERNAME=
+OXYLABS_PASSWORD=
+OXYLABS_MONTHLY_CAP_USD=30
+
+# Apify (warmup / bulk)
+APIFY_TOKEN=
+APIFY_TRENDS_ACTOR=emastra/google-trends-scraper
+APIFY_MONTHLY_CAP_USD=20
+
+# BigQuery seed (warmup keyword discovery, free at our volume)
+BIGQUERY_TRENDS_ENABLED=false
+GOOGLE_APPLICATION_CREDENTIALS=
 
 # (Per-provider caps above must sum to ≤ TRENDS_MONTHLY_BUDGET_USD.)
 
@@ -214,31 +260,44 @@ Secrets go through the existing `src/runtime/secrets.py`; no new secret backend.
 Each phase is a mergeable slice; the legacy path stays alive until phase 6.
 
 1. **Infra** — Redis dependency, `arq` dependency, `src/collection/trends/` module skeleton, config surface. No behavior change.
-2. **Primary provider** — DataForSEO provider + normalizer + `TrendsCollectionJob` + enqueue path behind `TRENDS_V2_ENABLED=false` feature flag.
+2. **First paid provider** — implement *one* Tier-1 provider end-to-end (recommend **SerpAPI** because of the most stable documentation) + normalizer + `TrendsCollectionJob` + enqueue path behind `TRENDS_V2_ENABLED=false` feature flag. The same task pattern is reused verbatim for every subsequent provider — only the response-shape adapter changes.
 3. **Streaming** — SSE endpoint + Redis pub/sub; frontend wiring (or a minimal test harness) to verify events flow.
-4. **Fallback + router** — SerpAPI provider, `ProviderRouter` with circuit breaker + budget guard, `/admin/providers/*` endpoints.
-5. **Legacy provider** — wrap the existing Scrapy spider as `LegacyScrapyProvider`; place it at the end of the default chain.
-6. **Cutover** — flip `TRENDS_V2_ENABLED=true` in staging, then prod. `/scrape` continues to work but routes through the new pipeline.
-7. **Warmup cron** — enable nightly warmup once prod has been on V2 for ~1 week with clean error rates.
-8. **Cleanup** — remove `SkipRecentlyScrapedMiddleware`, remove `/import_tokens`, remove `token_import_spider.py`, delete the legacy `/scrape` code path. Trim `.env.example`.
+4. **Second paid provider + router** — add **SearchAPI.io** (or your preferred Tier-2 vendor), implement `ProviderRouter` with circuit breaker + budget guard, expose `/admin/providers/*` endpoints. Chain is now `serpapi,searchapi,...` with real failover behavior.
+5. **Scraping-infra fallback** — add **Bright Data** *or* **Oxylabs** (whichever the company has procurement for) as Tier-2 deep fallback.
+6. **Bulk / warmup provider** — add **Apify** provider, wire it into `TRENDS_WARMUP_PROVIDER_CHAIN`. Optionally add the BigQuery seed query for keyword discovery.
+7. **Legacy provider** — wrap the existing Scrapy spider as `LegacyScrapyProvider`; place it at the end of every chain.
+8. **Cutover** — flip `TRENDS_V2_ENABLED=true` in staging, then prod. `/scrape` continues to work but routes through the new pipeline.
+9. **Warmup cron** — enable nightly warmup once prod has been on V2 for ~1 week with clean error rates.
+10. **Cleanup** — remove `SkipRecentlyScrapedMiddleware`, remove `/import_tokens`, remove `token_import_spider.py`, delete the legacy `/scrape` code path. Trim `.env.example`.
 
 ## 12. Budget & Cost Model (30k requests/month target)
 
+The chain is built to **stay under $150/mo even if the cheapest paid provider is unavailable for an entire month**. Numbers below are list prices from each vendor's published plans (Apr 2026), assuming the on-demand path consumes ~25k requests/mo and warmup/scheduled traffic adds ~5k.
+
 | Line item | Cost/mo |
 |---|---|
-| DataForSEO Trends Explore Live (~$0.002/req × ~25k) | ~$50 |
-| SerpAPI Developer (5k searches, fallback-only) | $50 |
+| SerpAPI Developer plan (5k searches) — *Tier-1 primary, hot path* | $50 |
+| SearchAPI.io Starter (10k searches) — *Tier-1 failover* | $40 |
+| Bright Data SERP API PAYG (~$2/1k × ~5k fallback) — *Tier-2, only on circuit-open* | ~$10 |
+| Apify (~$0.25/1k × ~5k warmup results) — *Tier-3, scheduled* | ~$5 |
 | Azure Cache for Redis Basic C0 | $16 |
-| **Total** | **~$116** |
+| **Total (typical)** | **~$121** |
 
-Leaves a buffer against the $150/mo cap. If SerpAPI fallback usage is low (expected), the Developer plan is sufficient.
+**Worst-case scenario** (SerpAPI completely down for the month, traffic falls through to SearchAPI + Bright Data): SearchAPI alone scales to ~$80 at 30k, Bright Data adds ~$60 if it absorbs the overflow → total ~$176. To prevent that, `TRENDS_MONTHLY_BUDGET_USD=150` is enforced by the budget guard, which will route to `LegacyScrapyProvider` (free) once the cap is hit.
+
+**Best-case scenario** (chain stays on Tier-1 only): ~$90/mo total. Comfortable buffer.
+
+If you have an existing contract with Bright Data or Oxylabs you can drop one of the SERP-style vendors and rely on scraping-infra pricing entirely; the math still lands under $150/mo at our volume.
 
 ## 13. Open Questions / Deferred
 
-- **Provider fallback order tuning**: start with DataForSEO→SerpAPI→Legacy. If SerpAPI's data quality for `related_topics` is noticeably better, revisit.
-- **In-process cache eviction**: once Redis is available, the in-memory response cache that forced `workers=1` can be swapped for a Redis-backed cache. This is explicitly *not* part of this spec — tracked as a follow-up.
+- **Chain ordering tuning**: ship with `serpapi,searchapi,brightdata,apify,legacy_scrapy` and measure per-provider success rate / latency / cost-per-success over the first 2 weeks. Reorder based on real numbers; the router supports this via env var alone.
+- **Bright Data vs Oxylabs**: pick one based on existing procurement; both expose Google Trends and both have an adapter in the catalog. Don't ship both unless you actually need the redundancy.
+- **`related_topics` data quality**: SerpAPI and SearchAPI.io occasionally return empty `related_topics` for low-volume keywords; Bright Data tends to return more. If quality matters more than cost for that widget, the router can be configured to *always* prefer the scraping-infra provider for `related_topics` only — deferred until we have measurements.
+- **In-process cache eviction**: once Redis is available, the in-memory response cache that forced `workers=1` can be swapped for a Redis-backed cache. Tracked as a follow-up.
 - **Multi-tenancy / per-user budget caps**: deferred. Single global budget for now.
 - **Web dashboard for provider health**: current plan is JSON endpoints only; a UI can come later.
+- **pytrends inside `LegacyScrapyProvider`**: open question whether the extra free-path attempt is worth the maintenance cost. Defer until we observe how often the chain actually falls all the way through to legacy.
 
 ## 14. Success Criteria
 
@@ -255,7 +314,7 @@ Rollout is complete when, over a 7-day window post-cutover:
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the Scrapy-only Google Trends path with a multi-provider resilient pipeline (DataForSEO → SerpAPI → Legacy Scrapy) running on an arq + Redis queue with SSE streaming.
+**Goal:** Replace the Scrapy-only Google Trends path with a multi-provider resilient pipeline running on an arq + Redis queue with SSE streaming. The default chain is `SerpAPI → SearchAPI.io → Bright Data (or Oxylabs) → Apify → Legacy Scrapy`; any subset can be enabled per environment.
 
 **Architecture:** Adapter pattern behind a `TrendsProvider` Protocol; a `ProviderRouter` orchestrates fallback, circuit-breaking, and budget enforcement. Jobs run in an arq worker process; partial results stream to the UI via Redis pub/sub + SSE. Existing `save_trend()` ingestion and canonical-signal schema remain untouched.
 
@@ -879,7 +938,9 @@ git commit -m "feat(db): add V2 columns to scrape_runs and canonical_trend_signa
 
 ---
 
-## Phase 2 — DataForSEO primary provider
+## Phase 2 — First paid provider (recommended: SerpAPI)
+
+> **Note on the worked example below.** The detailed cassette + normalizer + provider tasks in the rest of Phase 2 were originally drafted against the DataForSEO endpoint shape. **DataForSEO has been removed from this design** (see §1 and §5.2 of the design above). The implementation pattern — *(1) check in a static cassette of one real response, (2) write a normalizer that maps it to `CanonicalTrendResult`, (3) write the provider as a thin httpx client around the cassette shape, (4) cover both with unit tests using the cassette so CI never makes paid calls* — is **identical** for every provider in the catalog and should be applied to whichever provider you implement first. **Recommendation: implement SerpAPI first** (most stable docs, easiest to fixture), then immediately apply the same pattern to SearchAPI.io as the second-paid-provider task. The DataForSEO-specific snippets below are kept only as a reference template for the structure — substitute the SerpAPI request URL, auth header (`api_key` query param), and JSON shape (`engine=google_trends&data_type=TIMESERIES|GEO_MAP|RELATED_QUERIES|RELATED_TOPICS`) when you implement.
 
 ### Task 6: DataForSEO cassette + normalizer
 
