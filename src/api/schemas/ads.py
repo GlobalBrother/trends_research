@@ -42,6 +42,7 @@ class AdsInsightRow(OpenModel):
 
 class AdsInsightResponse(BaseModel):
     data: list[AdsInsightRow]
+    total: int = 0
 
 
 class BrandSearchResponse(BaseModel):
@@ -50,4 +51,21 @@ class BrandSearchResponse(BaseModel):
     """
 
     data: list[Any]
+
+
+class AdsInsightDateRange(BaseModel):
+    min: Optional[str] = None
+    max: Optional[str] = None
+
+
+class AdsInsightFiltersResponse(BaseModel):
+    """Mirrors ``AdsInsightFilters`` in ``frontend/src/lib/api.ts`` 1:1."""
+
+    platforms: list[str]
+    formats: list[str]
+    keywords: list[str]
+    performance_tiers: list[str]
+    brands: list[str]
+    date_range: AdsInsightDateRange
+
 

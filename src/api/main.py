@@ -34,6 +34,7 @@ from src.api.routes import (
     ads as ads_routes,
     auth as auth_routes,
     content as content_routes,
+    insights as insights_routes,
     niches as niches_routes,
     scrape as scrape_routes,
     trends as trends_routes,
@@ -136,6 +137,7 @@ app.include_router(niches_routes.router)
 app.include_router(trends_routes.router)
 app.include_router(content_routes.router)
 app.include_router(ads_routes.router)
+app.include_router(insights_routes.router)
 app.include_router(scrape_routes.router)
 app.include_router(admin_routes.router)
 # ---------------------------------------------------------------------------

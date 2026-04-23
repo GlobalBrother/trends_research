@@ -18,6 +18,7 @@ import pandas as pd
 from src.config import CACHE_TTL_SECONDS, PROJECT_ROOT
 from src.collector.trend_collector import TrendCollector
 from src.analytics.analytics_engine import AnalyticsEngine
+from src.insights import InsightPipeline
 from src.niche.niche_discovery import NicheDiscovery
 from src.db.connection import get_engine, get_session, session_scope
 from src.db.models import Niche, TokenUsage
@@ -83,6 +84,7 @@ TEST_ACCOUNT_OTP = os.getenv("TEST_ACCOUNT_OTP", "000000").strip()
 # ---------------------------------------------------------------------------
 collector = TrendCollector()
 analytics = AnalyticsEngine()
+pipeline = InsightPipeline(analytics=analytics)
 niche = NicheDiscovery()
 
 
@@ -203,6 +205,7 @@ __all__ = [
     "session_scope",
     "collector",
     "analytics",
+    "pipeline",
     "niche",
     "_JSONEncoder",
     "_sanitize",

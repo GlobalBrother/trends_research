@@ -18,6 +18,7 @@ from .content import (
     YoutubeVideosResponse,
 )
 from .ads import (
+    AdsInsightFiltersResponse,
     AdsInsightResponse,
     AdsInsightRow,
     BrandSearchResponse,
@@ -54,7 +55,7 @@ __all__ = [
     "RedditPostRow", "RedditPostsResponse",
     "ThreadsPostRow", "ThreadsPostsResponse",
     # ads
-    "AdsInsightRow", "AdsInsightResponse", "BrandSearchResponse",
+    "AdsInsightRow", "AdsInsightResponse", "AdsInsightFiltersResponse", "BrandSearchResponse",
     # niches
     "NicheKeywordsResponse", "NicheMutationResponse",
     # auth

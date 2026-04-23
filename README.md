@@ -130,6 +130,8 @@ docker run -p 8000:8000 --env-file .env trends-research
 
 `docker-compose.yml` runs a single service and connects to an external Azure SQL instance — no database container.
 
+The in-memory response cache requires `--workers 1`. Do not raise the worker count without a shared cache backend (Roadmap 3.1).
+
 ---
 
 ## Database Connection
@@ -745,8 +747,8 @@ Status as of 2026-04-22, demo target 2026-04-24.
 - [x] **Tier 2.1** — OTP test-account production guard
 - [x] **Tier 2.2** — GetHookd.ai fail-loud imports
 - [x] **Tier 2.3** — Niche seed reconciliation
-- [ ] **Tier 2.4 (short-term)** — Gunicorn `--workers 1`. **Regression found 2026-04-22:** [Dockerfile.api:59](Dockerfile.api) still has `--workers 2`. See _Post-verification gaps_ below.
-- [x] **Tier 2.5** — API split into routers _(code shipped, but 3 `tests/test_api.py` errors introduced — patch targets reference the pre-split module paths. See _Post-verification gaps_ below.)_
+- [x] **Tier 2.4 (short-term)** — Gunicorn `--workers 1`
+- [x] **Tier 2.5** — API split into routers
 - [x] **Tier 2.6** — Pydantic response models
 - [x] **Tier 3.1** — decision recorded: **not shipping Redis** (internal tool; cost and complexity not justified)
 - [ ] 3.2 Azure-SQL-backed job queue — next up after the demo; unblocks visible scrape progress in the UI
@@ -760,19 +762,6 @@ Status as of 2026-04-22, demo target 2026-04-24.
 
 These surfaced when the full test suite was run against the roadmap 1.1–2.6 changes. The baseline documented in [.github/copilot-instructions.md](.github/copilot-instructions.md) is **2 failed + 23 errors**; the current tree is **5 failed + 26 errors**. The +3 failures are in the same pre-existing `test_ads_insight.py` family. The +3 errors are new and are caused by item **2.5 (router split)**.
 
-#### G1. Dockerfile still runs two workers (Tier 2.4 unfinished)
-
-- **Problem.** [Dockerfile.api:59](Dockerfile.api) still has `"--workers", "2"`. With Redis intentionally deferred (Roadmap 3.1), the in-memory response cache in `src/api/main.py` is incoherent across workers — users get two different stale versions depending on which worker handled the request.
-- **Fix.** Drop to `--workers 1` and leave a TODO tying the restore to Roadmap 3.1.
-- **Impact.** Demo-blocking: intermittently stale niche / trend data mid-demo.
-- **Effort.** 2 minutes.
-- **Prompt for Opus 4.7.**
-  > Finish Roadmap 2.4 (short-term). The in-memory response cache in `src/api/main.py` is per-process, but `Dockerfile.api` still launches Gunicorn with `--workers 2`, so the cache is incoherent across workers.
-  > 1. Edit `Dockerfile.api`: change `"--workers", "2"` to `"--workers", "1"` on the gunicorn CMD line. Do not touch the worker class or `--timeout 180`.
-  > 2. Add a `# TODO:` comment immediately above that line: `# TODO: raise --workers back above 1 once the response cache is backed by a shared store (Roadmap 3.1 was deferred 2026-04-22).`
-  > 3. In the README's Docker section, add a one-line note: "The in-memory response cache requires `--workers 1`. Do not raise the worker count without a shared cache backend (Roadmap 3.1)."
-  > 4. In the README Progress log, flip Tier 2.4 back to `[x]` and remove the regression callout.
-  > Do not change any Python code, environment variables, or healthcheck settings.
 
 #### G2. `tests/test_api.py` has 3 stale patch targets after the 2.5 router split
 
@@ -788,6 +777,9 @@ These surfaced when the full test suite was run against the roadmap 1.1–2.6 ch
   > 4. Run: `& "C:\Users\MarianCraciun\anaconda3\python.exe" -m pytest tests/test_api.py -v`. Target = 0 errors, 0 new failures.
   > 5. Then run the full suite: `& "C:\Users\MarianCraciun\anaconda3\python.exe" -m pytest tests/ -q`. Must land at baseline (≤ 2 failed + 23 errors) or better. If any other test file regressed from your changes, fix those too — but do NOT touch `tests/test_ads_insight.py`, `tests/test_trend_collector.py`, or `tests/test_all_sources.py`; those failures are pre-existing.
   > 6. Once green, flip `tests/` callout in the README Progress log for Tier 2.5 back to plain `[x]` with no regression note.
+
+
+
 
 ---
 

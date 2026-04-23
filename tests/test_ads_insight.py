@@ -2,6 +2,7 @@
 
 import json
 import os
+from contextlib import contextmanager
 
 import pytest
 from unittest.mock import patch, MagicMock
@@ -87,6 +88,24 @@ class TestSaveAd:
         session_factory = sessionmaker(bind=engine)
         return AdsInsight, session_factory
 
+    @staticmethod
+    def _session_scope_patch(session_factory):
+        """Build a ``session_scope``-compatible context manager from a sessionmaker."""
+
+        @contextmanager
+        def _ctx():
+            session = session_factory()
+            try:
+                yield session
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+            finally:
+                session.close()
+
+        return _ctx
+
     def test_save_and_read(self, tmp_path):
         AdsInsight, session_factory = self._setup_test_db(tmp_path)
 
@@ -107,7 +126,7 @@ class TestSaveAd:
             "ad_cards": [],
         }
 
-        with patch("src.scrapers.gethookedai.ads_insight.get_session", side_effect=session_factory):
+        with patch("src.scrapers.gethookedai.ads_insight.session_scope", side_effect=self._session_scope_patch(session_factory)):
             ads_insight._save_ad(ad, "test_keyword")
 
         session = session_factory()
@@ -124,7 +143,7 @@ class TestSaveAd:
         AdsInsight, session_factory = self._setup_test_db(tmp_path)
 
         ad = {"id": 99}
-        with patch("src.scrapers.gethookedai.ads_insight.get_session", side_effect=session_factory):
+        with patch("src.scrapers.gethookedai.ads_insight.session_scope", side_effect=self._session_scope_patch(session_factory)):
             ads_insight._save_ad(ad, "kw")
 
         session = session_factory()
@@ -227,3 +246,94 @@ class TestSearchBrands:
 
         brands = ads_insight.search_brands("test")
         assert brands == []
+
+
+# ── /ads_insight/filters endpoint ─────────────────────────────────────────
+
+class TestAdsInsightFiltersEndpoint:
+    """G4: verify the /ads_insight/filters endpoint shape matches the
+    frontend ``AdsInsightFilters`` TypeScript contract.
+    """
+
+    def _seed(self, tmp_path):
+        from contextlib import contextmanager
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from src.db.models import AdsInsight, Base
+
+        db_file = str(tmp_path / "filters.db")
+        engine = create_engine(f"sqlite:///{db_file}")
+        Base.metadata.create_all(engine)
+        Session = sessionmaker(bind=engine)
+
+        session = Session()
+        session.add_all([
+            AdsInsight(
+                hookd_id=1, platform="Facebook, Instagram", display_format="image",
+                search_keyword="kw1", performance_score_title="winning",
+                brand_name="BrandA", start_date="2026-01-01",
+            ),
+            AdsInsight(
+                hookd_id=2, platform="Facebook", display_format="video",
+                search_keyword="kw2", performance_score_title="trending",
+                brand_name="BrandB", start_date="2026-04-15",
+            ),
+            AdsInsight(
+                hookd_id=3, platform=None, display_format="",
+                search_keyword=None, performance_score_title=None,
+                brand_name="", start_date=None,
+            ),
+        ])
+        session.commit()
+        session.close()
+
+        @contextmanager
+        def _scope():
+            s = Session()
+            try:
+                yield s
+                s.commit()
+            except Exception:
+                s.rollback()
+                raise
+            finally:
+                s.close()
+
+        return _scope
+
+    def test_filters_response_shape(self, tmp_path, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        scope = self._seed(tmp_path)
+        # Patch the session_scope used by the route module
+        import src.api.routes.ads as ads_route
+        monkeypatch.setattr(ads_route, "session_scope", scope)
+
+        from fastapi import FastAPI
+        app = FastAPI()
+        app.include_router(ads_route.router)
+        client = TestClient(app)
+
+        resp = client.get("/ads_insight/filters")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+
+        # All six contract keys present
+        for key in ("platforms", "formats", "keywords", "performance_tiers", "brands", "date_range"):
+            assert key in body, f"missing key: {key}"
+
+        # date_range sub-keys
+        assert "min" in body["date_range"]
+        assert "max" in body["date_range"]
+
+        # platforms must contain a known multi-platform split value
+        assert "Facebook" in body["platforms"]
+        assert "Instagram" in body["platforms"]
+
+        # Empties / Nones dropped, sorted
+        assert body["formats"] == sorted(body["formats"])
+        assert "" not in body["formats"]
+        assert None not in body["brands"]
+

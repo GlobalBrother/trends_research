@@ -129,8 +129,8 @@ def insight_db(monkeypatch):
         finally:
             session.close()
 
-    monkeypatch.setattr("src.api.main.session_scope", fake_session_scope)
-    monkeypatch.setattr("src.api.main._ensure_cluster_snapshot", lambda force=False: {"refreshed": False})
+    monkeypatch.setattr("src.api.routes.insights.session_scope", fake_session_scope)
+    monkeypatch.setattr("src.api.routes.insights._ensure_cluster_snapshot", lambda force=False: {"refreshed": False})
 
     with fake_session_scope() as session:
         ad = AdsInsight(
