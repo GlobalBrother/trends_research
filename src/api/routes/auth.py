@@ -34,7 +34,7 @@ class UserCreate(BaseModel):
 
 @router.post("/auth/request_otp", response_model=OtpRequestResponse)
 def request_otp(email: str = Query(...)):
-    """Send an OTP code to a whitelisted email via Resend."""
+    """Send an OTP code to a whitelisted email via Azure Communication Services."""
     # Test account bypass: auto-create user and skip email
     if TEST_ACCOUNT_EMAIL and email == TEST_ACCOUNT_EMAIL:
         with session_scope() as session:

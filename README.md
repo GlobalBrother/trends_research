@@ -286,7 +286,7 @@ See `.env.example` for the full, commented list. Key variables:
 | `NEWS_API_KEY` | No | NewsAPI.org |
 | `ENSEMBLEDATA_TOKEN` | No | TikTok/Instagram/Threads/Reddit/YouTube scraping |
 | `GETHOOKEDAI_TOKEN` | No | GetHookd.ai ad library |
-| `RESEND_API_KEY`, `RESEND_FROM_EMAIL` | No | OTP email delivery |
+| `ACS_CONNECTION_STRING`, `ACS_SENDER_ADDRESS` | Yes (for login) | OTP email delivery via Azure Communication Services |
 | `TEST_ACCOUNT_EMAIL`, `TEST_ACCOUNT_OTP` | No | Dev-only OTP bypass — **never set in production** |
 | `DB_POOL_SIZE`, `DB_POOL_MAX_OVERFLOW`, `DB_POOL_TIMEOUT`, `DB_POOL_RECYCLE` | No | SQLAlchemy pool tuning |
 | `CLUSTER_THRESHOLD`, `DEFAULT_N_CLUSTERS` | No | Niche clustering tuning |

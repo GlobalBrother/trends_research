@@ -68,12 +68,8 @@ except Exception as _eng_err:  # pragma: no cover - defensive
 SessionFactory = get_session  # backward-compat alias
 
 # ---------------------------------------------------------------------------
-# Resend API config
+# Email config — Azure Communication Services only (see src/api/utils.py)
 # ---------------------------------------------------------------------------
-import resend  # noqa: E402
-
-resend.api_key = os.getenv("RESEND_API_KEY", "")
-RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "noreply@yourdomain.com")
 
 # Test account that bypasses OTP (for development/testing).
 TEST_ACCOUNT_EMAIL = os.getenv("TEST_ACCOUNT_EMAIL", "").strip()
@@ -218,7 +214,6 @@ __all__ = [
     "gethookd_scrape_ads",
     "gethookd_scrape_brand_ads",
     "gethookd_search_brands",
-    "RESEND_FROM_EMAIL",
     "TEST_ACCOUNT_EMAIL",
     "TEST_ACCOUNT_OTP",
     "PROJECT_ROOT",
