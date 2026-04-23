@@ -64,10 +64,16 @@ if not _email_client:
 EMAIL_FROM = _acs_sender or os.getenv("RESEND_FROM_EMAIL", "noreply@yourdomain.com")
 
 
-def send_email(to_email: str, subject: str, html_body: str):
-    """Send an email via ACS or Resend, depending on what's configured."""
-    try:
-        if _email_client:
+def send_email(to_email: str, subject: str, html_body: str) -> str:
+    """Send an email via ACS or Resend, depending on what's configured.
+
+    Returns the name of the provider used on success ("acs" or "resend").
+    Raises ``RuntimeError`` (with a descriptive message) on any failure or
+    if no provider is configured. Callers that want to swallow errors must
+    do so explicitly.
+    """
+    if _email_client:
+        try:
             message = {
                 "content": {"subject": subject, "html": html_body},
                 "recipients": {"to": [{"address": to_email}]},
@@ -75,16 +81,32 @@ def send_email(to_email: str, subject: str, html_body: str):
             }
             poller = _email_client.begin_send(message)
             poller.result()
-        else:
-            import resend
-            resend.Emails.send({
-                "from": EMAIL_FROM,
-                "to": to_email,
-                "subject": subject,
-                "html": html_body,
-            })
+            return "acs"
+        except Exception as e:
+            logger.error(f"ACS send_email failed for {to_email}: {e}")
+            raise RuntimeError(f"ACS email send failed: {e}") from e
+
+    # Fall back to Resend
+    resend_key = os.getenv("RESEND_API_KEY", "")
+    if not resend_key:
+        raise RuntimeError(
+            "No email provider configured: set ACS_CONNECTION_STRING + "
+            "ACS_SENDER_ADDRESS, or RESEND_API_KEY + RESEND_FROM_EMAIL."
+        )
+    try:
+        import resend
+        # Re-assert the API key in case the module was imported before env was loaded
+        resend.api_key = resend_key
+        resend.Emails.send({
+            "from": EMAIL_FROM,
+            "to": to_email,
+            "subject": subject,
+            "html": html_body,
+        })
+        return "resend"
     except Exception as e:
-        logger.error(f"Failed to send email to {to_email}: {e}")
+        logger.error(f"Resend send_email failed for {to_email}: {e}")
+        raise RuntimeError(f"Resend email send failed: {e}") from e
 
 
 # ---------------------------------------------------------------------------

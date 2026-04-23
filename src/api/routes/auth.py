@@ -3,13 +3,11 @@
 import secrets
 from datetime import datetime, timedelta
 
-import resend
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.exc import IntegrityError
 
 from src.api.dependencies import (
-    RESEND_FROM_EMAIL,
     TEST_ACCOUNT_EMAIL,
     TEST_ACCOUNT_OTP,
     logger,
@@ -22,6 +20,7 @@ from src.api.schemas import (
     UserMutationResponse,
     UserRow,
 )
+from src.api.utils import send_email
 from src.db.models import AuthToken, OtpCode, User
 from src.db.sql_compat import verify_otp
 
@@ -57,16 +56,22 @@ def request_otp(email: str = Query(...)):
         session.add(OtpCode(user_id=user_id, code=code))
 
     try:
-        resend.Emails.send({
-            "from": RESEND_FROM_EMAIL,
-            "to": [email],
-            "subject": "Your Trends Research login code",
-            "html": f"<p>Your one-time login code is: <strong>{code}</strong></p>"
-                   f"<p>This code expires in 10 minutes.</p>",
-        })
+        send_email(
+            to_email=email,
+            subject="Your Trends Research login code",
+            html_body=(
+                f"<p>Your one-time login code is: <strong>{code}</strong></p>"
+                f"<p>This code expires in 10 minutes.</p>"
+            ),
+        )
     except Exception as e:
         logger.error(f"Failed to send OTP email to {email}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to send OTP email")
+        # Surface the underlying provider error so misconfiguration is
+        # diagnosable from the frontend / network tab instead of a bare 500.
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to send OTP email: {e}",
+        )
 
     return {"message": "OTP sent", "email": email}
 
