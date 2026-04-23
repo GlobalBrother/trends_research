@@ -63,12 +63,19 @@ def _platform_endpoint(
     if subset.empty:
         return {"data": []}
 
+    filtered = subset
     if niche_name:
-        subset = niche.filter_by_niche(subset, niche_name)
-    if subset.empty:
+        filtered = niche.filter_by_niche(subset, niche_name)
+        # Graceful fallback: if the niche filter strips everything (common for
+        # narrow niches against broad sources like HackerNews / News), fall
+        # back to the unfiltered platform subset so the tab still shows data.
+        if filtered.empty:
+            filtered = subset
+
+    if filtered.empty:
         return {"data": []}
 
-    processed = analytics.process_trends(subset)
+    processed = analytics.process_trends(filtered)
     return {"data": _sanitize(processed)}
 
 

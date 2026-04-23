@@ -11,6 +11,8 @@ from src.api.dependencies import (
     _sanitize,
     session_scope,
 )
+from sqlalchemy import or_
+
 from src.api.schemas import (
     InstagramPostsResponse,
     RedditPostsResponse,
@@ -18,7 +20,14 @@ from src.api.schemas import (
     TiktokVideosResponse,
     YoutubeVideosResponse,
 )
-from src.db.models import Author, Content, ContentMetric, Platform
+from src.db.models import (
+    Author,
+    Content,
+    ContentHashtag,
+    ContentMetric,
+    Hashtag,
+    Platform,
+)
 
 router = APIRouter(tags=["content"])
 
@@ -59,7 +68,27 @@ def _content_query(platform_name: str, niche_name, geo, limit, order_attr=None):
         if niche_name:
             kws = _get_niche_keywords_from_db(niche_name)
             if kws:
-                query = query.filter(Content.keyword.in_(kws))
+                # The `keyword` column is reliable for keyword-driven scrapers
+                # (YouTube, TikTok, sometimes Instagram) but is the subreddit
+                # name for Reddit (e.g. "r/all") and not always set for
+                # Threads/Instagram. Match on keyword OR title/text substring
+                # OR hashtag so each tab actually shows niche-relevant content.
+                lowered = [k.lower() for k in kws if k]
+                text_clauses = [
+                    func.lower(Content.text_content).like(f"%{k}%") for k in lowered
+                ]
+                hashtag_match = (
+                    session.query(ContentHashtag.content_id)
+                    .join(Hashtag, Hashtag.id == ContentHashtag.hashtag_id)
+                    .filter(func.lower(Hashtag.tag).in_(lowered))
+                )
+                query = query.filter(
+                    or_(
+                        Content.keyword.in_(kws),
+                        Content.id.in_(hashtag_match),
+                        *text_clauses,
+                    )
+                )
 
         if order_attr is not None:
             query = query.order_by(order_attr)
