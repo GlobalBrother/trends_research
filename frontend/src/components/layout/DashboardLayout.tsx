@@ -126,6 +126,20 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
   const { selectedNiche, setSelectedNiche, geo, setGeo } = useFilters();
   const { data: niches } = useApi(getNiches);
 
+  // Safety net: if the persisted `selectedNiche` (from localStorage) is not
+  // "All" and isn't present in the loaded niches list, reset it to "All".
+  // Without this, a stale value (e.g. a niche that was renamed/deleted, or
+  // one whose keywords don't match any ad `search_keyword`) silently hides
+  // all rows downstream — the dashboard ends up showing "0 ads" despite the
+  // DB having data. Defaulting to "All Niches" keeps the global filter
+  // usable across sessions.
+  useEffect(() => {
+    if (!niches) return;
+    if (selectedNiche !== "All" && !niches.includes(selectedNiche)) {
+      setSelectedNiche("All");
+    }
+  }, [niches, selectedNiche, setSelectedNiche]);
+
   const authEmail = useMemo(() => localStorage.getItem("auth_email") || "user@company.com", []);
   const authInitials = useMemo(() => {
     const parts = authEmail.split("@")[0].split(/[._-]/);
