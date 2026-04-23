@@ -320,6 +320,133 @@ Rollout is complete when, over a 7-day window post-cutover:
 
 **Tech Stack:** Python 3.11, FastAPI, arq, Redis (Azure Cache for Redis Basic C0), httpx, pybreaker, pytest, fakeredis, Scrapy (legacy-only), SQLAlchemy, Azure SQL.
 
+---
+
+## ⚡ Master Execution Order (read this first)
+
+**Important:** Task numbers (1–25) below are **stable identifiers**, not execution order. The original plan was drafted with DataForSEO as the primary provider; that decision has been reversed (see §1). Tasks 6 and 7 are **SKIPPED**. The execution order below reflects the new multi-provider chain `SerpAPI → SearchAPI.io → Bright Data → Apify → Legacy`.
+
+| Step | Task | Phase | Title | Notes |
+|---|---|---|---|---|
+| 1 | Task 1 | 1 | Dependencies & env scaffolding | Provider-agnostic |
+| 2 | Task 2 | 1 | Redis client + arq worker settings | Provider-agnostic |
+| 3 | Task 3 | 1 | Canonical types + `TrendsProvider` Protocol | Provider-agnostic |
+| 4 | Task 4 | 1 | Typed config object | **Use the new env vars from §9** (no `DATAFORSEO_*`) |
+| 5 | Task 5 | 1 | DB migrations — new columns | Provider-agnostic |
+| 6 | **Task 14** | 5 | **SerpAPI normalizer + cassettes** | **Promoted to first paid provider** |
+| 7 | **Task 15** | 5 | **SerpAPIProvider** | **Promoted to first paid provider** |
+| 8 | Task 8 | 2 | `ProviderSpend` (Redis-backed MTD tracker) | Provider-agnostic |
+| 9 | Task 9 | 3 | Pub/sub event publisher | Provider-agnostic |
+| 10 | Task 10 | 3 | `TrendsCollectionJob` (arq) | Provider-agnostic |
+| 11 | Task 11 | 3 | `/scrape/v2` enqueue + `/scrape/status/{job_id}` | Provider-agnostic |
+| 12 | Task 12 | 4 | Circuit breaker wrapper | Provider-agnostic |
+| 13 | Task 13 | 4 | `ProviderRouter` (chain + budget + breaker) | Provider-agnostic |
+| 14 | Task 16 | 5 | Admin provider endpoints | Provider-agnostic |
+| 15 | **Task 22** | 5b | **SearchAPIProvider** (Tier-1 failover) | **NEW** — modeled on Task 14/15 |
+| 16 | **Task 23** | 5b | **BrightDataProvider OR OxylabsProvider** (Tier-2) | **NEW** — pick one based on procurement |
+| 17 | **Task 24** | 5b | **ApifyTrendsProvider** (bulk / warmup) | **NEW** |
+| 18 | Task 17 | 6 | `LegacyScrapyProvider` | Wraps existing spider — no behavior change for legacy path |
+| 19 | Task 18 | 7 | Unified freshness check | Replaces duplicated freshness logic |
+| 20 | Task 19 | 7 | Feature-flag `/scrape` through V2 + frontend SSE | Cutover behind `TRENDS_V2_ENABLED` |
+| 21 | Task 20 | 8 | `WarmupJob` cron | Enable only after 1 week of clean V2 prod |
+| 22 | **Task 25** | 8 | **BigQuery seed for warmup keyword discovery** | **NEW**, optional |
+| 23 | Task 21 | 9 | Cleanup deprecated paths | Final |
+
+**Skipped tasks:** ~~Task 6 (DataForSEO cassette + normalizer)~~, ~~Task 7 (DataForSEOProvider)~~. Do **not** implement these — DataForSEO is no longer in the chain. The Phase 2 heading is preserved for stable cross-references; Tasks 6/7 are replaced by the SerpAPI tasks listed in the table above.
+
+---
+
+## 🚀 Start Prompt (paste this to begin implementation)
+
+> **Role:** You are an autonomous implementation agent for the `trends_research` repository. You have read access to the full design document at `docs/superpowers/specs/2026-04-23-trends-collection-redesign-design.md`.
+>
+> **Your job:** Implement the multi-provider Google Trends collection pipeline described in that document, following the **Master Execution Order** table at the top of the Implementation Plan section. Work one task at a time, in execution-order (not task-number order). For each task:
+>
+> 1. Re-read the task body in the design doc (use the stable Task N anchor).
+> 2. Run the existing test suite as a baseline: `& "C:\Users\MarianCraciun\anaconda3\python.exe" -m pytest tests/ -q 2>&1 | Select-Object -Last 30`. Record the failing/erroring counts. Per `.github/copilot-instructions.md`, the baseline is **2 failures + 23 errors** in `tests/test_ads_insight.py`, `tests/test_trend_collector.py`, `tests/test_all_sources.py` — these are pre-existing and **not** your responsibility to fix.
+> 3. Implement the task. **Never edit `src/scrapers/`, `src/ingestion/service.py` public API, `src/db/models.py` columns other than the additive ones in §7, or any existing route handler signatures.** All new code lives under `src/collection/` and `src/api/routes/scrape_v2.py` / `admin_providers.py`. Existing routes are *only* modified at the explicit step in Task 19 (feature flag).
+> 4. Add tests as described in the task body. Use `fakeredis` (never a real Redis in CI) and static JSON cassettes (never live API calls in CI).
+> 5. Run the targeted new tests until green: `& "C:\Users\MarianCraciun\anaconda3\python.exe" -m pytest tests/collection/ tests/api/test_scrape_v2.py tests/api/test_admin_providers.py tests/db/test_migrate_v2_columns.py -v`.
+> 6. Re-run the **full** suite and confirm the failure/error counts have **not increased** vs the baseline you recorded in step 2. If they have, you have introduced a regression — diagnose and fix before committing.
+> 7. Commit with the message format from the task body. One commit per task.
+> 8. Move to the next execution-order step. Do **not** skip ahead.
+>
+> **Hard rules:**
+> - **Do not** implement DataForSEO (Task 6, Task 7). Skip them entirely.
+> - **Do not** make live calls to any paid provider in CI. All HTTP must go through cassettes or `httpx.MockTransport`.
+> - **Do not** flip `TRENDS_V2_ENABLED=true` until Task 19 is complete and all tests pass.
+> - **Do not** delete any file before Task 21 (final cleanup).
+> - **Stop and ask the user** if a task requires a credential you don't have (`SERPAPI_KEY`, `SEARCHAPI_KEY`, `BRIGHTDATA_API_TOKEN`, `OXYLABS_*`, `APIFY_TOKEN`, BigQuery service account). Implementation can proceed against cassettes; the live smoke test (`pytest -m live`) is run manually by the user once credentials are provisioned.
+>
+> **Begin** with Step 1 (Task 1: Dependencies & env scaffolding). After each completed step, post a short status update: `Step N/23 complete: <task title>. Tests: baseline=X/Y, current=X/Y. Commit: <hash>.`
+
+---
+
+## ✅ Completion Prompt (paste this when you believe you are done)
+
+> **Role:** You are the same implementation agent. You believe all 23 execution-order steps are complete. Before reporting completion to the user, run this verification protocol and only declare done if **every** check passes.
+>
+> **1. Test parity with baseline**
+> ```powershell
+> & "C:\Users\MarianCraciun\anaconda3\python.exe" -m pytest tests/ -q 2>&1 | Select-Object -Last 30
+> ```
+> Failures + errors must be **≤ baseline** (2 failures + 23 errors in the three known files). Any new failure or error is a blocker.
+>
+> **2. New test surface coverage**
+> ```powershell
+> & "C:\Users\MarianCraciun\anaconda3\python.exe" -m pytest tests/collection/ tests/api/test_scrape_v2.py tests/api/test_admin_providers.py tests/db/test_migrate_v2_columns.py -v
+> ```
+> All new tests must pass. Coverage of `src/collection/trends/` must be ≥ 85% (`--cov=src.collection.trends --cov-report=term-missing`).
+>
+> **3. Backward-compatibility checklist** (every box must be ✅):
+> - [ ] `GET /trends`, `GET /trends/{id}`, `GET /niches`, `GET /insights/*` return identical JSON shapes to `main` branch (compare with `git stash && curl … && git stash pop && curl …`).
+> - [ ] `POST /scrape` (the legacy endpoint) still works when `TRENDS_V2_ENABLED=false` — same request/response contract as before.
+> - [ ] `POST /scrape` with `TRENDS_V2_ENABLED=true` returns `{job_id}` and the SSE stream emits `done` within the timeout for a 3-keyword test payload.
+> - [ ] `src/db/migrate.py` is idempotent — running it twice in a row produces no errors.
+> - [ ] `src/scrapers/google_trends_scraper/` files are **unchanged on disk** (verify with `git diff --stat main..HEAD -- src/scrapers/`). The Scrapy spider is reachable via `LegacyScrapyProvider` only.
+> - [ ] `src/ingestion/service.py` public functions (`start_run`, `finish_run`, `record_error`, `save_trend`) have unchanged signatures (verify with `git diff main..HEAD -- src/ingestion/service.py`).
+> - [ ] No existing test in `tests/test_aggregation.py`, `tests/test_analytics_engine.py`, `tests/test_api.py`, `tests/test_auth_guard.py`, `tests/test_hn_integration.py`, `tests/test_ingestion_service.py`, `tests/test_insights_pipeline.py`, `tests/test_niche_discovery.py`, `tests/test_pipeline.py`, `tests/test_reddit_integration.py` was modified.
+> - [ ] `requirements.txt` only **adds** dependencies (no removals other than DataForSEO if it was speculatively added).
+> - [ ] `.env.example` is a strict superset of the previous version — no env var the user already has in their `.env` was removed.
+> - [ ] `frontend/` build still passes: `cd frontend; pnpm build` (or per `_build_in_wsl.sh`).
+>
+> **4. Operational sanity** (run by the user with real credentials, not in CI):
+> - [ ] Start a local Redis (`docker compose up redis`), start the arq worker, hit `POST /scrape/v2` with a 3-keyword payload, observe the SSE stream emit 3 `completed` events and 1 `done`.
+> - [ ] Inspect `scrape_runs` table: latest row has `provider="serpapi"` (or whichever Tier-1 fired), `cost_usd > 0`, `job_id` populated, `trigger_source="on_demand"`.
+> - [ ] Hit `GET /admin/providers/spend` — JSON returns per-provider month-to-date USD.
+> - [ ] Hit `GET /admin/providers/status` — JSON returns circuit-breaker state per provider (all `closed` on first run).
+> - [ ] Force a SerpAPI failure (set `SERPAPI_KEY=invalid`) and confirm the chain falls through to SearchAPI.io within one keyword.
+>
+> **5. Documentation**
+> - [ ] `README.md` has a new "Trends Collection v2" section pointing to this design doc.
+> - [ ] `.env.example` block from §9 of the design is present verbatim.
+> - [ ] CHANGELOG entry (or release notes file) summarizes the change for ops.
+>
+> **If every box above is ✅,** report: `Implementation complete. Baseline tests: <X>/<Y>. New tests: <N> passing. Backward-compat: 11/11. Operational: 5/5. Ready for staging cutover (Task 19 has flag default off).`
+>
+> **If any box is ❌,** post: `Implementation incomplete. Failing checks: <list>. Diagnosing.` and continue work.
+
+---
+
+## 🛡️ Non-Regression Guardrails (in force for every task)
+
+These rules apply to **every** commit on this initiative. The agent must self-check them before each commit.
+
+| # | Rule | Enforcement |
+|---|---|---|
+| G1 | **Never modify** `src/scrapers/google_trends_scraper/google_trends/spiders/trends_spider.py` until Task 17 — and even then, only wrap it from outside via subprocess. | `git diff` check in the commit hook. |
+| G2 | **Never modify** the public function signatures in `src/ingestion/service.py` (`start_run`, `finish_run`, `record_error`, `save_trend`). New functionality is consumed *through* these helpers. | Diff inspection. |
+| G3 | **Never alter** existing columns in `src/db/models.py`. Only the four additive columns from §7 may be introduced. | Migration is idempotent; existing rows have NULL `provider`. |
+| G4 | **Never break** the legacy `/scrape` endpoint contract while `TRENDS_V2_ENABLED=false` (the default during rollout). | Integration test in `tests/api/test_scrape_v2.py` covers both flag states. |
+| G5 | **Never make** live API calls in CI. All HTTP goes through `httpx.MockTransport` or static JSON cassettes. | `pytest -m "not live"` is the default; the live smoke marker is opt-in. |
+| G6 | **Never enable** the warmup cron (`TRENDS_WARMUP_ENABLED=true`) before Task 20 is complete *and* prod has been on V2 ≥7 days with clean error rates. | Default in `.env.example` is `false`. |
+| G7 | **Never delete** the legacy code paths (`SkipRecentlyScrapedMiddleware`, `/import_tokens`, `token_import_spider.py`) until Task 21, and only after all of Tasks 1–20 are merged to main. | Final cleanup task is gated. |
+| G8 | **Never lower** test coverage of `src/collection/` below 85%. | CI enforces. |
+| G9 | **Stop and ask** if a paid-provider credential is missing. Cassette-based dev work can continue; the smoke test is owner-run. | Agent must not invent dummy keys. |
+| G10 | **One task per commit.** Commit messages follow the format in each task body (e.g. `feat(trends): SerpAPI normalizer + cassettes`). | Reviewer rejects multi-task commits. |
+
+---
+
 ## File Structure (locked-in)
 
 **New files (create):**
@@ -339,12 +466,19 @@ src/collection/trends/router.py                   # ProviderRouter
 src/collection/trends/jobs.py                     # TrendsCollectionJob, WarmupJob
 src/collection/trends/providers/__init__.py
 src/collection/trends/providers/base.py           # TrendsProvider Protocol
-src/collection/trends/providers/dataforseo.py
-src/collection/trends/providers/serpapi.py
-src/collection/trends/providers/legacy_scrapy.py
+src/collection/trends/providers/serpapi.py        # Tier-1 primary
+src/collection/trends/providers/searchapi.py      # Tier-1 failover (NEW)
+src/collection/trends/providers/brightdata.py     # Tier-2 (NEW; or oxylabs.py — pick one)
+src/collection/trends/providers/oxylabs.py        # Tier-2 alternative (NEW; ship one of brightdata/oxylabs)
+src/collection/trends/providers/apify.py          # Bulk/warmup (NEW)
+src/collection/trends/providers/bigquery_seed.py  # Warmup keyword seed (NEW, optional)
+src/collection/trends/providers/legacy_scrapy.py  # Last resort
 src/collection/trends/normalizers/__init__.py
-src/collection/trends/normalizers/dataforseo.py
 src/collection/trends/normalizers/serpapi.py
+src/collection/trends/normalizers/searchapi.py    # NEW
+src/collection/trends/normalizers/brightdata.py   # NEW (or oxylabs.py)
+src/collection/trends/normalizers/oxylabs.py      # NEW
+src/collection/trends/normalizers/apify.py        # NEW
 src/collection/trends/normalizers/legacy_scrapy.py
 src/api/routes/scrape_v2.py                       # /scrape/v2, /scrape/status, /scrape/stream
 src/api/routes/admin_providers.py                 # /admin/providers/{spend,status}
@@ -360,14 +494,23 @@ tests/collection/test_router.py
 tests/collection/test_jobs.py
 tests/collection/queue/test_redis_client.py
 tests/collection/providers/__init__.py
-tests/collection/providers/cassettes/dataforseo_python_us.json
 tests/collection/providers/cassettes/serpapi_python_us_*.json
-tests/collection/providers/test_dataforseo.py
+tests/collection/providers/cassettes/searchapi_python_us_*.json     # NEW
+tests/collection/providers/cassettes/brightdata_python_us.json      # NEW
+tests/collection/providers/cassettes/oxylabs_python_us.json         # NEW (if shipping)
+tests/collection/providers/cassettes/apify_python_us.json           # NEW
 tests/collection/providers/test_serpapi.py
+tests/collection/providers/test_searchapi.py                        # NEW
+tests/collection/providers/test_brightdata.py                       # NEW
+tests/collection/providers/test_oxylabs.py                          # NEW (if shipping)
+tests/collection/providers/test_apify.py                            # NEW
 tests/collection/providers/test_legacy_scrapy.py
 tests/collection/normalizers/__init__.py
-tests/collection/normalizers/test_dataforseo.py
 tests/collection/normalizers/test_serpapi.py
+tests/collection/normalizers/test_searchapi.py                      # NEW
+tests/collection/normalizers/test_brightdata.py                     # NEW
+tests/collection/normalizers/test_oxylabs.py                        # NEW (if shipping)
+tests/collection/normalizers/test_apify.py                          # NEW
 tests/collection/normalizers/test_legacy_scrapy.py
 tests/api/test_scrape_v2.py
 tests/api/test_admin_providers.py
@@ -377,20 +520,21 @@ tests/db/test_migrate_v2_columns.py
 **Files to modify:**
 
 ```
-requirements.txt              # add arq, httpx, pybreaker, fakeredis, redis
-.env.example                  # add TRENDS_* / DATAFORSEO_* / SERPAPI_* / REDIS_URL
+requirements.txt              # add arq, httpx, pybreaker, fakeredis, redis,
+                              #   apify-client, google-cloud-bigquery (optional)
+.env.example                  # add the full §9 block (no DATAFORSEO_*)
 docker-compose.yml            # add redis service for local dev
 src/db/models.py              # ScrapeRun: +provider, +cost_usd, +job_id, +trigger_source
                               # CanonicalTrendSignal: +provider
 src/db/migrate.py             # idempotent ALTER TABLE for the columns above
 src/api/main.py               # register scrape_v2 + admin_providers routers
-src/api/routes/scrape.py      # feature-flag branch to V2 pipeline
-src/api/routes/trends.py      # _needs_scrape() against canonical_trend_signals
+src/api/routes/scrape.py      # feature-flag branch to V2 pipeline (Task 19 only)
+src/api/routes/trends.py      # _needs_scrape() against canonical_trend_signals (Task 18)
 src/collector/trend_collector.py  # run_google_trends_scraper → V2 enqueue when flag on
-frontend/src/api/scrape.ts    # SSE EventSource wiring
+frontend/src/api/scrape.ts    # SSE EventSource wiring (Task 19)
 ```
 
-**Files to delete (final cleanup task):**
+**Files to delete (final cleanup task — Task 21 only):**
 
 ```
 src/scrapers/google_trends_scraper/google_trends/spiders/token_import_spider.py
@@ -940,9 +1084,13 @@ git commit -m "feat(db): add V2 columns to scrape_runs and canonical_trend_signa
 
 ## Phase 2 — First paid provider (recommended: SerpAPI)
 
-> **Note on the worked example below.** The detailed cassette + normalizer + provider tasks in the rest of Phase 2 were originally drafted against the DataForSEO endpoint shape. **DataForSEO has been removed from this design** (see §1 and §5.2 of the design above). The implementation pattern — *(1) check in a static cassette of one real response, (2) write a normalizer that maps it to `CanonicalTrendResult`, (3) write the provider as a thin httpx client around the cassette shape, (4) cover both with unit tests using the cassette so CI never makes paid calls* — is **identical** for every provider in the catalog and should be applied to whichever provider you implement first. **Recommendation: implement SerpAPI first** (most stable docs, easiest to fixture), then immediately apply the same pattern to SearchAPI.io as the second-paid-provider task. The DataForSEO-specific snippets below are kept only as a reference template for the structure — substitute the SerpAPI request URL, auth header (`api_key` query param), and JSON shape (`engine=google_trends&data_type=TIMESERIES|GEO_MAP|RELATED_QUERIES|RELATED_TOPICS`) when you implement.
+> ⚠️ **Tasks 6 and 7 below are SKIPPED.** They were drafted for DataForSEO, which has been removed from the chain (see §1 / §5.2). The first paid provider is now **SerpAPI**, implemented by **Task 14** (normalizer + cassettes) and **Task 15** (`SerpAPIProvider`) in Phase 5. **Execute Tasks 14 and 15 here in Phase 2 order**, then proceed to Task 8 below. The Task 6/7 anchors are preserved only so that downstream cross-references in the document do not break — do not implement their bodies.
 
-### Task 6: DataForSEO cassette + normalizer
+### Task 6: ~~DataForSEO cassette + normalizer~~ — **SKIPPED**
+
+> **SKIPPED.** Implement **Task 14** (SerpAPI normalizer + cassettes) here instead. The pattern (cassette → normalizer → unit tests against the cassette) is identical; only the JSON shape and URL change. The DataForSEO-specific snippets below are retained as historical reference for the structure of a future provider task and **must not be implemented as-is**.
+
+
 
 **Files:**
 - Create: `tests/collection/providers/cassettes/dataforseo_python_us.json`
@@ -1100,11 +1248,13 @@ git commit -m "feat(trends): DataForSEO normalizer + cassette"
 
 ---
 
-### Task 7: DataForSEOProvider
+### Task 7: ~~DataForSEOProvider~~ — **SKIPPED**
 
-**Files:**
-- Create: `src/collection/trends/providers/dataforseo.py`
-- Create: `tests/collection/providers/test_dataforseo.py`
+> **SKIPPED.** Implement **Task 15** (`SerpAPIProvider`) here instead. The DataForSEO-specific snippets that follow are retained as historical reference and **must not be implemented as-is**.
+
+**Files (skipped):**
+- ~~Create: `src/collection/trends/providers/dataforseo.py`~~
+- ~~Create: `tests/collection/providers/test_dataforseo.py`~~
 
 - [ ] **Step 1: Write `tests/collection/providers/test_dataforseo.py`**
 
@@ -2415,6 +2565,165 @@ git commit -m "feat(api): /admin/providers/spend + /status"
 
 **Prompt for subagent:**
 > Implement Task 16: two GET endpoints under `/admin/providers/`. Both tests must pass before committing. Do not add auth gates here — the endpoints inherit whatever global admin-auth middleware already protects `/admin/*` (check `src/api/main.py` for existing admin guards and make sure this router is included after any such middleware).
+
+---
+
+## Phase 5b — Additional providers (multi-vendor depth)
+
+> **Why a separate phase:** Tasks 14–16 deliver a working *single-paid-provider* pipeline (SerpAPI + router + admin endpoints). Phase 5b widens the chain so that a single-vendor outage cannot collapse collection. Each task here follows the same template (cassette → normalizer → provider → tests) and adds **one** provider to the chain. Tasks 22–24 are independent and may be tackled in any order; Task 25 is optional and only relevant once Phase 8 (warmup) is in motion.
+
+### Task 22: SearchAPIProvider (Tier-1 paid failover)
+
+**Files:**
+- Create: `tests/collection/providers/cassettes/searchapi_python_us_timeseries.json` (and one cassette per `data_type` — 4 total)
+- Create: `src/collection/trends/normalizers/searchapi.py`
+- Create: `src/collection/trends/providers/searchapi.py`
+- Create: `tests/collection/normalizers/test_searchapi.py`
+- Create: `tests/collection/providers/test_searchapi.py`
+
+**API surface to implement:**
+- Endpoint: `GET https://www.searchapi.io/api/v1/search`
+- Query params: `engine=google_trends`, `q=<keyword>`, `data_type=TIMESERIES|GEO_MAP_0|RELATED_QUERIES|RELATED_TOPICS`, `geo=<geo>`, `time=<timeframe>`, `cat=<category>`, `api_key=<SEARCHAPI_KEY>`
+- Response shape: intentionally **SerpAPI-compatible**. Top-level keys (`interest_over_time`, `interest_by_region`, `related_queries`, `related_topics`) mirror SerpAPI 1:1 in most cases.
+- Auth: `SEARCHAPI_KEY` env var (URL query param, **not** a header).
+- Cost per call (for `cost_per_keyword_usd`): `0.004` × 4 = `0.016` per keyword (Starter plan, 10k searches at $40).
+
+- [ ] **Step 1: Capture 4 real-shape cassettes**
+  Make one live call per `data_type` against `q=python&geo=US`, save the raw JSON. Strip the `api_key` from any echoed request URL before committing.
+
+- [ ] **Step 2: Implement the normalizer**
+  Because the shape is SerpAPI-compatible, start by copy-paste-importing from `src/collection/trends/normalizers/serpapi.py`. The differences are typically: (a) `interest_by_region` may be nested under `region_interest` instead of `interest_by_region` in some response variants — handle both; (b) `geo_map` is sometimes called `geo_map_0`; (c) `related_topics` items use `topic_title` rather than `title`. Write a small `_compat()` helper to normalize the key differences and then delegate to a shared mapper.
+
+- [ ] **Step 3: Implement `SearchAPIProvider`**
+  Subclass nothing — implement the `TrendsProvider` Protocol directly. Construction: `SearchAPIProvider(api_key: str, transport: httpx.AsyncBaseTransport | None = None)`. The transport parameter is required so tests can inject `httpx.MockTransport`. `name = "searchapi"`. `supports = frozenset({DataType.TIMESERIES, DataType.GEO, DataType.RELATED_QUERIES, DataType.RELATED_TOPICS})`. `cost_per_keyword_usd = 0.016`. `fetch()` issues 4 parallel GETs via `asyncio.gather` (one per `data_type`), feeds each response into the normalizer, and concatenates results.
+
+- [ ] **Step 4: Tests**
+  Mirror `tests/collection/providers/test_serpapi.py` exactly: a happy-path test that asserts 4 `CanonicalTrendResult` rows, a 4xx error test, a 429 retry test (with backoff capped at 1s in tests).
+
+- [ ] **Step 5: Wire into router config**
+  In `src/collection/trends/router.py`'s `build_default_chain()`, append `SearchAPIProvider` after `SerpAPIProvider` (when `SEARCHAPI_KEY` is set). In `tests/collection/test_router.py`, add a test asserting fallback from SerpAPI → SearchAPI on a `ProviderError` from SerpAPI.
+
+- [ ] **Step 6: Commit**
+```bash
+git add -A
+git commit -m "feat(trends): SearchAPI.io provider as Tier-1 failover"
+```
+
+**Prompt for subagent:**
+> Implement Task 22: SearchAPI.io provider end-to-end (cassettes + normalizer + provider + tests + router wiring). Reuse Task 14/15 (SerpAPI) as the structural template — SearchAPI.io's response shape is SerpAPI-compatible with a few key renames documented in the task. All tests must pass and the router-fallback integration test must demonstrate SerpAPI → SearchAPI fallback. Cassettes must contain no live API keys.
+
+---
+
+### Task 23: BrightDataProvider OR OxylabsProvider (Tier-2 deep fallback)
+
+> **Decision required from owner before starting:** which scraping-infra vendor are we using? **Pick ONE.** Both are documented; only ship the one matching your procurement.
+
+**Files (Bright Data variant):**
+- Create: `tests/collection/providers/cassettes/brightdata_python_us.json`
+- Create: `src/collection/trends/normalizers/brightdata.py`
+- Create: `src/collection/trends/providers/brightdata.py`
+- Create: `tests/collection/normalizers/test_brightdata.py`
+- Create: `tests/collection/providers/test_brightdata.py`
+
+**Files (Oxylabs variant):**
+- Create: `tests/collection/providers/cassettes/oxylabs_python_us.json`
+- Create: `src/collection/trends/normalizers/oxylabs.py`
+- Create: `src/collection/trends/providers/oxylabs.py`
+- Create: `tests/collection/normalizers/test_oxylabs.py`
+- Create: `tests/collection/providers/test_oxylabs.py`
+
+**API surface — Bright Data:**
+- Endpoint: `POST https://api.brightdata.com/dca/trigger?collector=<COLLECTOR_ID>` then poll `GET https://api.brightdata.com/dca/dataset?id=<snapshot_id>`.
+- Auth: `Authorization: Bearer $BRIGHTDATA_API_TOKEN` + `BRIGHTDATA_ZONE` for zone selection.
+- Returns all four widgets in a single dataset row per keyword. Cost: `~$0.002/req` (PAYG).
+
+**API surface — Oxylabs:**
+- Endpoint: `POST https://realtime.oxylabs.io/v1/queries` with body `{"source": "google_trends_explore", "query": "<keyword>", "geo_location": "<geo>"}`.
+- Auth: HTTP Basic with `OXYLABS_USERNAME:OXYLABS_PASSWORD`.
+- Returns all four widgets in `results[0].content`. Cost: `~$0.002/req`.
+
+- [ ] **Step 1: Capture one cassette** by issuing a single live request and saving the response. **Strip credentials.**
+
+- [ ] **Step 2: Implement the normalizer.** Both vendors return one consolidated payload per keyword (unlike SerpAPI's 4-call pattern). The normalizer therefore returns 4 `CanonicalTrendResult` rows from a *single* input dict. Map each widget block carefully — the field names differ from SerpAPI (e.g. Bright Data uses `interest_over_time.timeline_data[].values[].value` for the int value).
+
+- [ ] **Step 3: Implement the provider.** `BrightDataProvider(api_token, zone, collector_id, transport=None)` or `OxylabsProvider(username, password, transport=None)`. `name = "brightdata"` or `"oxylabs"`. `supports = frozenset(DataType)` (all four). `cost_per_keyword_usd = 0.002`. For Bright Data, `fetch()` is a trigger + poll pattern with a 60s timeout and 2s poll interval; expose the timeout as a constructor arg so tests can shrink it.
+
+- [ ] **Step 4: Tests.** Same shape as Task 22's tests, plus a Bright-Data-specific test for the trigger-then-poll loop using a fake transport that returns "pending" twice and then "ready".
+
+- [ ] **Step 5: Router wiring.** Append after `SearchAPIProvider` in the default chain when credentials are present. Add an integration test in `tests/collection/test_router.py`: simulate both SerpAPI *and* SearchAPI failing → assert Bright Data (or Oxylabs) is invoked.
+
+- [ ] **Step 6: Commit**
+```bash
+git commit -m "feat(trends): Bright Data SERP API provider as Tier-2 deep fallback"
+# OR
+git commit -m "feat(trends): Oxylabs SERP Scraper API provider as Tier-2 deep fallback"
+```
+
+**Prompt for subagent:**
+> Implement Task 23 against **<Bright Data | Oxylabs>** — the user must tell you which one. Follow the trigger-then-poll pattern for Bright Data, or the synchronous realtime endpoint for Oxylabs. Cassette must be vendored with credentials stripped. Router fallback test must show Tier-1 (SerpAPI + SearchAPI) failure correctly cascades to Tier-2.
+
+---
+
+### Task 24: ApifyTrendsProvider (bulk / warmup)
+
+**Files:**
+- Create: `tests/collection/providers/cassettes/apify_python_us.json`
+- Create: `src/collection/trends/normalizers/apify.py`
+- Create: `src/collection/trends/providers/apify.py`
+- Create: `tests/collection/normalizers/test_apify.py`
+- Create: `tests/collection/providers/test_apify.py`
+
+**API surface:**
+- Use the `apify-client` Python SDK (`pip install apify-client`).
+- Actor: `emastra/google-trends-scraper` (or whichever the team standardizes on; the actor id is configurable via `APIFY_TRENDS_ACTOR`).
+- Pattern: `client.actor(actor_id).call(run_input={...})` returns when the actor finishes; then `client.dataset(default_dataset_id).list_items()` yields the rows. There is a 10–30 s cold-start.
+- Auth: `APIFY_TOKEN` env var.
+- Cost: actor consumes Apify compute units; bill at ~$0.25/1k results.
+
+- [ ] **Step 1: Capture a cassette.** Trigger one live actor run, copy the dataset items JSON, save as the cassette. The provider's tests will replay this without hitting the Apify API.
+
+- [ ] **Step 2: Normalizer** maps actor output rows → `CanonicalTrendResult`. The actor returns one row per keyword with nested widget data; map to 4 canonical rows.
+
+- [ ] **Step 3: Provider** wraps `apify_client.ApifyClientAsync`. **Important:** because of the cold-start, this provider must declare `cost_per_keyword_usd = 0.001` but also expose a `warmup_only: bool = True` class attribute. The router must respect this attribute and only invoke `ApifyTrendsProvider` when `trigger_source == "warmup"`. Add the corresponding gate in `ProviderRouter.fetch()` and a unit test for it in `tests/collection/test_router.py`.
+
+- [ ] **Step 4: Tests** — happy path against the cassette, plus a router test confirming Apify is **skipped** for `trigger_source="on_demand"`.
+
+- [ ] **Step 5: Wire into the warmup chain.** In `src/collection/trends/router.py`, expose `build_warmup_chain()` that returns `[ApifyTrendsProvider, SearchAPIProvider, LegacyScrapyProvider]`. The on-demand `build_default_chain()` does **not** include Apify.
+
+- [ ] **Step 6: Commit**
+```bash
+git commit -m "feat(trends): Apify google-trends-scraper provider for bulk/warmup runs"
+```
+
+**Prompt for subagent:**
+> Implement Task 24: Apify provider gated to `trigger_source="warmup"` only. The hot-path on-demand chain must not include Apify (cold-start would blow the latency SLO). Router unit tests must cover both the "skipped on on_demand" and "invoked on warmup" branches.
+
+---
+
+### Task 25: BigQuery seed for warmup keyword discovery (optional)
+
+> **Optional and deferrable.** Only implement if Phase 8 (warmup) is being prioritized and the team wants Google's official top-25 trending list as the warmup seed (rather than relying solely on internal virality scores). Free at our volume.
+
+**Files:**
+- Create: `src/collection/trends/seeds/__init__.py`
+- Create: `src/collection/trends/seeds/bigquery.py`
+- Create: `tests/collection/seeds/test_bigquery.py`
+
+**Implementation:**
+- Single function `async def fetch_top_terms(geo: str, limit: int = 50) -> list[str]` that queries `bigquery-public-data.google_trends.top_terms` for the given country (US-only is supported by the public dataset; other geos return empty and the warmup falls back to the existing virality-based seed).
+- Auth via `google-cloud-bigquery` SDK + service account JSON (`GOOGLE_APPLICATION_CREDENTIALS` env var).
+- Gated by `BIGQUERY_TRENDS_ENABLED=true` config flag — default off.
+
+- [ ] **Step 1: Test with a stubbed BigQuery client returning a fake row iterator.**
+- [ ] **Step 2: Implement the query** (`SELECT term FROM \`bigquery-public-data.google_trends.top_terms\` WHERE refresh_date = CURRENT_DATE() AND country_name = @country GROUP BY term ORDER BY MAX(score) DESC LIMIT @limit`).
+- [ ] **Step 3: Wire into `WarmupJob`** (Task 20): if `BIGQUERY_TRENDS_ENABLED`, prepend BigQuery-seeded keywords to the virality-based list, deduplicating.
+- [ ] **Step 4: Commit**
+```bash
+git commit -m "feat(trends): optional BigQuery seed for warmup keyword discovery"
+```
+
+**Prompt for subagent:**
+> Implement Task 25 only if the user has set `BIGQUERY_TRENDS_ENABLED=true` and provided a service-account JSON. Otherwise stop and report that the task is intentionally deferred. The function must degrade gracefully (return `[]` and log a warning) when BigQuery is misconfigured — never crash the warmup job.
 
 ---
 
