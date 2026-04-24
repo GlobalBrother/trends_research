@@ -679,7 +679,7 @@ python -c "import arq, httpx, pybreaker, fakeredis, redis; print('ok')"
 ```
 Expected: `ok`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add requirements.txt .env.example docker-compose.yml
